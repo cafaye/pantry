@@ -41,7 +41,9 @@ fn no_filter_returns_every_official_service_sorted_by_name() {
     let names: Vec<&str> = entries.iter().map(|e| e.name()).collect();
     assert_eq!(
         names,
-        ["billing", "caf", "darkroom", "guard", "identity", "muse", "pantry"]
+        [
+            "billing", "caf", "darkroom", "guard", "identity", "muse", "pantry"
+        ]
     );
     // Sorted, not filesystem order: a directory walk is not a contract, and a
     // client diffing two responses should see a stable list.
@@ -63,13 +65,7 @@ fn kind_filter_accepts_every_kind_in_the_vocabulary() {
             ServiceKind::Api => assert_eq!(
                 matched,
                 [
-                    "billing",
-                    "caf",
-                    "darkroom",
-                    "guard",
-                    "identity",
-                    "muse",
-                    "pantry"
+                    "billing", "caf", "darkroom", "guard", "identity", "muse", "pantry"
                 ]
             ),
             // No official service is a pure worker or a hybrid today: courier
@@ -126,13 +122,7 @@ fn contract_filter_matches_by_range_intersection() {
         (
             ">=0.1.0",
             &[
-                "billing",
-                "caf",
-                "darkroom",
-                "guard",
-                "identity",
-                "muse",
-                "pantry",
+                "billing", "caf", "darkroom", "guard", "identity", "muse", "pantry",
             ],
         ),
         ("0.1.0", &["guard", "identity"]),

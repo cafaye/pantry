@@ -7,7 +7,44 @@ bottom.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`caf` is registered.** `registry/services/caf/cafaye.yml` is a byte-identical
+  copy of the platform CLI's own manifest, and `registry/index.yml` carries its
+  row. `caf-03` rewrote that manifest into core's frozen shape, which made the
+  exclusion record's "still the pre-core draft" reason false; the tripwire in
+  `tests/schema.rs` failed the suite rather than letting the registry go stale.
+  It has now caught `darkroom` and `caf`, which is twice for a check added in
+  0.1.0.
+
+### Decisions worth the changelog
+
+- **The exclusion record was fixed in the data, not in the test.** caf's row
+  mixed one fact ("still the pre-core draft shape", now false) with one opinion
+  ("a CLI is not a service in the registry's sense"). The tempting fix was a
+  `…unless it's a CLI` branch in `every_exclusion_reason_is_still_true`, and
+  that is a weakening: the check would go on catching only the exclusions nobody
+  disputes. caf now publishes a valid manifest in the platform's own contract
+  language, so it is in the fleet whether or not anything routes to it.
+- **`kind` for caf is curated, and the vocabulary has a gap.** caf's manifest
+  omits `exposes` on purpose — "caf is a binary, not a service" — and declares no
+  `consumes`, so nothing in it can derive a `kind`. `api` is the only value the
+  current checks admit (`check_kind` refuses `worker` for a manifest that
+  declares no surface; `tests/drift.rs` refuses `both` without a real api
+  surface and a real subscription), so it is a choice under constraint rather
+  than a derivation, and the row says which. `> DECISION NEEDED (pantry)` in
+  `registry/index.yml` proposes a fourth `kind` for binaries.
+- **`basePath` for caf is `null`.** It declares no `exposes.api` and its
+  checkout publishes no OpenAPI document, so core's `/vN` rule has nothing to
+  read. `/v1` by analogy with the five api entries would be the
+  longest-common-prefix guess that rule exists to prevent.
+
+### Changed
+
+- **`?language=go` and the `^0.2.0` filter each gained a member.** caf is the
+  second `go` repository in the registry, so those filters no longer return a
+  single service. No response shape changed: no field was added, removed or
+  renamed, so `info.version` stays at `1.0.0`.
 
 ## [0.1.0] — 2026-09-30
 

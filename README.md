@@ -103,15 +103,26 @@ Three rules a generated client has to know:
 
 The last row is the honest gap: a service that declares nothing cannot be
 classified from its manifest, so the registry states it and `Registry::load`
-refuses the curated answer the moment the manifest becomes decisive. Exactly one
-entry is curated today — **guard**, whose own manifest records the gap as a
-`DECISION NEEDED` until its OpenAPI document exists. Every other `kind` in the
-registry is checked against the manifest at load.
+refuses the curated answer the moment the manifest becomes decisive. Two entries
+are curated today, and they are curated for different reasons:
+
+* **guard** — serves HTTP, but has no OpenAPI document yet, so there is nothing
+  for its manifest to point `exposes.api` at. Its own file records this as a
+  `DECISION NEEDED`.
+* **caf** — the platform CLI, which omits `exposes` on purpose: "caf is a
+  binary, not a service: it exposes no HTTP surface and publishes no events."
+
+Both say `api`, and for `caf` that is a choice under constraint rather than a
+true answer — `worker` and `both` are both refused by the checks for a manifest
+that declares no surface. `> DECISION NEEDED (pantry)` in `registry/index.yml`
+proposes a fourth value for binaries. Every other `kind` in the registry is
+checked against the manifest at load.
 
 ### `basePath`
 
 The `/vN` prefix every contract path in the service's OpenAPI document sits
-under — `/v1` for five of the six entries, `null` for guard.
+under — `/v1` for five of the seven entries, `null` for **guard** and **caf**,
+which publish no document for the rule to read.
 
 It is core's rule and not a pantry invention: `docs/openapi-conventions.md` says
 every path carries one, that the prefix *is* the API version, and that `caf
@@ -176,6 +187,7 @@ registry/
 ├── index.yml                    # the two facts a manifest cannot carry + what is held back
 └── services/
     ├── billing/cafaye.yml       # verbatim copies of each service's own manifest
+    ├── caf/cafaye.yml
     ├── darkroom/cafaye.yml
     ├── guard/cafaye.yml
     ├── identity/cafaye.yml
@@ -236,9 +248,18 @@ register it"* instead of the registry quietly going stale.
 | --- | --- |
 | `courier` | its events are two-segment (`email.queued`); core v0.2 requires `<service>.<entity>.<action>`, so `caf contract lint` rejects it |
 | `parlor` | still the pre-core draft shape (`apiVersion`/`metadata`/`spec`); an app shell, not a platform service |
-| `caf` | the pre-core draft shape too (`version`/`languages`/`contracts`/`dev`), and a CLI is not something anything routes to |
 | `kit` | carries no `cafaye.yml`; configuration only, and its own AGENTS.md says "not a CLI, a package, or a service" |
 | `core` | `language: spec` — a specification, not a service. `Registry::load` refuses any `spec` manifest, so this stays true if someone copies one in |
+
+**The record is not a queue, and leaving it is not a way to avoid a decision.**
+`caf` sat in this list for one packet with two reasons — one of them a fact and
+one of them an opinion — and when `caf-03` made the fact false the tripwire
+failed the suite. The fix was to register it. The alternative, teaching
+`every_exclusion_reason_is_still_true` that a CLI is exempt, would have turned
+the check that caught `caf` into a check that catches only the cases nobody
+disagrees with, so the answer is fixed in the data and never in the test. A
+service that has declared itself in the platform's own contract language is in
+the fleet whether or not anything routes to it.
 
 ---
 

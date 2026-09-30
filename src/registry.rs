@@ -141,11 +141,11 @@ impl ServiceEntry {
 /// | nothing at all                      | curated |
 ///
 /// The last row is the honest gap. A service that declares no contract surface
-/// at all — guard today, whose own manifest records the gap — cannot be
-/// classified from its manifest, so the registry records it and
-/// [`check_kind`] makes sure that answer stops being right the moment the
-/// manifest becomes decisive. One curated value in the whole registry, with a
-/// test that would catch it being wrong.
+/// at all — guard and caf today, each for its own recorded reason — cannot be
+/// classified from its manifest, so the registry records it and [`check_kind`]
+/// makes sure that answer stops being right the moment the manifest becomes
+/// decisive. Two curated values in the whole registry, with a test that would
+/// catch either being wrong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceKind {

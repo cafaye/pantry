@@ -239,13 +239,7 @@ async fn every_filter_narrows_the_list() {
         (
             "?kind=api",
             &[
-                "billing",
-                "caf",
-                "darkroom",
-                "guard",
-                "identity",
-                "muse",
-                "pantry",
+                "billing", "caf", "darkroom", "guard", "identity", "muse", "pantry",
             ],
         ),
         // Two `go` repositories, and they are not the same thing: identity
