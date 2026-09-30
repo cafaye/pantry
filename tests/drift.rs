@@ -509,6 +509,12 @@ fn every_service_repository_in_the_workspace_is_registered_or_excluded() {
         "caf", "pantry",
     ];
 
+    // The list above is hand-maintained, and a hand-maintained list has a
+    // failure mode the rest of this file is built to avoid: a repository that
+    // lands in the workspace and is never added to it is invisible to every
+    // test here. That is not hypothetical — see
+    // `no_workspace_repository_is_missing_from_the_curation_lists` below, which
+    // found two of them.
     for name in known {
         if !root.join(name).exists() {
             continue;
@@ -524,4 +530,136 @@ fn every_service_repository_in_the_workspace_is_registered_or_excluded() {
              is a registry that cannot be audited."
         );
     }
+}
+
+/// Every directory in the workspace that carries a `cafaye.yml` must appear in
+/// one of the two curation lists — registered, or excluded with a reason.
+///
+/// The test above checks the lists are complete *among the names they name*. It
+/// cannot check that they name every repository, because the list of names is
+/// itself hand-maintained. So this test walks the workspace instead and asks the
+/// question from the other direction, which is the only direction that catches a
+/// repository nobody remembered.
+///
+/// **It found two.** `docs` and `cafaye-rb` both carry a valid `cafaye.yml` on
+/// master, neither is registered, neither is excluded, and neither appeared in
+/// the list above — so until this test existed the registry claimed to describe
+/// the fleet while omitting two members of it silently.
+///
+/// They are named in `UNDECIDED` below rather than quietly added to the registry,
+/// because whether a documentation site and a shared library belong in a service
+/// registry is a curation decision, and `registry/index.yml` records decisions
+/// rather than making them. The entry is the honest state: known, undecided, and
+/// now impossible to forget. The question is marked on the constant.
+///
+/// > DECISION NEEDED (pantry): should `docs` and `cafaye-rb` be registered, and
+/// > if not, what `blockedBy` value describes a repository that has a valid
+/// > manifest and is not a service? Today's three values are `schema` (does not
+/// > validate), `no-manifest` (carries no cafaye.yml) and `not-a-service` (valid,
+/// > and `language: spec`). A static site and a library are valid and are
+/// > neither, so the vocabulary has no honest row for them and inventing one is a
+/// > change to `BlockedBy` in src/registry.rs.
+/// > Alternatives: (a) register both, which makes their `kind` a THIRD curated
+/// > value and puts a library in a registry of things `caf dev` brings up;
+/// > (b) add a fourth `blockedBy` value — `library` — and record them there;
+/// > (c) leave them in `UNDECIDED` and keep the gap visible.
+/// > Recommended: (b). The fact pantry wants to state is "this repository is not
+/// > something a client routes to", and `language: spec` is only one way of saying
+/// > that. A docs site and a gem are the same fact in different clothes.
+/// > Cost of flipping: one enum variant in `BlockedBy`, one match arm in
+/// > tests/schema.rs, and the two rows.
+/// > Until then this test still fails for any FOURTH unlisted repository, which is
+/// > the part that is not a decision: the list has to be complete even while the
+/// > answer for two of its members is open.
+#[test]
+fn no_workspace_repository_is_missing_from_the_curation_lists() {
+    let root = require_workspace!("curation coverage");
+
+    let dir = registry_dir();
+    let index = registry::read_index(&dir).expect("registry/index.yml parses");
+    let registry = Registry::load(&dir).expect("the official registry loads");
+
+    // Repositories in the workspace that carry a manifest and are deliberately
+    // not yet registered or excluded. Each needs a decision, and each is a
+    // DECISION NEEDED on the constant itself.
+    //
+    //   docs       — a static Starlight site. Its own manifest says it
+    //                "serves no HTTP traffic of its own — it builds a directory
+    //                of static files that a host then serves. The same shape a
+    //                library takes", and `language: typescript` is a judgement
+    //                it records as one (docs-01's own DECISION NEEDED). So
+    //                neither exclusion value fits: it is not `schema`-invalid,
+    //                it is not `no-manifest`, and it is not `not-a-service` in
+    //                the sense that means `language: spec`.
+    //   cafaye-rb  — the shared Ruby gem. A library: no `exposes`, no `consumes`.
+    //                Same shape as `docs`, and the same problem — a fourth
+    //                `blockedBy` value would be needed, or an entry.
+    const UNDECIDED: &[(&str, &str)] = &[
+        (
+            "docs",
+            "a static documentation site with a valid manifest; it declares no surface, so \
+             `not-a-service` (which means `language: spec`) does not describe it",
+        ),
+        (
+            "cafaye-rb",
+            "the shared Ruby gem, with a valid manifest; a library that declares no surface, \
+             and the same `blockedBy` gap as `docs`",
+        ),
+    ];
+
+    // Worktrees are not repositories: `moon/cafaye` holds several, and a
+    // worktree's directory name is `<service>-worker-<packet>`. A manifest inside
+    // one is that service's manifest, already checked through its own checkout,
+    // so counting it again would double-report every service mid-packet.
+    let is_worktree = |name: &str| name.contains("-worker-");
+
+    let mut missing: Vec<String> = Vec::new();
+
+    for entry in std::fs::read_dir(&root).expect("the cafaye root is readable") {
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if is_worktree(&name) || !entry.path().join("cafaye.yml").is_file() {
+            continue;
+        }
+
+        let registered = registry.get(&name).is_some();
+        let excluded = index.excluded.iter().any(|e| e.name == name);
+        let undecided = UNDECIDED.iter().any(|(known, _)| *known == name);
+
+        if !registered && !excluded && !undecided {
+            missing.push(format!(
+                "  {name} — carries a valid cafaye.yml at {} and appears in no curation list",
+                entry.path().join("cafaye.yml").display()
+            ));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "{} workspace repositor{} a cafaye.yml and appear in NEITHER registry/services/ NOR \
+         the exclusion list.\n\
+         \n\
+         {}\n\
+         \n\
+         This is the failure mode a hand-maintained list has: `every_service_repository_in_the_\
+         workspace_is_registered_or_excluded` checks the names it knows, and a repository \
+         nobody added to that list is invisible to it. Add the name to `known` in that test \
+         and give it a row — registered, or excluded with a `blockedBy` and a reason. If the \
+         decision is genuinely open, add it to `UNDECIDED` in this test with the reason it \
+         is undecided, so the gap is recorded rather than invisible. Do NOT delete this \
+         test to make the suite green: a registry that silently omits a repository cannot be \
+         audited.",
+        missing.len(),
+        if missing.len() == 1 {
+            "y carries"
+        } else {
+            "ies carry"
+        },
+        missing.join("\n"),
+    );
 }
