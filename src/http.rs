@@ -180,10 +180,13 @@ async fn healthz() -> Json<HealthView> {
 
 /// `GET /readyz` — readiness. Checks the thing an orchestrator is about to send
 /// traffic to.
-async fn readyz(
-    State(state): State<AppState>,
-    Query(_query): Query<HashMap<String, String>>,
-) -> Response {
+///
+/// No query parameters are read here. `/readyz` answers about pantry, not about
+/// the registry, so a `?kind=` on it is ignored rather than refused — an
+/// orchestrator that probes with a stray parameter still gets the answer it came
+/// for, and the filters' vocabulary stays where it belongs, on
+/// `GET /v1/services`.
+async fn readyz(State(state): State<AppState>) -> Response {
     let trace_id = TraceId::current();
     let instance = "/readyz";
 
