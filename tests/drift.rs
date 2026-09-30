@@ -547,6 +547,17 @@ fn kind_agrees_with_what_the_manifest_can_prove() {
                      api surface and a subscription"
                 )
             }
+            // `cli` says the repository is a binary, so a manifest that declares
+            // any surface at all contradicts it — and the value that fits then
+            // is not a judgement, because the manifest has become decisive. caf
+            // is the entry today and it is a curated value, so this is the check
+            // on the one curated value that is not a temporary gap.
+            ServiceKind::Cli => assert!(
+                !serves_http && !publishes && !subscribes,
+                "{name} is registered as `cli`, which is a binary: a manifest that declares an \
+                 api surface, publishes events or consumes them makes it a service, and the \
+                 row must then say `api`, `both` or `worker`"
+            ),
         }
 
         if serves_http {
@@ -566,12 +577,17 @@ fn kind_agrees_with_what_the_manifest_can_prove() {
 
         // The curated facts in the registry, stated here so the next person to
         // touch one knows it is load-bearing: a service whose manifest declares
-        // no surface has a kind nothing can derive — guard and caf today — and
-        // pantry records it rather than deriving a wrong one.
+        // no surface has a kind nothing can derive — `api` for guard, which is
+        // waiting for its document, and `cli` for caf, which will never have
+        // one — and pantry records the distinction rather than deriving a wrong
+        // one. Only the first of the two stops being correct when the manifest
+        // declares `exposes`.
         if !serves_http && !publishes && !subscribes {
             eprintln!(
                 "note: {name} declares no contract surface at all, so its kind ({}) is \
-                 curated. It stays correct until {name}/cafaye.yml declares `exposes`.",
+                 curated, not derived. `api` stops being right when {name}/cafaye.yml \
+                 declares `exposes`; `cli` stops being right at the same moment, and \
+                 neither value can be derived before it.",
                 entry.kind
             );
         }
@@ -655,9 +671,25 @@ fn every_service_repository_in_the_workspace_is_registered_or_excluded() {
     // core's own docs name as one. The list is explicit because guessing
     // "which of these 30 directories are services" is exactly the kind of
     // inference that produces a registry nobody can audit.
+    //
+    // `docs` and `cafaye-rb` are here because both are curated now: neither is
+    // registered and both are excluded with `blockedBy: library`, and a name
+    // that appears in the exclusion record without appearing here would be
+    // checked by `every_exclusion_reason_is_still_true` and by nothing else.
     let known = [
-        "identity", "billing", "courier", "darkroom", "guard", "muse", "parlor", "core", "kit",
-        "caf", "pantry",
+        "identity",
+        "billing",
+        "courier",
+        "darkroom",
+        "guard",
+        "muse",
+        "parlor",
+        "core",
+        "kit",
+        "caf",
+        "pantry",
+        "docs",
+        "cafaye-rb",
     ];
 
     // The list above is hand-maintained, and a hand-maintained list has a
@@ -665,7 +697,8 @@ fn every_service_repository_in_the_workspace_is_registered_or_excluded() {
     // lands in the workspace and is never added to it is invisible to every
     // test here. That is not hypothetical — see
     // `no_workspace_repository_is_missing_from_the_curation_lists` below, which
-    // found two of them.
+    // found two of them, and which is the reason this list now says thirteen
+    // names rather than the eleven it said when this test was written.
     for name in known {
         if !root.join(name).exists() {
             continue;
@@ -693,35 +726,24 @@ fn every_service_repository_in_the_workspace_is_registered_or_excluded() {
 /// repository nobody remembered.
 ///
 /// **It found two.** `docs` and `cafaye-rb` both carry a valid `cafaye.yml` on
-/// master, neither is registered, neither is excluded, and neither appeared in
+/// master, neither was registered, neither was excluded, and neither appeared in
 /// the list above — so until this test existed the registry claimed to describe
 /// the fleet while omitting two members of it silently.
 ///
-/// They are named in `UNDECIDED` below rather than quietly added to the registry,
-/// because whether a documentation site and a shared library belong in a service
-/// registry is a curation decision, and `registry/index.yml` records decisions
-/// rather than making them. The entry is the honest state: known, undecided, and
-/// now impossible to forget. The question is marked on the constant.
+/// Both were parked in an `UNDECIDED` constant here first, with the reason they
+/// were undecided, and **that constant is now gone.** Both have a row in
+/// `registry/index.yml` under `blockedBy: library`, which is the fourth value
+/// for exactly their case: a valid manifest, and a repository nothing brings up
+/// and nothing routes to. The constant went with the decision because it was an
+/// exemption — a third list that made a repository's absence from the registry
+/// acceptable without a reason — and this file's other tests have caught three
+/// real problems precisely because they have no such list. A test whose failure
+/// mode is "add it here and the red goes away" is a test that can be made green
+/// by not checking.
 ///
-/// > DECISION NEEDED (pantry): should `docs` and `cafaye-rb` be registered, and
-/// > if not, what `blockedBy` value describes a repository that has a valid
-/// > manifest and is not a service? Today's three values are `schema` (does not
-/// > validate), `no-manifest` (carries no cafaye.yml) and `not-a-service` (valid,
-/// > and `language: spec`). A static site and a library are valid and are
-/// > neither, so the vocabulary has no honest row for them and inventing one is a
-/// > change to `BlockedBy` in src/registry.rs.
-/// > Alternatives: (a) register both, which makes their `kind` a THIRD curated
-/// > value and puts a library in a registry of things `caf dev` brings up;
-/// > (b) add a fourth `blockedBy` value — `library` — and record them there;
-/// > (c) leave them in `UNDECIDED` and keep the gap visible.
-/// > Recommended: (b). The fact pantry wants to state is "this repository is not
-/// > something a client routes to", and `language: spec` is only one way of saying
-/// > that. A docs site and a gem are the same fact in different clothes.
-/// > Cost of flipping: one enum variant in `BlockedBy`, one match arm in
-/// > tests/schema.rs, and the two rows.
-/// > Until then this test still fails for any FOURTH unlisted repository, which is
-/// > the part that is not a decision: the list has to be complete even while the
-/// > answer for two of its members is open.
+/// So a fourth unlisted repository now fails this test, which is the part that
+/// was never a decision: the list has to be complete, whether the answer for any
+/// one member is `api`, `cli` or a row in the exclusion record.
 #[test]
 fn no_workspace_repository_is_missing_from_the_curation_lists() {
     let root = require_workspace!("curation coverage");
@@ -729,34 +751,6 @@ fn no_workspace_repository_is_missing_from_the_curation_lists() {
     let dir = registry_dir();
     let index = registry::read_index(&dir).expect("registry/index.yml parses");
     let registry = Registry::load(&dir).expect("the official registry loads");
-
-    // Repositories in the workspace that carry a manifest and are deliberately
-    // not yet registered or excluded. Each needs a decision, and each is a
-    // DECISION NEEDED on the constant itself.
-    //
-    //   docs       — a static Starlight site. Its own manifest says it
-    //                "serves no HTTP traffic of its own — it builds a directory
-    //                of static files that a host then serves. The same shape a
-    //                library takes", and `language: typescript` is a judgement
-    //                it records as one (docs-01's own DECISION NEEDED). So
-    //                neither exclusion value fits: it is not `schema`-invalid,
-    //                it is not `no-manifest`, and it is not `not-a-service` in
-    //                the sense that means `language: spec`.
-    //   cafaye-rb  — the shared Ruby gem. A library: no `exposes`, no `consumes`.
-    //                Same shape as `docs`, and the same problem — a fourth
-    //                `blockedBy` value would be needed, or an entry.
-    const UNDECIDED: &[(&str, &str)] = &[
-        (
-            "docs",
-            "a static documentation site with a valid manifest; it declares no surface, so \
-             `not-a-service` (which means `language: spec`) does not describe it",
-        ),
-        (
-            "cafaye-rb",
-            "the shared Ruby gem, with a valid manifest; a library that declares no surface, \
-             and the same `blockedBy` gap as `docs`",
-        ),
-    ];
 
     // Worktrees are not repositories: `moon/cafaye` holds several, and a
     // worktree's directory name is `<service>-worker-<packet>`. A manifest inside
@@ -780,9 +774,8 @@ fn no_workspace_repository_is_missing_from_the_curation_lists() {
 
         let registered = registry.get(&name).is_some();
         let excluded = index.excluded.iter().any(|e| e.name == name);
-        let undecided = UNDECIDED.iter().any(|(known, _)| *known == name);
 
-        if !registered && !excluded && !undecided {
+        if !registered && !excluded {
             missing.push(format!(
                 "  {name} — carries a valid cafaye.yml at {} and appears in no curation list",
                 entry.path().join("cafaye.yml").display()
@@ -800,11 +793,12 @@ fn no_workspace_repository_is_missing_from_the_curation_lists() {
          This is the failure mode a hand-maintained list has: `every_service_repository_in_the_\
          workspace_is_registered_or_excluded` checks the names it knows, and a repository \
          nobody added to that list is invisible to it. Add the name to `known` in that test \
-         and give it a row — registered, or excluded with a `blockedBy` and a reason. If the \
-         decision is genuinely open, add it to `UNDECIDED` in this test with the reason it \
-         is undecided, so the gap is recorded rather than invisible. Do NOT delete this \
-         test to make the suite green: a registry that silently omits a repository cannot be \
-         audited.",
+         and give it a row — registered, or excluded with a `blockedBy` and a reason. There is \
+         no third list to park it in: `docs` and `cafaye-rb` had one until they were given \
+         `blockedBy: library`, and a list where an undecided repository needs no reason is a \
+         check that can be made green by not checking. Do NOT delete this test, and do NOT \
+         weaken it to make the suite green: a registry that silently omits a repository cannot \
+         be audited.",
         missing.len(),
         if missing.len() == 1 {
             "y carries"

@@ -246,6 +246,93 @@ fn every_exclusion_reason_is_still_true() {
                     excluded.name
                 );
             }
+            BlockedBy::Library => {
+                // A row the job cannot read is not a row it checked, and saying
+                // so is the difference between a skip and a pass. `cafaye-rb` is
+                // the case today: it is a PRIVATE repository, so
+                // `git clone https://github.com/cafaye/cafaye-rb.git` from a
+                // hosted runner is a 404, and the credential that would fix it
+                // is exactly what pantry-04 removed from the workflow on the
+                // grounds that the fleet is public.
+                //
+                // The condition is structural — no checkout, nothing to check —
+                // and not a repository named here, because the fact about the
+                // world lives in one place: `.github/workflows/ci.yml`'s
+                // `CAFAYE_UNREADABLE` list, which `tests/ci.rs` checks against
+                // `registry/index.yml`. A name in this file would be a second
+                // copy of that fact and the two would drift. The skip is one arm
+                // of one value, and every other row — including `kit`'s, whose
+                // whole claim is that its file is *absent* — is still checked.
+                let Some(manifest) = manifest_path
+                    .is_file()
+                    .then(|| pantry::manifest::read(&manifest_path))
+                    .transpose()
+                    .unwrap_or_else(|error| panic!("{}: {error}", manifest_path.display()))
+                else {
+                    eprintln!(
+                        "SKIP the manifest half of {}'s exclusion row: no cafaye.yml at {}. \
+                         Nothing in this arm was verified for that row and a green run does \
+                         not mean it was. Run this test with PANTRY_CAFAYE_ROOT pointed at a \
+                         workspace holding the checkout to check it; .github/workflows/ci.yml \
+                         says which repositories the drift job cannot clone, and why.",
+                        excluded.name,
+                        manifest_path.display()
+                    );
+                    continue;
+                };
+
+                assert!(
+                    validates,
+                    "{} is held back as a library, so its manifest must still validate — \
+                     and a manifest that stops validating is a service with an unresolved \
+                     DECISION NEEDED, not a library",
+                    excluded.name
+                );
+
+                // The direction this value can go stale in, and the one that
+                // matters. `library` is not "we have not got to it": it is a
+                // claim that nothing brings this repository up and nothing
+                // routes to it. That stops being true the moment the manifest
+                // declares a surface — `exposes.api` is an HTTP API to serve,
+                // `exposes.events` is work to run, `consumes` is a
+                // subscription — and each of those is exactly what registration
+                // is for. So the tripwire fires with "register it", in the
+                // direction that has already fired three times, rather than
+                // needing a branch to exempt libraries.
+                assert!(
+                    manifest.exposes.is_none(),
+                    "{} now declares `exposes` — it publishes a contract surface, so it is \
+                     something `caf dev` brings up and `guard` routes to. It must be \
+                     REGISTERED: copy {} into registry/services/ and add a row to \
+                     registry/index.yml carrying the kind that manifest now derives.",
+                    excluded.name,
+                    manifest_path.display()
+                );
+                assert!(
+                    manifest
+                        .consumes
+                        .as_ref()
+                        .is_none_or(|types| types.is_empty()),
+                    "{} now consumes events, so it reacts to the fleet and is no longer a \
+                     library. Register it, or say in its row why a consumer of events is \
+                     held back.",
+                    excluded.name
+                );
+
+                // And the values stay distinct. `not-a-service` is a fact core's
+                // schema states; `library` is a judgement about something `caf
+                // dev` does not start. A `library` row whose manifest says
+                // `language: spec` is the first fact wearing the second value's
+                // name, which is how one of them quietly stops meaning anything.
+                assert_ne!(
+                    manifest.language,
+                    pantry::manifest::Language::Spec,
+                    "{} is held back as `library`, but `language: spec` is what \
+                     `not-a-service` is for. One repository, one reason: this row states \
+                     the weaker of the two facts, and the stronger one is the row's to use.",
+                    excluded.name
+                );
+            }
         }
 
         assert!(
