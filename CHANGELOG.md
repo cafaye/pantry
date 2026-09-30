@@ -111,6 +111,15 @@ bottom.
   document and has not yet declared `exposes` would sit in the registry on a
   curation that a file in its own tree has already made false.
 
+  That check's **narrowness is pinned by a fixture**,
+  `the_cli_document_walker_looks_only_where_core_puts_a_published_document`, over
+  a directory holding both sides of the distinction: a vendored
+  `specs/identity.yaml` and an `openapi-ts.config.ts` must never be found, and an
+  `openapi/` directory and an `openapi.json` must always be. If the rule were ever
+  widened to "any file whose name mentions openapi", this list would grow — and
+  the tempting fix at that point would be to widen the exemption rather than
+  narrow the rule, which is the failure this pins shut.
+
 - **`kind: cli`, and `caf` stops being recorded as an `api`.** MD1. `caf` is a
   binary — its own manifest says "caf is a binary, not a service: it exposes no
   HTTP surface and publishes no events" — and the registry had no way to say so,

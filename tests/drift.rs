@@ -1018,3 +1018,78 @@ fn every_directory_in_the_workspace_is_a_repository_the_registry_curates() {
         uncurated.join("\n"),
     );
 }
+
+/// The walker's narrowness, pinned by a fixture rather than by cafaye-ts.
+///
+/// `a_registered_cli_publishes_no_openapi_document_of_its_own` above rests on one
+/// distinction: a document in the position core's conventions give a **published**
+/// one is a surface, and a document anywhere else is an input. cafaye-ts is the
+/// case that makes the distinction real — six vendored documents under `specs/`
+/// plus a config file whose name contains the word — and if the walker were
+/// widened to match either, that entry would start failing and the tempting fix
+/// would be to widen the exemption rather than narrow the rule.
+///
+/// So the rule is stated here, over a directory built to contain both sides of
+/// it. `node_modules`, `target` and `.git` are in there too, because a
+/// dependency's own files are not this repository's and a walker that cannot say
+/// so is a walker that will be widened.
+#[test]
+fn the_cli_document_walker_looks_only_where_core_puts_a_published_document() {
+    let root = std::env::temp_dir().join(format!("pantry-cli-docs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+
+    // The inputs: a vendored copy of somebody else's specification, and a config
+    // file whose name contains the word. Neither is a surface.
+    for path in [
+        "specs/identity.yaml",
+        "openapi-ts.config.ts",
+        "README.md",
+        "node_modules/hey-api/openapi.yaml",
+        ".git/openapi.yml",
+        "target/debug/openapi.json",
+    ] {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(&path, b"paths: {}\n").expect("write");
+    }
+
+    // The surfaces: the two positions core's conventions use, and the two
+    // spellings of the file at a repository root.
+    for path in [
+        "openapi/v1.yaml",
+        "services/thing/openapi.yaml",
+        "openapi.json",
+    ] {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(&path, b"paths: {}\n").expect("write");
+    }
+
+    let found: Vec<String> = published_documents(&root)
+        .iter()
+        .map(|path| {
+            path.strip_prefix(&root)
+                .expect("under the root")
+                .display()
+                .to_string()
+        })
+        .collect();
+
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(
+        found,
+        [
+            // A directory is reported as itself rather than by the document inside
+            // it: "this repository has an openapi/ directory" is the finding, and
+            // the file in it is the first thing the reader will go and look at.
+            "openapi",
+            "openapi.json",
+            "services/thing/openapi.yaml",
+        ],
+        "the two positions core's conventions use, in a stable order. A vendored \
+         document under specs/ and a config file called openapi-ts.config.ts are \
+         INPUTS and must never appear here: if this list grows, the rule has been \
+         widened and a `cli` with vendored documents would start failing."
+    );
+}
