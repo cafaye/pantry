@@ -99,7 +99,9 @@ async fn the_registry_is_the_whole_official_set_sorted_by_name() {
     assert_eq!(response.status, StatusCode::OK);
     assert_eq!(
         names(&response),
-        ["billing", "darkroom", "guard", "identity", "muse", "pantry"],
+        [
+            "billing", "caf", "darkroom", "guard", "identity", "muse", "pantry"
+        ],
         "every official service, including pantry itself: a registry that cannot \
          describe the registry is one `caf dev` has to special-case"
     );
@@ -175,6 +177,40 @@ async fn an_absent_surface_is_null_rather_than_missing() {
     );
 }
 
+/// A second service with no `exposes` and no `basePath`, and a different reason
+/// for it: caf is the platform CLI, and its own manifest says it omits `exposes`
+/// because it is a binary rather than because nobody has written the document
+/// yet. The shape a client sees is the same one guard's is — which is the point
+/// of the split. Its `kind` is curated for the same reason, and this row is
+/// where that curation is visible from outside the repository.
+#[tokio::test]
+async fn a_registered_binary_serves_the_same_absent_surface_as_a_registered_gap() {
+    let response = call(app(), "/v1/services/caf").await;
+
+    assert_eq!(response.status, StatusCode::OK, "{response}");
+    assert_eq!(response.body["name"], json!("caf"));
+    assert_eq!(
+        response.body["language"],
+        json!("go"),
+        "read off the manifest, like every other field"
+    );
+    assert_eq!(response.body["core"], json!("^0.2.0"));
+    assert_eq!(
+        response.body["exposes"],
+        Value::Null,
+        "caf declares no `exposes`, and absent is not empty"
+    );
+    assert_eq!(response.body["basePath"], Value::Null);
+    assert_eq!(response.body["consumes"], json!([]));
+    assert_eq!(response.body["dependencies"], json!([]));
+    assert_eq!(
+        response.body["kind"],
+        json!("api"),
+        "curated: the manifest declares no surface at all, so nothing can derive \
+         it, and `api` is the only value the vocabulary and `check_kind` admit"
+    );
+}
+
 #[tokio::test]
 async fn one_service_is_a_bare_object_not_a_wrapped_one() {
     // `GET /v1/services/{name}` answers with the same object the list wraps, so
@@ -202,14 +238,25 @@ async fn every_filter_narrows_the_list() {
     let cases: &[(&str, &[&str])] = &[
         (
             "?kind=api",
-            &["billing", "darkroom", "guard", "identity", "muse", "pantry"],
+            &[
+                "billing",
+                "caf",
+                "darkroom",
+                "guard",
+                "identity",
+                "muse",
+                "pantry",
+            ],
         ),
-        ("?language=go", &["identity"]),
+        // Two `go` repositories, and they are not the same thing: identity
+        // serves HTTP, caf declares no surface at all. `language` is read off
+        // the manifest, so it does not care which.
+        ("?language=go", &["caf", "identity"]),
         ("?language=ruby", &["billing"]),
         ("?language=rust", &["darkroom", "pantry"]),
         (
             "?contract=%5E0.2.0",
-            &["billing", "darkroom", "muse", "pantry"],
+            &["billing", "caf", "darkroom", "muse", "pantry"],
         ),
         // identity and guard are on ^0.1.0, which pre-1.0 does not contain ^0.2.0.
         ("?contract=%5E0.1.0", &["guard", "identity"]),
@@ -229,7 +276,11 @@ async fn a_filter_that_matches_nothing_is_an_empty_list() {
         "?kind=worker",
         "?language=elixir",
         "?contract=%5E9.0.0",
-        "?language=go&contract=%5E0.2.0",
+        // guard is the only `typescript` repository and it is on ^0.1.0, which
+        // pre-1.0 does not contain ^0.2.0. This used to be `language=go` and
+        // stopped being empty when caf registered: two filters are worth
+        // nothing if they cannot survive the next entry in the registry.
+        "?language=typescript&contract=%5E0.2.0",
     ] {
         let response = call(app(), &format!("/v1/services{query}")).await;
 
@@ -282,7 +333,7 @@ async fn a_bad_filter_value_is_a_400_naming_the_vocabulary() {
 #[tokio::test]
 async fn a_page_limit_slices_the_list_and_the_cursor_finishes_it() {
     let first = call(app(), "/v1/services?limit=2").await;
-    assert_eq!(names(&first), ["billing", "darkroom"]);
+    assert_eq!(names(&first), ["billing", "caf"]);
     assert_eq!(first.body["page"]["has_more"], json!(true));
 
     let cursor = first.body["page"]["next_cursor"]
@@ -291,11 +342,11 @@ async fn a_page_limit_slices_the_list_and_the_cursor_finishes_it() {
         .to_string();
     let second = call(app(), &format!("/v1/services?limit=2&cursor={cursor}")).await;
 
-    assert_eq!(names(&second), ["guard", "identity"]);
+    assert_eq!(names(&second), ["darkroom", "guard"]);
     assert_eq!(
         second.body["page"]["has_more"],
         json!(true),
-        "four of six returned means two are left"
+        "four of seven returned means three are left"
     );
 
     let cursor = second.body["page"]["next_cursor"]
@@ -304,9 +355,22 @@ async fn a_page_limit_slices_the_list_and_the_cursor_finishes_it() {
         .to_string();
     let third = call(app(), &format!("/v1/services?limit=2&cursor={cursor}")).await;
 
-    assert_eq!(names(&third), ["muse", "pantry"]);
-    assert_eq!(third.body["page"]["has_more"], json!(false));
-    assert_eq!(third.body["page"]["next_cursor"], Value::Null);
+    assert_eq!(
+        names(&third),
+        ["identity", "muse"],
+        "six of seven returned means one is left"
+    );
+    assert_eq!(third.body["page"]["has_more"], json!(true));
+
+    let cursor = third.body["page"]["next_cursor"]
+        .as_str()
+        .expect("a next cursor")
+        .to_string();
+    let fourth = call(app(), &format!("/v1/services?limit=2&cursor={cursor}")).await;
+
+    assert_eq!(names(&fourth), ["pantry"]);
+    assert_eq!(fourth.body["page"]["has_more"], json!(false));
+    assert_eq!(fourth.body["page"]["next_cursor"], Value::Null);
 }
 
 #[tokio::test]
@@ -422,7 +486,7 @@ async fn readyz_reports_a_loaded_registry_and_refuses_an_unloaded_one() {
     assert_eq!(ready.body["status"], json!("ok"));
     assert_eq!(
         ready.body["services"],
-        json!(6),
+        json!(7),
         "readiness counts what it loaded"
     );
 

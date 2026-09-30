@@ -41,7 +41,7 @@ fn no_filter_returns_every_official_service_sorted_by_name() {
     let names: Vec<&str> = entries.iter().map(|e| e.name()).collect();
     assert_eq!(
         names,
-        ["billing", "darkroom", "guard", "identity", "muse", "pantry"]
+        ["billing", "caf", "darkroom", "guard", "identity", "muse", "pantry"]
     );
     // Sorted, not filesystem order: a directory walk is not a contract, and a
     // client diffing two responses should see a stable list.
@@ -62,7 +62,15 @@ fn kind_filter_accepts_every_kind_in_the_vocabulary() {
         match kind {
             ServiceKind::Api => assert_eq!(
                 matched,
-                ["billing", "darkroom", "guard", "identity", "muse", "pantry"]
+                [
+                    "billing",
+                    "caf",
+                    "darkroom",
+                    "guard",
+                    "identity",
+                    "muse",
+                    "pantry"
+                ]
             ),
             // No official service is a pure worker or a hybrid today: courier
             // and darkroom-worker are the candidates and both are held out of
@@ -85,7 +93,7 @@ fn language_filter_covers_every_language_the_manifest_schema_allows_for_a_servic
     // example). The filter vocabulary is exactly the registerable set: asking
     // for a language no service can have is a 400, not an empty list.
     let expected: &[(Language, &[&str])] = &[
-        (Language::Go, &["identity"]),
+        (Language::Go, &["caf", "identity"]),
         (Language::Ruby, &["billing"]),
         (Language::Typescript, &["guard"]),
         (Language::Python, &["muse"]),
@@ -109,18 +117,26 @@ fn language_filter_covers_every_language_the_manifest_schema_allows_for_a_servic
 #[test]
 fn contract_filter_matches_by_range_intersection() {
     let cases: &[(&str, &[&str])] = &[
-        ("^0.2.0", &["billing", "darkroom", "muse", "pantry"]),
+        ("^0.2.0", &["billing", "caf", "darkroom", "muse", "pantry"]),
         ("^0.1.0", &["guard", "identity"]),
-        ("~0.2.0", &["billing", "darkroom", "muse", "pantry"]),
-        (">=0.2.0", &["billing", "darkroom", "muse", "pantry"]),
+        ("~0.2.0", &["billing", "caf", "darkroom", "muse", "pantry"]),
+        (">=0.2.0", &["billing", "caf", "darkroom", "muse", "pantry"]),
         // An open floor from below every constraint matches everything: a
         // service on ^0.2.0 contains versions that are also at or above 0.1.0.
         (
             ">=0.1.0",
-            &["billing", "darkroom", "guard", "identity", "muse", "pantry"],
+            &[
+                "billing",
+                "caf",
+                "darkroom",
+                "guard",
+                "identity",
+                "muse",
+                "pantry",
+            ],
         ),
         ("0.1.0", &["guard", "identity"]),
-        ("0.2.0", &["billing", "darkroom", "muse", "pantry"]),
+        ("0.2.0", &["billing", "caf", "darkroom", "muse", "pantry"]),
         // A caret on a future minor intersects nothing on this platform yet.
         ("^0.3.0", &[]),
         ("^0.0.1", &[]),
@@ -155,13 +171,13 @@ fn two_filters_are_both_applied() {
 
     // Both halves match something on their own; together they match nothing.
     let each_alone = query(&[("language", "go")]);
-    assert_eq!(names(each_alone), ["identity"]);
+    assert_eq!(names(each_alone), ["caf", "identity"]);
 
     let registry = registry();
-    let impossible = query(&[("language", "go"), ("contract", "^0.2.0")]);
+    let impossible = query(&[("language", "typescript"), ("contract", "^0.2.0")]);
     assert!(
         registry.query(&impossible).is_empty(),
-        "identity is on ^0.1.0, so language=go plus contract=^0.2.0 matches nothing"
+        "guard is on ^0.1.0, so language=typescript plus contract=^0.2.0 matches nothing"
     );
 
     let three = query(&[
@@ -246,8 +262,8 @@ fn a_page_limit_slices_the_filtered_list_and_says_whether_more_is_left() {
 
     assert_eq!(page.items.len(), 2);
     assert_eq!(page.items[0].name(), "billing");
-    assert_eq!(page.items[1].name(), "darkroom");
-    assert!(page.has_more, "two of six returned means four are left");
+    assert_eq!(page.items[1].name(), "caf");
+    assert!(page.has_more, "two of seven returned means five are left");
     assert!(
         page.next_cursor.is_some(),
         "a caller needs somewhere to go next"
@@ -257,18 +273,25 @@ fn a_page_limit_slices_the_filtered_list_and_says_whether_more_is_left() {
     let page = registry.page(&filter, &second).expect("a page");
 
     assert_eq!(page.items.len(), 2);
-    assert_eq!(page.items[0].name(), "guard");
-    assert_eq!(page.items[1].name(), "identity");
+    assert_eq!(page.items[0].name(), "darkroom");
+    assert_eq!(page.items[1].name(), "guard");
 
     let third = Page::new(2, page.next_cursor).expect("still a cursor pantry issued");
     let page = registry.page(&filter, &third).expect("a page");
 
     assert_eq!(page.items.len(), 2);
-    assert_eq!(page.items[0].name(), "muse");
-    assert_eq!(page.items[1].name(), "pantry");
+    assert_eq!(page.items[0].name(), "identity");
+    assert_eq!(page.items[1].name(), "muse");
+    assert!(page.has_more, "six of seven returned means one is left");
+
+    let fourth = Page::new(2, page.next_cursor).expect("the last cursor pantry issued");
+    let page = registry.page(&filter, &fourth).expect("a page");
+
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].name(), "pantry");
     assert!(
         !page.has_more,
-        "the list is six long and all three pages are taken"
+        "the list is seven long and all four pages are taken"
     );
     assert_eq!(page.next_cursor, None);
 }
