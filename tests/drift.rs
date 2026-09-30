@@ -676,6 +676,8 @@ fn every_service_repository_in_the_workspace_is_registered_or_excluded() {
     // registered and both are excluded with `blockedBy: library`, and a name
     // that appears in the exclusion record without appearing here would be
     // checked by `every_exclusion_reason_is_still_true` and by nothing else.
+    // `cafaye-ts` is here for the opposite reason: it IS registered, as a `cli`,
+    // and it is the entry most likely to be argued with rather than forgotten.
     let known = [
         "identity",
         "billing",
@@ -690,6 +692,7 @@ fn every_service_repository_in_the_workspace_is_registered_or_excluded() {
         "pantry",
         "docs",
         "cafaye-rb",
+        "cafaye-ts",
     ];
 
     // The list above is hand-maintained, and a hand-maintained list has a
@@ -714,6 +717,120 @@ fn every_service_repository_in_the_workspace_is_registered_or_excluded() {
              is a registry that cannot be audited."
         );
     }
+}
+
+/// A `cli` is curated, so no manifest can hold the registry to it, and a `cli`
+/// that has quietly written an OpenAPI document is the state where that matters:
+/// the document is the manifest's own evidence arriving after the fact. A service
+/// that writes its document and has not yet declared `exposes` is a real
+/// half-finished packet, and for a `cli` it is the one state that means the
+/// curated row is wrong — because the file a `cli` must not have is precisely the
+/// file whose existence would make `api` a derivation instead of a judgement.
+///
+/// cafaye-ts is why this check exists, and it is the awkward case: it vendors
+/// **six** OpenAPI documents into `specs/`. They are inputs, and its own manifest
+/// says so at length. So the rule is not "a `cli` has no file whose name contains
+/// `openapi`" — it is where core's conventions put a document a repository
+/// PUBLISHES. Every service in the fleet publishes at `openapi/v1.yaml`, or at
+/// `openapi.yaml` in the repository root, and a repository that publishes a
+/// document publishes it there. A `cli` with one of those has a surface.
+#[test]
+fn a_registered_cli_publishes_no_openapi_document_of_its_own() {
+    let root = require_workspace!("cli surface");
+
+    let registry = Registry::load(&registry_dir()).expect("the official registry loads");
+    let clis: Vec<&str> = registry
+        .entries()
+        .iter()
+        .filter(|entry| entry.kind == ServiceKind::Cli)
+        .map(|entry| entry.name())
+        .collect();
+
+    assert!(
+        !clis.is_empty(),
+        "no `cli` is registered, so nothing was checked. The curated value exists and \
+         the fleet has members of it, and this is the only check that would notice one \
+         of them turning into a service"
+    );
+
+    // Every finding in one failure, not the first one: a repository that has
+    // written a document usually has one, and a reader sent back twice for two
+    // lines in the same tree learns less from the second run.
+    let published: Vec<String> = clis
+        .iter()
+        .flat_map(|name| {
+            published_documents(&service_root(&root, name))
+                .into_iter()
+                .map(move |document| format!("  {name} — {}\n", document.display()))
+        })
+        .collect();
+
+    assert!(
+        published.is_empty(),
+        "{} registered `cli`{} publishing an OpenAPI document:\n\n{}\n\
+         A `cli` is a thing installed and run — brought up by nobody, routed to by \
+         nobody — and a document in one of those two positions is a contract surface. \
+         The moment it exists the row's kind is no longer a curation: it is `api`, and \
+         nothing in the manifest will say so for you.\n\n\
+         Either the document is an INPUT rather than a surface, in which case it does \
+         not belong where core's conventions put published ones — cafaye-ts keeps its \
+         six vendored documents in specs/ and records their provenance in \
+         specs/index.json — or the repository is a service, in which case declare \
+         `exposes.api` in its cafaye.yml and change the row to `api`. `Registry::load` \
+         then derives the value and refuses the curated one.",
+        published.len(),
+        if published.len() == 1 { " is" } else { "s are" },
+        published.join("\n"),
+    );
+}
+
+/// Every OpenAPI document a checkout **publishes**, which is to say every one in
+/// the position core's conventions give a published document: a directory named
+/// `openapi`, or a file called `openapi.{yaml,yml,json}`.
+///
+/// The narrowness is the whole test. cafaye-ts carries six documents under
+/// `specs/` and they are correctly not matched, because a vendored copy of
+/// somebody else's specification is an input and the provenance record for an
+/// input is not a surface. `node_modules`, `target` and `.git` are skipped for
+/// the ordinary reason that another project's files are not this repository's.
+fn published_documents(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+
+            if matches!(name.as_str(), ".git" | "node_modules" | "target") {
+                continue;
+            }
+
+            // A file we cannot stat is a file we cannot classify, and a check
+            // that guesses is a check that has stopped checking.
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+
+            if file_type.is_dir() {
+                if name == "openapi" {
+                    found.push(entry.path());
+                }
+                stack.push(entry.path());
+            } else if matches!(
+                name.as_str(),
+                "openapi.yaml" | "openapi.yml" | "openapi.json"
+            ) {
+                found.push(entry.path());
+            }
+        }
+    }
+
+    found.sort();
+    found
 }
 
 /// Every directory in the workspace that carries a `cafaye.yml` must appear in

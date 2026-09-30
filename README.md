@@ -103,17 +103,20 @@ Three rules a generated client has to know:
 | no `exposes.api`, some event work (`exposes.events` or `consumes`) | `worker` |
 | no contract surface, and the repository serves HTTP | `api` (curated) |
 | no contract surface, and the repository is a binary | `cli` (curated) |
+| no contract surface, and it is an installed artifact with no entry point | `cli` (curated) |
 
-The last two rows are the honest gap, and they are **two values rather than one
-because a manifest cannot tell them apart**. A repository that declares no
-contract surface says nothing about what it is: guard (a gateway whose OpenAPI
-document has not been written yet) and caf (a binary — "caf is a binary, not a
-service: it exposes no HTTP surface and publishes no events") declare the same
-absence, and core's own rule 3 says such a repository "is a library or a spec
-repo", which is neither of them. `language` does not help — it names a toolchain,
-not a shape — and the same shape arrives a third time with `cafaye-rb`, a gem in
-the exclusion record below. So the distinction is recorded by a person in
-`registry/index.yml`, and `Registry::load` holds it honest:
+The last three rows are the honest gap, and they are **two values rather than
+three because a manifest cannot tell the cases apart**. A repository that
+declares no contract surface says nothing about what it is: guard (a gateway
+whose OpenAPI document has not been written yet) and caf (a binary — "caf is a
+binary, not a service: it exposes no HTTP surface and publishes no events")
+declare the same absence, and so does cafaye-ts, which serves nothing and
+vendors six other repositories' OpenAPI documents into `specs/`. core's own rule
+3 says such a repository "is a library or a spec repo", which is none of the
+three. `language` does not help — it names a toolchain, not a shape.
+
+So the distinction is recorded by a person in `registry/index.yml`, and
+`Registry::load` holds it honest:
 
 * for a manifest with no contract surface, **only** `api` and `cli` are
   admitted, and the refusal names both — a fifth value added to the vocabulary
@@ -130,11 +133,29 @@ manifest schema has no way to say "I am a binary" either, so `cli` stays
 curated. Every other `kind` in the registry is checked against the manifest at
 load.
 
+**cafaye-ts is the second `cli`, and it is where that gap started costing
+something.** It is a package, not a command — no `bin`, no entry point,
+`dependencies: {}` — so "installed and run" is only half true of it, and the
+other half of the answer is that it is *imported*. The vocabulary has no word
+for that, and the price is visible one screen down: `cafaye-rb` is this
+repository in Ruby, the same shape with the same absence, and it is held back as
+`library` rather than registered. **That is a DECISION NEEDED, not a settled
+distinction** — see `DECISIONS.md` D1 for the three options and which one is
+recommended, and the `> DECISION NEEDED (pantry-06, D1)` block on cafaye-ts's row
+for the argument the reviewer of a registration needs first. It is recorded
+rather than resolved because resolving it means moving a row another packet
+wrote, and that is not this packet's to do.
+
 ### `basePath`
 
 The `/vN` prefix every contract path in the service's OpenAPI document sits
-under — `/v1` for six of the eight entries, `null` for **guard** and **caf**,
-which publish no document for the rule to read.
+under — `/v1` for six of the nine entries, `null` for **guard**, **caf** and
+**cafaye-ts**, which publish no document for the rule to read. cafaye-ts is the
+one that looks like an exception: it vendors six OpenAPI documents into `specs/`,
+one per service that has one. Those are **inputs**, copied at recorded commits
+and provenanced in `specs/index.json`, and a base path is derived from a document
+a service *publishes* — so deriving one from a document this package copied would
+be core's longest-common-prefix guess, on six different documents.
 
 **A partial document is still a document — and the next one will be too.**
 courier's OpenAPI document *was* partial: it covered `/v1/webhook_endpoints`
@@ -216,6 +237,7 @@ registry/
 └── services/
     ├── billing/cafaye.yml       # verbatim copies of each service's own manifest
     ├── caf/cafaye.yml
+    ├── cafaye-ts/cafaye.yml
     ├── courier/cafaye.yml
     ├── darkroom/cafaye.yml
     ├── guard/cafaye.yml
@@ -342,6 +364,18 @@ Registration claims `caf dev` can bring the thing up and gives it a base path to
 route to. A documentation site is read and a gem is depended on; neither is a
 process, and listing them as services would make `kind` mean two different things
 in one column.
+
+**And the next entry added to the registry made that sentence false, which is
+the useful part.** `cafaye-ts` — the TypeScript client, the npm counterpart of
+`cafaye-rb`'s gem, with the same manifest shape and the same deliberate absence
+of `exposes` — **is** registered, as a `cli`. So the exclusion record now holds
+a client library and the registry serves another, and the reason given above
+("registration claims `caf dev` can bring the thing up") does not distinguish
+them: neither is brought up. This is `DECISIONS.md` **D1**, open, with three
+options and a recommendation; it is recorded rather than fixed because every fix
+moves a row this repository did not write. What is *not* left to chance is that
+the two rows are now three screens apart and neither comment mentions the other,
+which would be the actual rot.
 
 ### A green run does not mean this table is accurate
 
@@ -514,6 +548,7 @@ also fails if the drift job is disabled, if a secret reference reappears, or if
 pantry/
 ├── bin/prime                  # the gate
 ├── cafaye.yml                 # this service's own manifest
+├── DECISIONS.md               # this repository's open decisions, D1, D2, …
 ├── openapi/v1.yaml            # the HTTP contract, machine half of the table above
 ├── registry/                  # the official service set, as data
 ├── schemas/                   # core's manifest schema, vendored

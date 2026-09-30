@@ -182,6 +182,87 @@ services:
     kind: cli
     basePath: null
 
+  # cafaye-ts is the fleet's TypeScript client, and it is the entry most likely
+  # to be filed wrongly in either direction, so this row is long.
+  #
+  # It is REGISTERED, and the first reason is the one everybody assumes is
+  # wrong: registration is a claim that `caf dev` can bring the thing up and
+  # `guard` can route to it, and this package is neither. It is registered
+  # because it has declared itself in the platform's own contract language — a
+  # `cafaye.yml` at its root, valid against core's frozen schema, `caf
+  # contract lint: OK` — and that is the same ground `caf` is registered on. A
+  # repository that has declared itself is in the fleet whether or not anything
+  # routes to it, and this file describes the fleet.
+  #
+  # WHY `cli` AND NOT `api`, which is the question this row exists to answer.
+  # cafaye-ts ships SIX OpenAPI documents — one per service that has one,
+  # vendored into specs/ with their provenance in specs/index.json — so the
+  # obvious mistake is to read the six documents as six surfaces and file it
+  # `api`. It serves nothing, and its own manifest says so at length: `exposes`
+  # is absent because "it does not serve traffic, does not receive it, and
+  # does not publish events. It is a package other things install", and
+  # reaching for `exposes.api: specs/` "would say this package SERVES an API
+  # described by those documents. It serves nothing. The documents are vendored
+  # INPUTS, and the provenance record for an input is not a contract surface."
+  #
+  # So the manifest proves nothing: no `exposes.api`, no `exposes.events`, no
+  # `consumes` — serves_http, publishes_events and subscribes are all false,
+  # and no row of the `kind` table in src/registry.rs reaches a manifest in
+  # that state. `worker` and `both` are refused by `check_kind`. That leaves
+  # the two curated values, and the other one is guard's: a service that serves
+  # HTTP and has not written its document yet. Saying `api` here would be a
+  # falsehood, and a falsehood a client acts on — `kind: api` is a routing
+  # instruction. `cli` is the honest value: installed rather than brought up,
+  # routed to by nobody, and that is a true description of an npm package.
+  #
+  # basePath: null, and the derivation is the same one caf's row uses. There is
+  # no `exposes.api`, so there is no document to read a prefix from, and
+  # `check_kind` refuses a non-null basePath on a `cli`, so this cannot drift.
+  # Not "/v1" by analogy with the entries above, and not "/v1" because six
+  # documents are vendored in specs/: a base path is derived from a document a
+  # service PUBLISHES, and these are documents somebody else published and this
+  # package copied at a recorded commit. Reading one of them is the
+  # longest-common-prefix guess core's rule exists to prevent, and they are six
+  # different documents.
+  #
+  # > DECISION NEEDED (pantry-06, D1): the vocabulary has no word for "a
+  # > library other programs import", and this row is where that costs
+  # > something. MD1 added `cli` for a binary — installed AND RUN — and a
+  # > package with no `bin` and no entry point is imported rather than run, so
+  # > `cli` is the least wrong value the schema permits and it is still an
+  # > overstatement. The price is paid a few rows below, in the exclusion
+  # > record: `cafaye-rb` is this repository in Ruby — same shape, same absence
+  # > — and it is held back as `library`. Two client libraries, two answers, in
+  # > one file, and a caller asking what to install for a TypeScript service
+  # > gets an answer while the same question in Ruby gets nothing.
+  # > Alternatives: (a) read `cli` as "an artifact a person installs, run or
+  # > imported", and move `cafaye-rb` out of the exclusion record into
+  # > `services/` as a second `cli`. The boundary becomes "is it published as
+  # > an installable artifact", and `docs` stays a `library` because a
+  # > documentation site is installed by nothing; (b) keep `cli` narrow — a
+  # > repository with an executable entry point — and move this entry to
+  # > `blockedBy: library` beside `cafaye-rb`. One answer for one shape, at the
+  # > cost of a published client being invisible to `?kind=`, and of a registry
+  # > that cannot answer the only question a TypeScript developer has; (c) a
+  # > core amendment — an affordance distinguishing a library from a binary, so
+  # > the value is derived rather than curated. That is the same core gap
+  # > caf's row below names, now with a fourth repository asking for the word
+  # > rather than three.
+  # > Recommended: (a), then (c). (a) is one row and one reworded value, it
+  # > makes `kind` mean one thing again, and it is the only option under which
+  # > the registry answers the question its clients actually ask.
+  # > (b) is the honest reading of today's vocabulary, and this packet was told
+  # > not to take it, so the inconsistency above is RECORDED rather than
+  # > resolved: no row in the exclusion record was changed. Cost of flipping
+  # > this row to (b): move one directory, delete one row, and `?kind=cli`
+  # > returns `[caf]` again. Cost of flipping `cafaye-rb` to (a): one directory,
+  # > one index row, and that row's `library` tripwire stops applying to it —
+  # > which is correct, because a registered entry is checked by four drift
+  # > tests instead of one.
+  cafaye-ts:
+    kind: cli
+    basePath: null
+
 # Official cafaye repositories that are deliberately NOT registered, each with
 # the reason and the command that proves it. This is a curation record, not a
 # queue: an entry here means the repository is known, checked, and held back

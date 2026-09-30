@@ -42,7 +42,15 @@ fn no_filter_returns_every_official_service_sorted_by_name() {
     assert_eq!(
         names,
         [
-            "billing", "caf", "courier", "darkroom", "guard", "identity", "muse", "pantry"
+            "billing",
+            "caf",
+            "cafaye-ts",
+            "courier",
+            "darkroom",
+            "guard",
+            "identity",
+            "muse",
+            "pantry"
         ]
     );
     // Sorted, not filesystem order: a directory walk is not a contract, and a
@@ -68,12 +76,15 @@ fn kind_filter_accepts_every_kind_in_the_vocabulary() {
                     "billing", "courier", "darkroom", "guard", "identity", "muse", "pantry"
                 ]
             ),
-            // The one binary, and the reason this arm exists. It is curated —
-            // nothing in caf's manifest can derive it — but unlike guard's it is
-            // not going to change: `cli` is what caf is, permanently, and a
-            // client that asked for `api` and got caf would have been told to
-            // route HTTP to a command.
-            ServiceKind::Cli => assert_eq!(matched, ["caf"]),
+            // The two artifacts a person installs, and the reason this arm
+            // exists. Both are curated — nothing in either manifest can derive
+            // the value — and neither is going to change: `cli` is what caf is,
+            // permanently, and a client that asked for `api` and got a binary
+            // would have been told to route HTTP to a command. cafaye-ts is the
+            // same shape for a different reason, and the gap that opens is named
+            // in `registry/index.yml`: a package other things import is not a
+            // process anyone runs, and the vocabulary has no word for that yet.
+            ServiceKind::Cli => assert_eq!(matched, ["caf", "cafaye-ts"]),
             // No official service is a pure worker or a hybrid today, and that is
             // a fact about the registry rather than a broken filter. courier is
             // the obvious worker candidate — it publishes five events and relays
@@ -102,7 +113,7 @@ fn language_filter_covers_every_language_the_manifest_schema_allows_for_a_servic
     let expected: &[(Language, &[&str])] = &[
         (Language::Go, &["caf", "identity"]),
         (Language::Ruby, &["billing"]),
-        (Language::Typescript, &["guard"]),
+        (Language::Typescript, &["cafaye-ts", "guard"]),
         (Language::Python, &["muse"]),
         // The one Elixir service. This list used to read `&[]` and was the
         // honest answer while courier's events were two-segment and its manifest
@@ -128,24 +139,44 @@ fn language_filter_covers_every_language_the_manifest_schema_allows_for_a_servic
 #[test]
 fn contract_filter_matches_by_range_intersection() {
     let cases: &[(&str, &[&str])] = &[
-        ("^0.2.0", &["billing", "caf", "darkroom", "muse", "pantry"]),
+        (
+            "^0.2.0",
+            &["billing", "caf", "cafaye-ts", "darkroom", "muse", "pantry"],
+        ),
         // courier joins identity and guard on ^0.1.0. Its own manifest records
         // that as unresolved — "`core: ^0.1.0` assumes core's first release is
         // 0.1.0" — and the registry records what the file says rather than what
         // the file hopes, exactly as it does for identity.
         ("^0.1.0", &["courier", "guard", "identity"]),
-        ("~0.2.0", &["billing", "caf", "darkroom", "muse", "pantry"]),
-        (">=0.2.0", &["billing", "caf", "darkroom", "muse", "pantry"]),
+        (
+            "~0.2.0",
+            &["billing", "caf", "cafaye-ts", "darkroom", "muse", "pantry"],
+        ),
+        (
+            ">=0.2.0",
+            &["billing", "caf", "cafaye-ts", "darkroom", "muse", "pantry"],
+        ),
         // An open floor from below every constraint matches everything: a
         // service on ^0.2.0 contains versions that are also at or above 0.1.0.
         (
             ">=0.1.0",
             &[
-                "billing", "caf", "courier", "darkroom", "guard", "identity", "muse", "pantry",
+                "billing",
+                "caf",
+                "cafaye-ts",
+                "courier",
+                "darkroom",
+                "guard",
+                "identity",
+                "muse",
+                "pantry",
             ],
         ),
         ("0.1.0", &["courier", "guard", "identity"]),
-        ("0.2.0", &["billing", "caf", "darkroom", "muse", "pantry"]),
+        (
+            "0.2.0",
+            &["billing", "caf", "cafaye-ts", "darkroom", "muse", "pantry"],
+        ),
         // A caret on a future minor intersects nothing on this platform yet.
         ("^0.3.0", &[]),
         ("^0.0.1", &[]),
@@ -186,10 +217,13 @@ fn two_filters_are_both_applied() {
     assert_eq!(names(each_alone), ["caf", "identity"]);
 
     let registry = registry();
-    let impossible = query(&[("language", "typescript"), ("contract", "^0.2.0")]);
+    let impossible = query(&[("language", "python"), ("contract", "^0.1.0")]);
     assert!(
         registry.query(&impossible).is_empty(),
-        "guard is on ^0.1.0, so language=typescript plus contract=^0.2.0 matches nothing"
+        "muse is the only python service and it is on ^0.2.0, so language=python plus \
+         contract=^0.1.0 matches nothing. This used to be language=typescript plus \
+         contract=^0.2.0 and stopped being empty when cafaye-ts registered: two filters \
+         are worth nothing if they cannot survive the next entry in the registry"
     );
 
     let three = query(&[
@@ -289,7 +323,7 @@ fn a_page_limit_slices_the_filtered_list_and_says_whether_more_is_left() {
     assert_eq!(page.items.len(), 2);
     assert_eq!(page.items[0].name(), "billing");
     assert_eq!(page.items[1].name(), "caf");
-    assert!(page.has_more, "two of eight returned means six are left");
+    assert!(page.has_more, "two of nine returned means seven are left");
     assert!(
         page.next_cursor.is_some(),
         "a caller needs somewhere to go next"
@@ -299,26 +333,36 @@ fn a_page_limit_slices_the_filtered_list_and_says_whether_more_is_left() {
     let page = registry.page(&filter, &second).expect("a page");
 
     assert_eq!(page.items.len(), 2);
-    assert_eq!(page.items[0].name(), "courier");
-    assert_eq!(page.items[1].name(), "darkroom");
+    assert_eq!(page.items[0].name(), "cafaye-ts");
+    assert_eq!(page.items[1].name(), "courier");
 
     let third = Page::new(2, page.next_cursor).expect("still a cursor pantry issued");
     let page = registry.page(&filter, &third).expect("a page");
 
     assert_eq!(page.items.len(), 2);
-    assert_eq!(page.items[0].name(), "guard");
-    assert_eq!(page.items[1].name(), "identity");
-    assert!(page.has_more, "six of eight returned means two are left");
+    assert_eq!(page.items[0].name(), "darkroom");
+    assert_eq!(page.items[1].name(), "guard");
+    assert!(page.has_more, "six of nine returned means three are left");
 
-    let fourth = Page::new(2, page.next_cursor).expect("the last cursor pantry issued");
+    let fourth = Page::new(2, page.next_cursor).expect("the fourth cursor pantry issued");
     let page = registry.page(&filter, &fourth).expect("a page");
 
     assert_eq!(page.items.len(), 2);
-    assert_eq!(page.items[0].name(), "muse");
-    assert_eq!(page.items[1].name(), "pantry");
+    assert_eq!(page.items[0].name(), "identity");
+    assert_eq!(page.items[1].name(), "muse");
+    assert!(page.has_more, "eight of nine returned means one is left");
+
+    // A short final page, which is what an odd length produces: the limit is a
+    // maximum, not a size. A caller that assumed two per page would ask for a
+    // fifth page and be told there is nothing there.
+    let fifth = Page::new(2, page.next_cursor).expect("the last cursor pantry issued");
+    let page = registry.page(&filter, &fifth).expect("a page");
+
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].name(), "pantry");
     assert!(
         !page.has_more,
-        "the list is eight long and all four pages are taken"
+        "the list is nine long and all five pages are taken"
     );
     assert_eq!(page.next_cursor, None);
 }

@@ -164,7 +164,7 @@ jobs:
     # and `an_unreadable_repository_is_neither_cloned_nor_registered` below is
     # what makes that move a decision rather than a forgetting.
     env:
-      CAFAYE_REPOS: core caf identity billing courier darkroom muse guard parlor kit docs
+      CAFAYE_REPOS: core caf cafaye-ts identity billing courier darkroom muse guard parlor kit docs
       CAFAYE_UNREADABLE: cafaye-rb
     steps:
       - uses: actions/checkout@v4
