@@ -1,0 +1,73 @@
+# cafaye.yml — the cafaye project manifest for courier.
+#
+# The schema is owned by cafaye/core, and core is pre-1.0, so this file is a
+# DRAFT written against core's current manifest conventions
+# (core/docs/manifest-conventions.md, core/schemas/cafaye.manifest.schema.json).
+# When core freezes the manifest spec, `caf init` regenerates and validates this
+# file and it stops being hand-maintained. Do not add fields core does not
+# define.
+#
+# UNRESOLVED, and deliberately not guessed here:
+#   - `core: ^0.1.0` assumes core's first release is 0.1.0. If it lands as 0.2.0
+#     this line is wrong and CI's pin will not resolve.
+#   - `exposes.api` now points at `openapi.yaml` (courier-03), which documents
+#     `/v1/webhook_endpoints`. The notification preferences routes are in the
+#     router and in the tests but NOT yet in that document, so the document is
+#     incomplete rather than wrong; a route that exists and is undocumented will
+#     be caught by the contract lint when it enforces that direction.
+#   - `consumes` is empty. courier is not subscribed to anything yet; when it
+#     starts reacting to identity or billing events this is the list, and every
+#     entry has to come with an idempotent consumer, because delivery is
+#     at-least-once (PLAN.md §3).
+
+name: courier
+description: cafaye courier — transactional email, notification preferences, and every outbound webhook.
+
+language: elixir
+core: ^0.1.0
+
+# courier serves HTTP traffic, so it declares a contract surface.
+#
+# The five event types below are core's, not this repository's: they are courier's
+# row in `core/docs/event-naming.md`, and core asserts that its catalog and its
+# example manifests agree in both directions. They are declared here so courier's
+# own manifest says the same thing core does.
+#
+# `email.delivered` is emitted: `Courier.Deliver` writes it to `outbox_events` in
+# the same transaction as the send and `Courier.Workers.ProcessOutboxWorker`
+# relays it; `Courier.EventsTest` checks this list against
+# `Courier.Events.types()`. The other four are declared and not yet emitted — a
+# catalog entry is a promise, not a claim. `email.bounced` and `email.complained`
+# need a provider webhook, which is a later packet.
+exposes:
+  # courier's first documented HTTP surface. Written to core's
+  # `docs/openapi-conventions.md`: `/v1` prefix, `info.version` present, problem+json
+  # for every non-2xx, cursor pagination, and the auth stated per operation.
+  api: openapi.yaml
+
+  # Three segments, always: `<service>.<entity>.<action>` (core/docs/event-naming.md
+  # §courier, and core's frozen `eventType` grammar). courier-01/02 shipped
+  # `email.delivered` and four siblings, which `caf contract lint` rejects; core
+  # records the same drift in its own docs. The spellings below are the conforming
+  # ones, and they are the names courier's `Courier.Events` catalog now uses too.
+  events:
+    - courier.email.queued
+    - courier.email.delivered
+    - courier.email.bounced
+    - courier.email.complained
+    - courier.notification.suppressed
+
+consumes: []
+
+# Other cafaye services. Empty: courier depends on postgres, not on a sibling
+# service, and the services that will depend on it depend the other way round.
+dependencies: []
+
+repository:
+  url: git@github.com:cafaye/courier.git
+  defaultBranch: master
+  visibility: public
+
+owner:
+  team: courier
+  contact: courier@cafaye.com

@@ -538,7 +538,7 @@ async fn readyz_reports_a_loaded_registry_and_refuses_an_unloaded_one() {
     assert_eq!(ready.body["status"], json!("ok"));
     assert_eq!(
         ready.body["services"],
-        json!(7),
+        json!(8),
         "readiness counts what it loaded"
     );
 

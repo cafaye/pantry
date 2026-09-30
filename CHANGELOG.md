@@ -14,18 +14,52 @@ bottom.
   row. `caf-03` rewrote that manifest into core's frozen shape, which made the
   exclusion record's "still the pre-core draft" reason false; the tripwire in
   `tests/schema.rs` failed the suite rather than letting the registry go stale.
-  It has now caught `darkroom` and `caf`, which is twice for a check added in
-  0.1.0.
+- **`courier` is registered.** `registry/services/courier/cafaye.yml` is a
+  byte-identical copy of courier's own manifest, and the exclusion row is gone.
+  `courier-03` renamed courier's five event types from `email.queued` and
+  siblings to `courier.email.queued` and siblings, which made the row's stated
+  reason — that two-segment types fail core's `eventType` pattern — false. The
+  tripwire has now caught `darkroom`, `caf` and `courier`: three firings, three
+  correct ones, for a check added in 0.1.0.
+- **A registry copy is now byte-checked, not just field-checked.** See the
+  decision below; this is the change that settles the comment-rot contradiction
+  and it applies to every copy from here on.
 
 ### Decisions worth the changelog
 
-- **The exclusion record was fixed in the data, not in the test.** caf's row
-  mixed one fact ("still the pre-core draft shape", now false) with one opinion
-  ("a CLI is not a service in the registry's sense"). The tempting fix was a
-  `…unless it's a CLI` branch in `every_exclusion_reason_is_still_true`, and
-  that is a weakening: the check would go on catching only the exclusions nobody
-  disputes. caf now publishes a valid manifest in the platform's own contract
-  language, so it is in the fleet whether or not anything routes to it.
+- **The exclusion record was fixed in the data, not in the test.** caf's and
+  courier's rows each mixed one fact with one opinion, and each fact was made
+  false by a packet in a different repository. The tempting fix was a
+  `…unless it's a CLI` or `…unless it's courier` branch in
+  `every_exclusion_reason_is_still_true`, and that is a weakening: the check
+  would go on catching only the exclusions nobody disputes. Both now publish a
+  valid manifest in the platform's own contract language, so both are in the
+  fleet whether or not anything routes to them.
+- **Registry copies are verbatim, comments included, and the drift test now
+  asserts it.** `AGENTS.md` said copies are kept "verbatim, including its
+  comments" while the drift test's own doc comment said "a comment-only edit
+  upstream is not drift". Both cannot have been true, and pantry-02 found the
+  proof: `registry/services/guard/cafaye.yml` was missing guard's entire
+  `guard-04` `DECISION NEEDED (REDIS_URL)` block, and the drift test passed,
+  because it compared parsed fields. **billing was stale the same way** and
+  nobody had reported it — pantry-02 checked guard and stopped.
+
+  The choice is verbatim. A stale comment in a registry copy is not cosmetic:
+  these files carry the `DECISION NEEDED` blocks that say *why* an entry looks
+  the way it does, and a copy that silently drops one answers a reviewer's
+  question wrongly — it makes a service with three open questions look settled.
+  The failure was silent, which is the worst kind; byte-equality turns it into a
+  red that names the file and the fix. The cost of the other choice is that the
+  weaker claim stays untested, which is how this contradiction survived two
+  packets in the first place.
+
+  So `tests/drift.rs` now asserts byte-equality for every entry, and both stale
+  copies are refreshed in the same commit. The prose in `AGENTS.md`, the
+  doc comment on the drift test and this entry all say the same thing now.
+  The one thing byte-equality gives up is tolerance of a pure comment edit
+  upstream, and the fix for that is `cp ../<service>/cafaye.yml
+  registry/services/<service>/cafaye.yml` — a mechanical step, not a judgement
+  call, and it is what the check's failure message says to run.
 - **`kind` for caf is curated, and the vocabulary has a gap.** caf's manifest
   omits `exposes` on purpose — "caf is a binary, not a service" — and declares no
   `consumes`, so nothing in it can derive a `kind`. `api` is the only value the
@@ -36,15 +70,37 @@ bottom.
   `registry/index.yml` proposes a fourth `kind` for binaries.
 - **`basePath` for caf is `null`.** It declares no `exposes.api` and its
   checkout publishes no OpenAPI document, so core's `/vN` rule has nothing to
-  read. `/v1` by analogy with the five api entries would be the
-  longest-common-prefix guess that rule exists to prevent.
+  read. `/v1` by analogy with the api entries would be the longest-common-prefix
+  guess that rule exists to prevent.
+- **`basePath` for courier is `/v1`, and its OpenAPI document is partial.**
+  courier-03 flagged that `openapi.yaml` covers `/v1/webhook_endpoints` only and
+  says so in its own header. That does not make the value a guess: every path the
+  document publishes is under `/v1`, and every non-probe route in courier's
+  router is under `/v1` as well, so the undocumented routes cannot move the
+  prefix. `tests/manifest.rs` pins the rule that decides it — a partial document
+  still yields a base path, a document with no `/vN` yields none, and a document
+  with two prefixes needs a decision rather than an average.
 
 ### Changed
 
 - **`?language=go` and the `^0.2.0` filter each gained a member.** caf is the
   second `go` repository in the registry, so those filters no longer return a
-  single service. No response shape changed: no field was added, removed or
-  renamed, so `info.version` stays at `1.0.0`.
+  single service.
+- **`?language=elixir` and `?contract=^0.1.0` gained a member too.** courier is
+  the first `elixir` repository and the third on `^0.1.0`. The `^0.1.0` group
+  matters to a caller: pre-1.0 a caret pins the minor, so a client asking
+  `?contract=^0.2.0` still does not get courier, and that is courier's manifest
+  saying `^0.1.0` and the registry recording it unchanged.
+- **`?language=elixir` is no longer an empty result.** It was a
+  `a_filter_that_matches_nothing_is_an_empty_list` case, and a registration
+  invalidated it. The replacement is `?kind=both` and
+  `?language=elixir&contract=^0.2.0` — still empty, and the second is now a
+  real pre-1.0 boundary check rather than an accident of courier being excluded.
+  A case that a registration can invalidate is still worth having; the fix is to
+  pick a genuinely empty question, not to delete it.
+- **No response shape changed.** No field was added, removed or renamed, so
+  `info.version` stays at `1.0.0` and no `caf pantry` client needs regenerating
+  for this packet.
 
 ## [0.1.0] — 2026-09-30
 

@@ -8,6 +8,8 @@ each of them.
 ```console
 $ curl -s localhost:8080/v1/services | jq '.data[].name'
 "billing"
+"caf"
+"courier"
 "darkroom"
 "guard"
 "identity"
@@ -121,8 +123,21 @@ checked against the manifest at load.
 ### `basePath`
 
 The `/vN` prefix every contract path in the service's OpenAPI document sits
-under — `/v1` for five of the seven entries, `null` for **guard** and **caf**,
+under — `/v1` for six of the eight entries, `null` for **guard** and **caf**,
 which publish no document for the rule to read.
+
+**A partial document is still a document.** courier's OpenAPI document covers
+`/v1/webhook_endpoints` only and says in its own header that the notification
+preferences routes are in the router and not in the file. That does not make
+`/v1` a guess: every path courier *publishes* is under `/v1`, and every
+non-probe route in courier's router is under `/v1` too, so the routes it has not
+documented yet cannot move the prefix. What pantry refuses to do is invent a
+prefix for a document that publishes none, or average two prefixes into one —
+both are refused, with the rule named, by
+`a_partial_openapi_document_still_yields_a_base_path_from_the_paths_it_publishes`
+in `tests/manifest.rs`. `basePath` is re-derived from the service's own file on
+every run, so the day courier documents a path under a second prefix this row
+fails rather than drifting.
 
 It is core's rule and not a pantry invention: `docs/openapi-conventions.md` says
 every path carries one, that the prefix *is* the API version, and that `caf
@@ -188,6 +203,7 @@ registry/
 └── services/
     ├── billing/cafaye.yml       # verbatim copies of each service's own manifest
     ├── caf/cafaye.yml
+    ├── courier/cafaye.yml
     ├── darkroom/cafaye.yml
     ├── guard/cafaye.yml
     ├── identity/cafaye.yml
@@ -240,26 +256,35 @@ the manifest contradicts.
 `registry/index.yml` carries an exclusion record: a known repository, a reason, a
 command that proves it, and a machine-checked `blockedBy` — `schema`,
 `no-manifest` or `not-a-service`. `tests/schema.rs` asserts each reason still
-holds, so the record is a tripwire in both directions: the day courier's events
-gain the three-segment prefix core requires, its row fails with *"now validates —
-register it"* instead of the registry quietly going stale.
+holds, so the record is a tripwire in one direction: the day courier's events
+gained the three-segment prefix core requires, its row failed with *"now
+validates — register it"* instead of the registry quietly going stale. courier-03
+renamed them, and this packet registered it.
 
-| repository | held back because |
-| --- | --- |
-| `courier` | its events are two-segment (`email.queued`); core v0.2 requires `<service>.<entity>.<action>`, so `caf contract lint` rejects it |
-| `parlor` | still the pre-core draft shape (`apiVersion`/`metadata`/`spec`); an app shell, not a platform service |
-| `kit` | carries no `cafaye.yml`; configuration only, and its own AGENTS.md says "not a CLI, a package, or a service" |
-| `core` | `language: spec` — a specification, not a service. `Registry::load` refuses any `spec` manifest, so this stays true if someone copies one in |
+| repository | held back because | re-verified against the checkout on |
+| --- | --- | --- |
+| `parlor` | still the pre-core draft shape (`apiVersion: cafaye/v0-draft`, `metadata`/`spec`); an app shell, not a platform service. `caf contract lint`: `is missing required fields ["name", "language", "core", "repository", "owner"]` | 2026-09-30 (pantry-03) |
+| `kit` | carries no `cafaye.yml`; configuration only, and its own AGENTS.md says "not a CLI, a package, or a service" | 2026-09-30 (pantry-03) |
+| `core` | `language: spec` — a specification, not a service. `Registry::load` refuses any `spec` manifest, so this stays true if someone copies one in. `caf contract lint`: `OK` | 2026-09-30 (pantry-03) |
+
+### A green run does not mean this table is accurate
+
+`every_exclusion_reason_is_still_true` reports exclusions that have gone
+**stale**. It says nothing about whether the three reasons still **hold**. Those
+are different questions and only one of them is machine-checked, so a green run
+is not evidence that this list is right — it is a reason to go and read the
+three checkouts. That has now been necessary on three consecutive packets
+(darkroom, caf, courier), and each time it was: every one of those exclusions
+had a reason that another repository's packet made false.
 
 **The record is not a queue, and leaving it is not a way to avoid a decision.**
-`caf` sat in this list for one packet with two reasons — one of them a fact and
-one of them an opinion — and when `caf-03` made the fact false the tripwire
-failed the suite. The fix was to register it. The alternative, teaching
-`every_exclusion_reason_is_still_true` that a CLI is exempt, would have turned
-the check that caught `caf` into a check that catches only the cases nobody
-disagrees with, so the answer is fixed in the data and never in the test. A
-service that has declared itself in the platform's own contract language is in
-the fleet whether or not anything routes to it.
+`caf` and `courier` both sat in this list with one fact and one opinion each,
+and both left by being registered — never by teaching
+`every_exclusion_reason_is_still_true` that their case is exempt. An exemption
+branch is a check that has stopped checking, and a carve-out here would be a
+weakened check, which PLAN.md §1 forbids. A service that has declared itself in
+the platform's own contract language is in the fleet whether or not anything
+routes to it.
 
 ---
 

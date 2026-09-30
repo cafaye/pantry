@@ -280,7 +280,7 @@ fn a_page_limit_slices_the_filtered_list_and_says_whether_more_is_left() {
     assert_eq!(page.items.len(), 2);
     assert_eq!(page.items[0].name(), "billing");
     assert_eq!(page.items[1].name(), "caf");
-    assert!(page.has_more, "two of seven returned means five are left");
+    assert!(page.has_more, "two of eight returned means six are left");
     assert!(
         page.next_cursor.is_some(),
         "a caller needs somewhere to go next"
@@ -290,8 +290,8 @@ fn a_page_limit_slices_the_filtered_list_and_says_whether_more_is_left() {
     let page = registry.page(&filter, &second).expect("a page");
 
     assert_eq!(page.items.len(), 2);
-    assert_eq!(page.items[0].name(), "darkroom");
-    assert_eq!(page.items[1].name(), "guard");
+    assert_eq!(page.items[0].name(), "courier");
+    assert_eq!(page.items[1].name(), "darkroom");
 
     let third = Page::new(2, page.next_cursor).expect("still a cursor pantry issued");
     let page = registry.page(&filter, &third).expect("a page");
