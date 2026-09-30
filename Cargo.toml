@@ -1,0 +1,66 @@
+[package]
+name = "pantry"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "cafaye pantry — the official cafaye service registry"
+license = "MIT"
+repository = "ssh://git@github.com/cafaye/pantry.git"
+publish = false
+
+[lib]
+name = "pantry"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pantry"
+path = "src/main.rs"
+
+[dependencies]
+# --- HTTP ---
+axum = "0.8"
+# `rt-multi-thread` + `macros` for `#[tokio::main]`; `net` for the listener;
+# `signal` for the graceful shutdown that makes SIGTERM stop the listener
+# instead of dropping connections. Nothing here opens a socket except the
+# listener: the only I/O pantry does is read its own registry directory at
+# startup.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+
+# --- errors ---
+thiserror = "2"
+
+# --- serialization ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# serde_yaml is the parser core's manifests are written in. It is the crate
+# the Go CLI reaches for too (github.com/goccy/go-yaml on that side), so the
+# two agree about what a manifest is rather than each having a private idea.
+serde_yaml = "0.9"
+
+# --- the contract ---
+# pantry validates every registry entry against core's manifest schema at
+# startup, because `/readyz` is only honest if the registry was actually
+# checked. `default-features = false` drops jsonschema's `reqwest` fetchers:
+# the schema is vendored under schemas/, so the validator never needs the
+# network, and a dependency tree that could reach out is a dependency tree a
+# test can accidentally use.
+jsonschema = { version = "0.58", default-features = false }
+
+# --- ids, cursors, logs ---
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+# `tower::ServiceExt::oneshot` drives the router without binding a socket, so
+# an HTTP test is a function call rather than a network round trip. This is the
+# concrete reason no test in this repository can hit the network by accident.
+tower = { version = "0.5", features = ["util"] }
+# `#[tokio::test]` for the router tests. Same runtime the binary uses.
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

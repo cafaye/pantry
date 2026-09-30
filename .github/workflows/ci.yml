@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# PLAN.md §1: the gate runs under `set -o pipefail`, and a gate whose exit code
+# was not observed is treated as unrun, not as green.
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build:
+    name: build, test, clippy, fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --check
+
+      - name: build
+        run: cargo build --all-targets
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --no-fail-fast
+
+  # The drift tests need the other cafaye repositories. This workflow is a clone
+  # of pantry alone, so those tests report themselves as SKIPPED on stderr and
+  # say which directory would make them run. That is reported, not hidden — and
+  # the check is that nothing here is quietly green without saying so.
+  #
+  # The job that actually exercises them is a workspace checkout, and it is the
+  # one to add when the manager wants the drift test gating a merge:
+  #
+  #   - uses: actions/checkout@v4
+  #     with:
+  #       path: pantry
+  #       fetch-depth: 0
+  #   - run: git clone git@github.com:cafaye/core.git core   # one per service
+  #   - run: PANTRY_CAFAYE_ROOT=$PWD ./bin/prime
+  #
+  # A "SKIP" on stderr is a skip. Reading a green job as "the registry was
+  # verified against the real services" when it was not is the failure mode this
+  # comment exists to prevent.

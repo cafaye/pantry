@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# bin/prime — the gate. Everything that must pass before a commit lands.
+#
+#   ./bin/prime   fmt, build, clippy, test        (no network, no database)
+#
+# Green on a bare machine, with no cafaye sibling checkouts: the drift tests
+# report themselves as skipped on stderr and say exactly which directory would
+# make them run. That is deliberate — a gate that needs a whole workspace to
+# produce a red is a gate nobody runs.
+#
+# In the moon/cafaye workspace, the drift tests are the point of this
+# repository and they DO run:
+#
+#   PANTRY_CAFAYE_ROOT=/Users/kaka/Code/any/moon/cafaye ./bin/prime
+set -euo pipefail
+
+# The gate discipline from PLAN.md §1: a pipeline's exit code is the LAST
+# command's, so a failing suite read through a pipe looks like a pass. That is
+# exactly how a broken packet reached master once. Every command here runs
+# unpiped, and `set -e` is the whole reason this is a script and not a Makefile
+# target someone ran with `make -k`.
+set -o pipefail
+
+cd "$(dirname "$0")/.."
+
+step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
+
+step "cargo fmt --check"
+cargo fmt --check
+
+step "cargo build"
+cargo build --all-targets
+
+step "cargo clippy -D warnings"
+cargo clippy --all-targets -- -D warnings
+
+step "cargo test (no network, no database)"
+cargo test --no-fail-fast
+
+step "the manifest validates against core's schema"
+if [[ -f ../caf/go.mod ]]; then
+  # This repository's own manifest, and every registry entry. `contract lint`
+  # takes one path, so the two are two commands — and the paths are absolute
+  # because a worktree is not named `pantry`.
+  here="$PWD"
+  (cd ../caf && go run ./cmd/caf contract lint "$here/cafaye.yml")
+  (cd ../caf && go run ./cmd/caf contract lint "$here/registry/services")
+else
+  echo "skipped: ../caf is not a checkout here. Validate with:"
+  echo "  cd ../caf && go run ./cmd/caf contract lint $PWD/cafaye.yml"
+  echo "and every registry entry with:"
+  echo "  cd ../caf && go run ./cmd/caf contract lint $PWD/registry/services"
+fi
+
+step "ok"

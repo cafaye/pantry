@@ -1,0 +1,47 @@
+# cafaye.yml — the cafaye project manifest for pantry.
+#
+# Validated with:
+#
+#   cd ../caf && go run ./cmd/caf contract lint ../pantry/cafaye.yml
+#
+# The schema is owned by cafaye/core
+# (core/schemas/cafaye.manifest.schema.json) and pantry vendors a copy of it
+# under schemas/ so it can validate its own registry entries at startup. A
+# vendored copy is only safe because tests/schema.rs asserts the copy is
+# byte-identical to core's while a sibling checkout is reachable — see
+# AGENTS.md, "The vendored schema".
+name: pantry
+description: The cafaye service registry — what every official service is, what it exposes, and where to reach it.
+
+language: rust
+core: ^0.2.0
+
+exposes:
+  # The committed HTTP contract. It is the document `caf pantry` (and any other
+  # client) is generated from, and tests/api.rs asserts every route the router
+  # serves appears here and every path here is served — so the two cannot drift.
+  api: openapi/v1.yaml
+
+# pantry publishes no events and subscribes to none. It is a read model over
+# repository data, not a participant in the bus: delivery is at-least-once and
+# this service has no reaction to anyone else's fact. `exposes.events` and
+# `consumes` are omitted rather than left empty, per core's manifest
+# conventions.
+
+# pantry builds on no other cafaye service. It validates against core's
+# *schema*, which is a specification file rather than a service, and core's
+# manifest conventions say a dependency is a service this one calls — so
+# `dependencies` is omitted rather than filled with a spec repo. Writing
+# `dependencies: [{name: core}]` would tell `caf dev` to start something.
+dependencies: []
+
+repository:
+  # SSH only. An HTTPS remote for a cafaye repo is a policy violation
+  # (PLAN.md §1).
+  url: git@github.com:cafaye/pantry.git
+  defaultBranch: master
+  visibility: public
+
+owner:
+  team: pantry
+  contact: pantry@cafaye.com
