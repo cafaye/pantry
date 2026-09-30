@@ -149,7 +149,21 @@ that is hard to reverse. Mark it `> DECISION NEEDED (pantry):` in the affected
 file — what the choice is, the alternatives, your recommendation, and the cost of
 flipping — and report the open list. One number per decision, ever.
 
-Two are already recorded, both in `openapi/v1.yaml` and the README:
+Four are open. Two more are recorded in the files where the reader will hit them:
+
+3. **`kind` has no value for a binary.** `caf` is a CLI that publishes a valid
+   manifest. `api` is the only value the vocabulary and `check_kind` admit, and
+   it is a choice under constraint rather than a true answer. The full decision,
+   with alternatives and the cost of flipping, is on caf's row in
+   `registry/index.yml`. A fourth value (`cli`) is the recommended fix.
+4. **`blockedBy` has no value for "valid, and not a service".** `docs` and
+   `cafaye-rb` both carry valid manifests and neither is a service, so none of
+   `schema` / `no-manifest` / `not-a-service` describes them. They are recorded
+   in `UNDECIDED` in `tests/drift.rs::no_workspace_repository_is_missing_from_the_\
+   curation_lists`, with the decision marked on that constant, and a fourth value
+   (`library`) is the recommended fix.
+
+The other two are recorded in `openapi/v1.yaml` and the README:
 
 1. **`method_not_allowed` (405)** is not in core's reserved code list. Recorded
    here for a core amendment rather than invented quietly. The cost of flipping:

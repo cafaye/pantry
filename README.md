@@ -297,6 +297,22 @@ renamed them, and this packet registered it.
 | `kit` | carries no `cafaye.yml`; configuration only, and its own AGENTS.md says "not a CLI, a package, or a service" | 2026-09-30 (pantry-03) |
 | `core` | `language: spec` — a specification, not a service. `Registry::load` refuses any `spec` manifest, so this stays true if someone copies one in. `caf contract lint`: `OK` | 2026-09-30 (pantry-03) |
 
+### Two repositories the registry does not describe at all
+
+`docs` and `cafaye-rb` both carry a **valid** `cafaye.yml` on master, and neither
+is registered, excluded, or mentioned anywhere in this repository. They were
+invisible until `no_workspace_repository_is_missing_from_the_curation_lists` in
+`tests/drift.rs` walked the workspace and asked the question from the other
+direction — the existing coverage test checks the names it knows are handled, and
+a repository nobody added to that list is invisible to it.
+
+They are recorded in that test's `UNDECIDED` constant with a reason, which is the
+honest state: known, undecided, and now impossible to forget. **They are a
+`DECISION NEEDED (pantry)`, not a silent omission.** Neither `blockedBy` value
+fits — `docs` is not `schema`-invalid, not `no-manifest`, and not
+`not-a-service` (which means `language: spec`); a static site and a library are
+valid and are none of those three. The recommendation is a fourth value.
+
 ### A green run does not mean this table is accurate
 
 `every_exclusion_reason_is_still_true` reports exclusions that have gone
@@ -370,15 +386,59 @@ $ PANTRY_CAFAYE_ROOT=/Users/kaka/Code/any/moon/cafaye ./bin/prime
 drives the axum router in-process, and `jsonschema` is built with
 `default-features = false` so it has no HTTP fetcher to reach out with.
 
-### The drift test needs a workspace
+### The drift test needs a workspace, and CI does not have one
 
-`tests/drift.rs` reads the real services, which are sibling checkouts under
-`moon/cafaye/`. Run the suite from inside that directory and it finds them; set
-`PANTRY_CAFAYE_ROOT` to point at it from anywhere else. With neither, the drift
-tests print a `SKIP` on stderr naming the directory that would make them run and
-return. **A skip is reported, not hidden** — a green run without a workspace has
-verified pantry against itself, not against reality. CI runs the rest of the gate
-and says so in the job's comment.
+**Read this before reading a green badge on this repository.**
+
+`registry/` is a set of copies of other repositories' files. `tests/drift.rs` is
+the only thing in this repository that makes those copies true, and it works by
+reading the **live filesystem**: it looks for a cafaye workspace — a directory
+holding `core/`, `identity/` and the rest — next to this checkout, or at
+`PANTRY_CAFAYE_ROOT`. Those are sibling checkouts under `moon/cafaye/`.
+
+With a workspace, the eight drift tests run and compare. Without one, each prints
+`SKIP …` on stderr naming the directory that would make it run, and returns.
+A skip is reported, never hidden. The full gate:
+
+```console
+$ PANTRY_CAFAYE_ROOT=/Users/kaka/Code/any/moon/cafaye ./bin/prime
+```
+
+**What this repository's CI actually verifies.** `.github/workflows/ci.yml` runs
+on a clone of pantry alone. There is no cafaye workspace there, so the drift
+tests and two schema tests skip, and the consequence is this:
+
+> A green CI run on pantry has verified **pantry against itself, not against
+> reality.** It proves the registry is internally consistent, that every entry
+> satisfies core's vendored schema, and that the filter and paging contracts
+> hold. It proves **nothing** about whether any entry still says what its
+> service says.
+
+That is not a gap being minimised. It is a consequence of the design — the
+registry is verified against the real fleet, so the verification needs the real
+fleet — and it is the same property that made the exclusion tripwire fire three
+times correctly (darkroom, caf, courier). Every one of those three was found by
+running the gate **in the workspace**, not by CI.
+
+**The job that would fix it exists and is disabled.** `ci.yml` carries a
+`workspace-drift` job written out in full, `if: false`, which clones the eight
+service repositories beside a `pantry` checkout and runs the whole gate with
+`PANTRY_CAFAYE_ROOT` set. It is disabled rather than absent on purpose: an
+absent job is forgotten, a disabled one says on its face that the coverage does
+not exist yet. It cannot be enabled from this repository, for two reasons that
+are properties of the platform —
+
+- the cafaye repositories are private, so a hosted runner cannot clone them
+  without a deploy key pantry should not hold; and
+- kit's reusable workflow states that nothing in it reaches a cafaye service, so
+  it needs no secrets. That is a deliberate property of kit's shared CI.
+
+**What the manager has to decide:** how a CI runner authenticates to the private
+cafaye repositories, or whether a self-hosted runner with the workspace already
+on disk is acceptable. Either unblocks the job as written.
+
+Until then, the honest summary is one line: **CI proves pantry is well-formed;
+the fleet-facing check is `./bin/prime` in the workspace, run by hand.**
 
 ---
 
