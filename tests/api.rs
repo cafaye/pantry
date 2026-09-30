@@ -205,9 +205,33 @@ async fn a_registered_binary_serves_the_same_absent_surface_as_a_registered_gap(
     assert_eq!(response.body["dependencies"], json!([]));
     assert_eq!(
         response.body["kind"],
-        json!("api"),
-        "curated: the manifest declares no surface at all, so nothing can derive \
-         it, and `api` is the only value the vocabulary and `check_kind` admit"
+        json!("cli"),
+        "curated, and true: the manifest declares no surface at all, so nothing can derive \
+         this value, and `api` for a binary was the registry recording a falsehood"
+    );
+}
+
+/// The two entries whose `kind` cannot be derived, and the reason they are not
+/// the same value. Both manifests declare no contract surface, so both rows are
+/// curated — `guard` is a service waiting for its document and `caf` is a
+/// binary that will never have one, and nothing in either manifest tells those
+/// apart. This is the visible consequence of that: a client can now ask for
+/// `?kind=cli` and get caf, which it could not do before `cli` was a value.
+#[tokio::test]
+async fn the_two_curated_kinds_are_distinguishable_from_outside() {
+    let cli = call(app(), "/v1/services?kind=cli").await;
+    assert_eq!(cli.status, StatusCode::OK, "{cli}");
+    assert_eq!(names(&cli), ["caf"], "the one binary in the fleet");
+
+    let api = call(app(), "/v1/services?kind=api").await;
+    assert_eq!(api.status, StatusCode::OK, "{api}");
+    assert_eq!(
+        names(&api),
+        [
+            "billing", "courier", "darkroom", "guard", "identity", "muse", "pantry"
+        ],
+        "guard stays here: it serves HTTP and has not written the document yet, which is a \
+         gap rather than a false answer"
     );
 }
 
@@ -289,9 +313,14 @@ async fn every_filter_narrows_the_list() {
         (
             "?kind=api",
             &[
-                "billing", "caf", "courier", "darkroom", "guard", "identity", "muse", "pantry",
+                "billing", "courier", "darkroom", "guard", "identity", "muse", "pantry",
             ],
         ),
+        // caf is not in the `api` list any more. It was there because the
+        // vocabulary had no value for a binary, so the registry recorded the
+        // least-wrong answer; `?kind=cli` is the true one and a client that
+        // routed on `api` would have looked for HTTP on a command.
+        ("?kind=cli", &["caf"]),
         // Two `go` repositories, and they are not the same thing: identity
         // serves HTTP, caf declares no surface at all. `language` is read off
         // the manifest, so it does not care which.
@@ -689,6 +718,38 @@ async fn the_openapi_document_and_the_router_agree() {
         served, documented,
         "the router and openapi/v1.yaml disagree: every documented operation must be \
          served and every served route documented"
+    );
+}
+
+/// The `kind` vocabulary is written in three places — `src/registry.rs`,
+/// `openapi/v1.yaml` and `README.md` — and the path a value takes through all
+/// three is short enough for one of them to be forgotten. The document is the
+/// one that matters most: it is what `caf gen` reads, so a value the enum does
+/// not carry becomes an unknown string in a generated client rather than a
+/// compile error at the point where pantry serves it.
+#[tokio::test]
+async fn the_documented_kind_vocabulary_is_the_vocabulary_that_is_served() {
+    let document: Value =
+        serde_yaml::from_str(&std::fs::read_to_string("openapi/v1.yaml").expect("openapi/v1.yaml"))
+            .expect("the document is YAML");
+
+    let documented: Vec<String> = document["components"]["schemas"]["ServiceKind"]["enum"]
+        .as_array()
+        .expect("ServiceKind is an enum in the document")
+        .iter()
+        .map(|value| value.as_str().expect("a string value").to_string())
+        .collect();
+
+    let served: Vec<String> = pantry::registry::ServiceKind::all()
+        .iter()
+        .map(|kind| kind.to_string())
+        .collect();
+
+    assert_eq!(
+        served, documented,
+        "ServiceKind in openapi/v1.yaml and ServiceKind in src/registry.rs are the same \
+         vocabulary written twice. A value added to one and not the other is a client that \
+         cannot read a response pantry serves — and the enum is what `caf gen` generates from"
     );
 }
 

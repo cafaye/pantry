@@ -25,7 +25,13 @@ openapi: 3.1.0
 
 info:
   title: cafaye pantry
-  version: 1.0.0
+  # 1.1.0: `cli` is added to the `kind` enum and to the `?kind=` vocabulary.
+  # A Minor bump under the versioning table at the bottom of CHANGELOG.md —
+  # "breaking change to a response, a filter or a code" — because a client
+  # generated from 1.0.0 switches on `kind` exhaustively and now has a value it
+  # has not handled. It is the right kind of break: the old vocabulary could not
+  # express `caf`, so the registry was publishing `api` for a binary.
+  version: 1.1.0
   summary: The cafaye service registry.
   description: |
     `pantry` is what a cafaye service *is*: its identity, the contract it
@@ -100,7 +106,11 @@ paths:
           description: |
             Narrow to services of one kind. `api` serves HTTP and consumes
             nothing, `worker` has no declared HTTP surface and does event work,
-            `both` serves HTTP and consumes events.
+            `both` serves HTTP and consumes events, and `cli` is a binary —
+            installed and run rather than brought up and routed to. `api` and
+            `cli` are also the two curated values: a service whose manifest
+            declares no contract surface is one of those two by a recorded
+            judgement rather than by derivation.
           schema:
             $ref: '#/components/schemas/ServiceKind'
         - name: language
@@ -463,14 +473,26 @@ components:
 
     ServiceKind:
       type: string
-      enum: [api, worker, both]
+      enum: [api, worker, both, cli]
       description: |
         | manifest says | kind |
         | --- | --- |
         | `exposes.api` declared, no `consumes` | `api` |
         | `exposes.api` declared and `consumes` non-empty | `both` |
         | no `exposes.api`, some event work | `worker` |
-        | no contract surface at all | curated |
+        | no contract surface, and the repository serves HTTP | `api` |
+        | no contract surface, and the repository is a binary | `cli` |
+
+        The last two rows are **curated**, not derived, and they are the only
+        curated values. A manifest that declares no contract surface cannot say
+        which one it is: `guard` (a gateway whose OpenAPI document has not been
+        written yet) and `caf` (a binary) declare the same absence of surface,
+        and `language` names a toolchain rather than a shape. `cafaye-rb` — a
+        gem, not a registry entry — has the same shape a third time.
+
+        A client that routes or deploys by `kind` should branch on it rather
+        than assume every entry serves HTTP: `cli` is an entry `caf dev`
+        installs and nobody routes to.
 
     Language:
       type: string

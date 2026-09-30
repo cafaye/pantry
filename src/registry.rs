@@ -130,33 +130,63 @@ impl ServiceEntry {
 /// What a service *is*, as a thing `caf dev` has to bring up and `guard` has to
 /// route to.
 ///
-/// The vocabulary is three values and one derivation, and it is derived from
-/// the manifest wherever the manifest can speak:
+/// Three values are derived from the manifest, and derived wherever the manifest
+/// can speak:
 ///
-/// | manifest says                       | kind    |
-/// | ----------------------------------- | ------- |
-/// | `exposes.api`                       | `api`   |
-/// | `exposes.api` and a non-empty `consumes` | `both`  |
-/// | no `exposes.api`, some event work   | `worker`|
-/// | nothing at all                      | curated |
+/// | manifest says                            | kind     |
+/// | ---------------------------------------- | -------- |
+/// | `exposes.api`, empty `consumes`          | `api`    |
+/// | `exposes.api` and a non-empty `consumes` | `both`   |
+/// | no `exposes.api`, some event work        | `worker` |
 ///
-/// The last row is the honest gap. A service that declares no contract surface
-/// at all — guard and caf today, each for its own recorded reason — cannot be
-/// classified from its manifest, so the registry records it and [`check_kind`]
-/// makes sure that answer stops being right the moment the manifest becomes
-/// decisive. Two curated values in the whole registry, with a test that would
-/// catch either being wrong.
+/// The fourth row is a manifest that declares nothing, and there the vocabulary
+/// is **two curated values** — `api` and `cli` — because that is the honest
+/// count and one of them is not derivable at all:
+///
+/// | manifest says | kind | who says so |
+/// | ------------- | ---- | ----------- |
+/// | nothing, and the repository serves HTTP | `api` | a person, in `registry/index.yml`. guard: a gateway whose OpenAPI document has not been written yet. |
+/// | nothing, and the repository is a binary | `cli` | a person, in `registry/index.yml`. caf: "caf is a binary, not a service: it exposes no HTTP surface and publishes no events." |
+///
+/// **Why curation and not derivation.** A manifest that declares no contract
+/// surface has no way to say what it is. core's conventions (rule 3, "The rules
+/// the schema cannot state") say such a repository "is a library or a spec
+/// repo" — but neither of the two entries that match the shape is either, and
+/// the manifests do not differ: both declare no `exposes`, both declare an empty
+/// `consumes`, and `language` names a toolchain, not a shape. Propose a
+/// derivation anyway — "a compiled language and no surface is a CLI" — and it
+/// calls guard a binary and, since `BlockedBy::Library` arrived, cafaye-rb one
+/// too. Three repositories, one rule, two wrong answers. The distinction is
+/// real and it is not in the manifest, so the registry records the judgement and
+/// [`check_kind`] holds it honest in both directions: for a manifest with no
+/// surface **only** these two are admitted, and a `cli` that grows a document
+/// fails the load.
+///
+/// The cost of this row is the cost of every curated fact in the registry: a
+/// human said so, and a test is the only thing that can notice them being wrong.
+/// There is one of those tests, `tests/kind.rs`, and it is this comment's
+/// reason for being specific about which value is which.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceKind {
     Api,
     Worker,
     Both,
+    /// A binary: installed and run rather than brought up and routed to. `caf`
+    /// is the one in the fleet, and it is `api` on the wire nowhere — it was,
+    /// before this variant existed, which is a value the vocabulary offered for
+    /// a command and which a client reading it would have taken literally.
+    Cli,
 }
 
 impl ServiceKind {
     pub fn all() -> &'static [ServiceKind] {
-        &[ServiceKind::Api, ServiceKind::Worker, ServiceKind::Both]
+        &[
+            ServiceKind::Api,
+            ServiceKind::Worker,
+            ServiceKind::Both,
+            ServiceKind::Cli,
+        ]
     }
 }
 
@@ -166,6 +196,7 @@ impl std::fmt::Display for ServiceKind {
             ServiceKind::Api => "api",
             ServiceKind::Worker => "worker",
             ServiceKind::Both => "both",
+            ServiceKind::Cli => "cli",
         };
         f.write_str(text)
     }
@@ -216,6 +247,24 @@ pub enum BlockedBy {
     /// The manifest validates, but the repository is not a service:
     /// `language: spec`.
     NotAService,
+    /// The manifest validates and declares no contract surface at all, and the
+    /// repository is something a client depends on rather than something it
+    /// brings up: a library, a gem, a documentation site.
+    ///
+    /// The fourth value exists because `NotAService` cannot be stretched to
+    /// cover this case. It means `language: spec`, which is a fact core's schema
+    /// states and `every_exclusion_reason_is_still_true` can check; a gem is
+    /// `language: ruby` and a Starlight site is `language: typescript`, and both
+    /// record the judgement in their own files. What the two share is the shape
+    /// — no `exposes`, no `consumes` — and the shape is not the fact. A service
+    /// with the same shape is guard, which is registered.
+    ///
+    /// So this value says what `spec` cannot: **not something `caf dev` brings
+    /// up.** Registration is a claim about starting a process; a documentation
+    /// site and a shared gem are not processes anyone starts, and listing them
+    /// beside the services would make `kind` mean two different things in one
+    /// column.
+    Library,
 }
 
 /// The loaded registry. Immutable once loaded, which is what lets a request
@@ -444,6 +493,13 @@ fn entry_for(
 
 /// The kind rules from the [`ServiceKind`] table, as a check rather than as
 /// documentation. Called once per entry at load.
+///
+/// Every arm is exhaustive over the manifest's surface, because a value this
+/// function does not name is a value it accepts: `both` was admitted here for a
+/// manifest with no surface for three releases, and the only thing that rejected
+/// it was a test in another file. The curated arm admits exactly two values and
+/// says what they are, so a fifth value in the enum cannot be added without
+/// somebody deciding what it means for a manifest that says nothing.
 fn check_kind(entry: &ServiceEntry) -> Result<(), RegistryError> {
     let name = entry.name().to_string();
     let serves = entry.serves_http();
@@ -462,10 +518,25 @@ fn check_kind(entry: &ServiceEntry) -> Result<(), RegistryError> {
             entry.kind
         )));
     }
-    if !serves && !works && entry.kind == ServiceKind::Worker {
+    if !serves && !works && !matches!(entry.kind, ServiceKind::Api | ServiceKind::Cli) {
         return Err(RegistryError::Invariant(format!(
-            "{name} declares no contract surface at all, which is neither an api nor a \
-             worker; its kind must be curated as `api`"
+            "{name} declares no contract surface at all, so its kind is curated and the only \
+             two curated values are `api` — a service that serves HTTP and has not published \
+             its document yet, which is guard — and `cli` — a binary, which is caf. Not \
+             `{}`: there is no manifest fact here for it to be.",
+            entry.kind
+        )));
+    }
+    // The reverse of the arm above, and the reason `cli` is checked against more
+    // than its manifest: a binary serves no path, so a base path on its row is
+    // a prefix nobody published. Every other entry's `basePath` is derived from
+    // a document, so this value cannot be derived from one — it can only be
+    // invented, and `tests/drift.rs` would then have nothing to compare it to.
+    if entry.kind == ServiceKind::Cli && entry.base_path.is_some() {
+        return Err(RegistryError::Invariant(format!(
+            "{name} is a `cli`, which publishes no OpenAPI document, so its basePath must be \
+             null: {:?} is a path a binary does not serve",
+            entry.base_path
         )));
     }
 

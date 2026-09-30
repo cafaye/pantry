@@ -111,7 +111,10 @@ services:
   # curated rather than derived — it is the one fact in this file a manifest
   # cannot currently speak for. src/registry.rs enforces the rest: as soon as
   # guard declares `exposes.api`, this entry must say `api` or `both`, and the
-  # moment it says `worker` for a manifest with no event surface the load fails.
+  # moment it says `worker` or `cli` for a manifest with no event surface the
+  # load fails. `api` and `cli` are the two curated values, and guard's is
+  # `api` because guard is a gateway, not a binary — see caf's row below for why
+  # the manifest cannot say so and tests/kind.rs for what holds it there.
   # basePath: null — no committed OpenAPI document, so no prefix to name.
   guard:
     kind: api
@@ -124,28 +127,43 @@ services:
   # the file valid; the exclusion record said "register it" and the tripwire
   # tests/schema.rs:every_exclusion_reason_is_still_true said so out loud.)
   #
-  # kind: api, and it is CURATED — the second curated entry, after guard, for
+  # kind: cli, and it is CURATED — the second curated entry, after guard, for
   # the same structural reason. caf's manifest omits `exposes` entirely and says
   # why in its own words: "caf is a binary, not a service: it exposes no HTTP
   # surface and publishes no events". It declares no `consumes` either, so
-  # serves_http, publishes and subscribes are all false, and the `kind` table in
-  # src/registry.rs has no row for that: a service that declares nothing cannot
-  # be classified from its manifest. `api` is what the vocabulary admits —
-  # `worker` is refused by check_kind ("declares no contract surface at all")
-  # and `both` is refused by tests/drift.rs, which requires a real api surface
-  # and a real subscription — so this value is a choice under constraint, not a
-  # derivation, and the difference is recorded rather than papered over.
-  # > DECISION NEEDED (pantry): `kind` has no value for "a binary". The three
-  # > values describe things `caf dev` brings up and `guard` routes to, and a CLI
-  # > is neither. `api` is the least-wrong of the three, not a true answer, and a
-  # > client that reads `kind: api` and tries to route to caf will find a binary
-  # > with no HTTP surface. Alternatives: (a) a fourth value (`cli`), which is a
-  # > vocabulary change to `ServiceKind`, to `openapi/v1.yaml` and to `?kind=`;
-  # > (b) leave it as `api` and document it, which is what this row does.
-  # > Recommended: (a) — the vocabulary should be able to say what a manifest
-  # > proves, and "I am a binary" is something this manifest proves outright.
-  # > Cost of flipping: one enum variant, one enum in openapi/v1.yaml, and
-  # > check_kind's curated branch, which today hardcodes `api`.
+  # serves_http, publishes and subscribes are all false and no row of the `kind`
+  # table in src/registry.rs reaches it. That is why this value is curated
+  # rather than derived, and it is the same reason guard's is: nothing in the
+  # manifest distinguishes a binary from a service whose document is unwritten.
+  #
+  # It was `api` before `cli` existed, which is the kind of answer this file
+  # exists to stop recording: a client reading `kind: api` and routing to caf
+  # finds a binary with no HTTP surface. `api` was admitted for want of a right
+  # answer, not because it was one.
+  #
+  # > DECISION NEEDED (pantry): core's manifest vocabulary has no way to say
+  # > "I am a binary", so `cli` stays curated and a person has to say it.
+  # > core/docs/manifest-conventions.md rule 3 says "a repository with no
+  # > `exposes` is a library or a spec repo" — and caf is neither. The schema
+  # > closes with `additionalProperties: false` and `language` is a toolchain,
+  # > so nothing in the manifest can carry the fact. That is the same gap
+  # > `docs-01` and `cafaye-rb-01` each record about their own `language`
+  # > value, seen from the other side: two repositories asking core for a word
+  # > it does not have, and this row is the third asking.
+  # > Alternatives: (a) a core amendment — an affordance that distinguishes a
+  # > binary (a `binary: true` key, a `language` value, or a `kind` enum) — so
+  # > that `cli` is derived like `api` and `worker` are, and this row becomes a
+  # > consequence rather than a judgement; (b) leave `cli` curated, which is
+  # > what this row does, and accept that the value is a human's statement
+  # > checked only by tests/kind.rs.
+  # > Recommended: (a), for the same reason MD1 ratified `cli` at all — a
+  # > vocabulary that cannot say what a manifest proves will be worked around
+  # > indefinitely, and three repositories working around it is the beginning
+  # > of that. It is a core packet, not this one, and core is read-only from
+  # > here.
+  # > Cost of flipping (b -> a): one arm in src/registry.rs (the curated set
+  # > drops back to `api` where the new core affordance is present), one row,
+  # > and no change to any value on the wire.
   # basePath: null — no `exposes.api` and no OpenAPI document anywhere in the caf
   # checkout, so there is no `/vN` prefix to name. Not `/v1` by analogy with the
   # five entries above: a base path is derived from a document that exists, and
@@ -153,9 +171,11 @@ services:
   # longest-common-prefix guess core's rule exists to prevent. The same is true of
   # courier's row, and there the document is partial rather than absent — which
   # is a different thing, and `a_partial_openapi_document_…` in tests/manifest.rs
-  # is what keeps it one.
+  # is what keeps it one. `check_kind` now refuses a non-null basePath on a
+  # `cli` for the same reason, so this row cannot drift without failing the
+  # load.
   caf:
-    kind: api
+    kind: cli
     basePath: null
 
 # Official cafaye repositories that are deliberately NOT registered, each with
@@ -167,7 +187,7 @@ services:
 # prose. tests/schema.rs asserts the stated reason still holds, which makes the
 # list a tripwire in both directions: an entry that starts validating fails the
 # suite with "register it", and a reason that stops being true fails too. The
-# three values:
+# four values:
 #
 #   schema       — the repository's cafaye.yml does not validate against core's
 #                  schema. Registering it would put a service in the registry
@@ -177,6 +197,17 @@ services:
 #                  `language: spec`, which core's schema defines as
 #                  "specification-only repositories". Nothing routes to a spec
 #                  repo and no manifest declares a dependency on one.
+#   library      — the manifest validates and declares no contract surface at
+#                  all, and the repository is something a client DEPENDS ON
+#                  rather than something it brings up: a gem, a documentation
+#                  site. `language: spec` is only one way of not being a service,
+#                  and this value is the other. See the two rows at the bottom.
+#
+# `library` exists because the three above had no honest row for two real
+# repositories, and the alternative was not a fourth value — it was teaching the
+# drift test that libraries are exempt. That is an exemption branch in a check
+# that has caught three real problems, and PLAN.md §1 forbids one. A vocabulary
+# is cheap; a check that can be made green by not checking is not.
 #
 # caf and courier WERE here, and how they left is the reason to trust the list.
 #
@@ -200,11 +231,13 @@ services:
 # them.
 #
 # WHAT A GREEN RUN DOES NOT TELL YOU. The tripwire only reports exclusions that
-# have gone STALE. It says nothing about the three rows below still being
+# have gone STALE. It says nothing about whether the five rows below still being
 # ACCURATE, so a green run is not a reason to believe this list — it is a reason
-# to re-read the three checkouts. This is the third packet to do that by hand
-# (darkroom, caf, courier), and each time it was necessary. Confirm each stated
-# reason against the checkout today, not against the last green run.
+# to re-read the five checkouts. Confirm each stated reason against the checkout
+# today, not against the last green run. This is the fourth packet to do that by
+# hand (darkroom, caf, courier, and this one), and each time it was necessary:
+# every one of those exclusions had a reason another repository's packet made
+# false.
 #
 # This is also the structural point of the whole file: pantry's tests read the
 # LIVE filesystem, so any merge anywhere in the fleet can invalidate this
@@ -243,4 +276,64 @@ excluded:
       copies a manifest into registry/services/.
     verify: "cd ../caf && go run ./cmd/caf contract lint ../core/cafaye.yml"
     lint: "OK ../core/cafaye.yml — valid, and deliberately not a service"
+
+  # --- `library`: valid, and not something anyone brings up -----------------
+  #
+  # These two were invisible to this file until pantry-03's
+  # `no_workspace_repository_is_missing_from_the_curation_lists` walked the
+  # workspace and asked from the other direction. Both carry a valid manifest
+  # and neither was registered or excluded, so the registry claimed to describe
+  # the fleet while omitting two members of it. They sat in an `UNDECIDED`
+  # constant in that test while the question was open; MD2 answered it and the
+  # constant is gone, because a third list where a repository needs no reason is
+  # a check that can be made green by not checking.
+  #
+  # `library` says the one fact `not-a-service` cannot: **not something `caf dev`
+  # brings up.** Registration is a claim about starting a process and a prefix
+  # to route to; a documentation site and a shared gem are neither. Listing them
+  # as services would also have made `kind` mean two different things in one
+  # column — a `cli` is a binary a self-hoster installs, a library is a
+  # dependency, and neither has a base path.
+  #
+  # The tripwire on these rows is not weaker than the others, and that is the
+  # point: `library` goes stale in exactly one direction, and it is the
+  # direction that has fired three times. The moment a library's manifest
+  # declares `exposes` — an API to serve, events to publish — or a non-empty
+  # `consumes`, it is something the platform starts and routes to, so
+  # tests/schema.rs fails with "register it" and names the kind its manifest now
+  # derives.
+
+  - name: docs
+    blockedBy: library
+    reason: >-
+      The cafaye documentation site — Astro + Starlight, built to a directory of
+      static files. Its own manifest is explicit that `exposes` is absent "NOT
+      [a] gap in the way it is for billing or guard … this repository serves no
+      HTTP traffic of its own … The same shape a library takes", and
+      `consumes` is empty. A static site is depended on, not started: there is
+      no process for `caf dev` to bring up and no prefix for `guard` to route
+      to, and a reader who wants the documentation opens it. Its own
+      `> DECISION NEEDED (docs-01)` about `language: typescript` is a real open
+      question and stays open in that repository — this row is not a judgement
+      about it, and does not resolve it.
+    verify: "cd ../caf && go run ./cmd/caf contract lint ../docs/cafaye.yml"
+    lint: "OK ../docs/cafaye.yml — valid, and deliberately not a service"
+
+  - name: cafaye-rb
+    blockedBy: library
+    reason: >-
+      The shared Ruby gem: JWKS-backed token verification and the transactional
+      outbox writer, depended on by every cafaye Ruby service. core's schema
+      says to "omit `exposes` entirely for libraries", and this repository's
+      manifest does exactly that and says why — it is "not a service: it is not
+      deployed, serves no traffic and publishes no events". `caf deploy` for a
+      gem is a gem release, which is a different thing from starting a process
+      and not this registry's business. Its two `DECISION NEEDED` blocks (the
+      token claim contract, and core's "per-service implementations, never
+      shared code") are open questions in that repository and are not answered
+      here. NOTE: this repository is private, so the CI drift job cannot clone
+      it and this row's reason is verified by a developer's run of
+      tests/schema.rs rather than on every CI run — see .github/workflows/ci.yml.
+    verify: "cd ../caf && go run ./cmd/caf contract lint ../cafaye-rb/cafaye.yml"
+    lint: "OK ../cafaye-rb/cafaye.yml — valid, and deliberately not a service"
 
