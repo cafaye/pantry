@@ -1,0 +1,37 @@
+# Toolchain pins for this repository. pantry is a single static Rust binary.
+#
+#   mise install     # install the pinned toolchain
+#   mise run prime   # the gate
+#
+# kit/templates/mise.toml carries `rust = "1.84"` as an explicit PLACEHOLDER and
+# says so: "a service is pinned to the version it deploys on". The pin here is
+# 1.95, the toolchain this service builds and tests on, and the same number is
+# the RUST_VERSION build-arg in docker/Dockerfile. Three files, one number — a
+# worktree on a newer rustc than the image builds on produces a binary CI never
+# produced.
+[tools]
+rust = "1.95"
+
+[tasks.prime]
+description = "The gate: fmt, build, clippy, test"
+run = "./bin/prime"
+
+[tasks.build]
+description = "Build the pantry binary into ./target/debug"
+run = "cargo build"
+
+[tasks.run]
+description = "Serve the registry from ./registry on 0.0.0.0:8080"
+run = "cargo run"
+
+[tasks.fmt]
+description = "Fail if anything needs rustfmt"
+run = "cargo fmt --check"
+
+[tasks.lint]
+description = "Clippy, warnings are errors"
+run = "cargo clippy --all-targets -- -D warnings"
+
+[tasks.test]
+description = "The whole suite. No network, no database."
+run = "cargo test --no-fail-fast"

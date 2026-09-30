@@ -1,8 +1,13 @@
 # pantry — the official cafaye service set.
 #
-# This file is the registry's index. `services/` holds one verbatim copy of each
-# registered service's own `cafaye.yml`, and this file holds only the two facts
-# a manifest cannot state: `kind` and `basePath`. Everything else a consumer
+# This file is the registry's index. `services/<name>/cafaye.yml` holds one
+# verbatim copy of each registered service's own manifest, and this file holds
+# only the two facts a manifest cannot state: `kind` and `basePath`.
+#
+# (The directory-per-entry layout is not cosmetic: `caf contract lint` only lints
+# files named exactly `cafaye.yml`, so this shape means the platform's own CLI
+# validates every entry —
+# `cd ../caf && go run ./cmd/caf contract lint ../pantry/registry/services`.) Everything else a consumer
 # needs comes from the service's own file, so there is exactly one answer per
 # question and it is the one the service itself gave.
 #

@@ -312,16 +312,16 @@ fn every_official_registry_manifest_parses() {
     for path in paths {
         let parsed =
             manifest::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-        let stem = path
-            .file_stem()
-            .expect("a file name")
+        let directory = path
+            .parent()
+            .and_then(|service| service.file_name())
+            .expect("a service directory")
             .to_string_lossy()
-            .trim_end_matches(".cafaye")
             .to_string();
         assert_eq!(
             parsed.name,
-            stem,
-            "{} declares name {:?}, which does not match its file name",
+            directory,
+            "{} declares name {:?}, which does not match the directory it sits in",
             path.display(),
             parsed.name
         );

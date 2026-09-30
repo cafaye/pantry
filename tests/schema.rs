@@ -90,7 +90,7 @@ fn every_official_entry_validates_against_the_manifest_schema() {
             .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
         assert_eq!(
             manifest.name,
-            file_stem(path),
+            service_directory(path),
             "{} is named for its service",
             path.display()
         );
@@ -176,11 +176,14 @@ fn the_schema_accepts_core_s_own_valid_examples() {
     }
 }
 
-fn file_stem(path: &Path) -> String {
-    path.file_stem()
-        .expect("a file name")
+/// The service an entry is for: the directory `cafaye.yml` sits in. The layout
+/// is `services/<name>/cafaye.yml` because `caf contract lint` only lints files
+/// carrying that exact name.
+fn service_directory(path: &Path) -> String {
+    path.parent()
+        .and_then(|service| service.file_name())
+        .expect("a service directory")
         .to_string_lossy()
-        .trim_end_matches(".cafaye")
         .to_string()
 }
 

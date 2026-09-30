@@ -2,7 +2,7 @@
 //!
 //! ## Where the data lives
 //!
-//! `registry/services/<name>.cafaye.yml` is a verbatim copy of the service's own
+//! `registry/services/<name>/cafaye.yml` is a verbatim copy of the service's own
 //! manifest. `registry/index.yml` holds the two facts a manifest cannot carry
 //! and one record of what is deliberately not registered. That split is the
 //! whole design: everything a consumer needs is either in the service's own file
@@ -45,18 +45,25 @@ pub fn registry_dir() -> PathBuf {
 
 /// Every registered manifest, in a stable order.
 ///
+/// One directory per service, each holding a file named exactly `cafaye.yml`.
+/// That name is not cosmetic: `caf contract lint` only lints files called
+/// `cafaye.yml`, so this layout is what lets the platform's own CLI validate
+/// every registry entry — `caf contract lint registry/services` — instead of
+/// pantry's registry being checkable only by pantry. A flat
+/// `<name>.cafaye.yml` looks tidier and is a directory the canonical validator
+/// walks straight past.
+///
 /// Sorted because a directory walk's order is a filesystem detail and a client
-/// diffing two responses should see a stable list. `*.cafaye.yml` and nothing
-/// else, so a stray `.yml` in the directory is an error rather than an entry.
+/// diffing two responses should see a stable list.
 pub fn manifest_paths(dir: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir.join("services")) else {
+    let Ok(services) = std::fs::read_dir(dir.join("services")) else {
         return paths;
     };
 
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
-        if path.extension().is_some_and(|extension| extension == "yml") {
+    for entry in services.filter_map(Result::ok) {
+        let path = entry.path().join(MANIFEST_FILE_NAME);
+        if path.is_file() {
             paths.push(path);
         }
     }
@@ -64,6 +71,10 @@ pub fn manifest_paths(dir: &Path) -> Vec<PathBuf> {
     paths.sort();
     paths
 }
+
+/// The one name a manifest may have. A repository carries exactly one, at its
+/// root, and this is the file every tool in the platform looks for.
+const MANIFEST_FILE_NAME: &str = "cafaye.yml";
 
 /// One registered service: the manifest it publishes, plus the two facts a
 /// manifest cannot state.
@@ -216,7 +227,7 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// Reads `registry/index.yml` and `registry/services/*.cafaye.yml`, checks
+    /// Reads `registry/index.yml` and every `registry/services/*/cafaye.yml`, checks
     /// every entry against core's schema, and refuses to hand back a registry
     /// that is internally inconsistent.
     ///
@@ -264,8 +275,8 @@ impl Registry {
             if !entries.iter().any(|entry| entry.name() == name) {
                 return Err(RegistryError::Invariant(format!(
                     "registry/index.yml lists {name} but there is no \
-                     {}/{name}.cafaye.yml",
-                    dir.join("services").display()
+                     services/{name}/{MANIFEST_FILE_NAME} under {}",
+                    dir.display()
                 )));
             }
         }
@@ -363,15 +374,15 @@ fn entry_for(
     path: &Path,
 ) -> Result<ServiceEntry, RegistryError> {
     let expected_name = path
-        .file_name()
+        .parent()
+        .and_then(|service| service.file_name())
         .and_then(|name| name.to_str())
-        .map(|name| name.trim_end_matches(".cafaye.yml"))
         .unwrap_or_default();
 
     if manifest.name != expected_name {
         return Err(RegistryError::Invariant(format!(
-            "{} declares name {:?}, so the file is misnamed: a service's registry file is \
-             <name>.cafaye.yml, and a mismatch means one of the two is wrong",
+            "{} declares name {:?}, so its directory is misnamed: a registry entry is \
+             services/<name>/cafaye.yml, and a mismatch means one of the two is wrong",
             path.display(),
             manifest.name
         )));

@@ -105,7 +105,7 @@ fn every_registered_entry_matches_the_real_service_on_disk() {
             .unwrap_or_else(|error| panic!("{}/cafaye.yml: {error}", root.join(name).display()));
 
         // identity is the worked example: if someone adds a field to
-        // registry/services/identity.cafaye.yml that upstream does not have,
+        // registry/services/identity/cafaye.yml that upstream does not have,
         // this is the line that says so.
         assert_eq!(
             entry.manifest,
