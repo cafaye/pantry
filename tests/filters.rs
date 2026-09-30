@@ -65,9 +65,15 @@ fn kind_filter_accepts_every_kind_in_the_vocabulary() {
             ServiceKind::Api => assert_eq!(
                 matched,
                 [
-                    "billing", "caf", "courier", "darkroom", "guard", "identity", "muse", "pantry"
+                    "billing", "courier", "darkroom", "guard", "identity", "muse", "pantry"
                 ]
             ),
+            // The one binary, and the reason this arm exists. It is curated —
+            // nothing in caf's manifest can derive it — but unlike guard's it is
+            // not going to change: `cli` is what caf is, permanently, and a
+            // client that asked for `api` and got caf would have been told to
+            // route HTTP to a command.
+            ServiceKind::Cli => assert_eq!(matched, ["caf"]),
             // No official service is a pure worker or a hybrid today, and that is
             // a fact about the registry rather than a broken filter. courier is
             // the obvious worker candidate — it publishes five events and relays
@@ -226,7 +232,10 @@ fn an_empty_value_for_a_known_filter_is_rejected() {
 #[test]
 fn a_filter_value_outside_the_vocabulary_is_rejected_with_the_vocabulary() {
     let cases = [
-        ("kind", "database", &["api", "worker", "both"][..]),
+        // The list is what the 400 says was allowed, so it is the vocabulary in
+        // full. It used to be three values and `cli` was refused by name: the
+        // registry could not record what caf is, so caf was `api`.
+        ("kind", "database", &["api", "worker", "both", "cli"][..]),
         (
             "language",
             "cobol",

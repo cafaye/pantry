@@ -205,26 +205,55 @@ async fn a_registered_binary_serves_the_same_absent_surface_as_a_registered_gap(
     assert_eq!(response.body["dependencies"], json!([]));
     assert_eq!(
         response.body["kind"],
-        json!("api"),
-        "curated: the manifest declares no surface at all, so nothing can derive \
-         it, and `api` is the only value the vocabulary and `check_kind` admit"
+        json!("cli"),
+        "curated, and true: the manifest declares no surface at all, so nothing can derive \
+         this value, and `api` for a binary was the registry recording a falsehood"
     );
 }
 
+/// The two entries whose `kind` cannot be derived, and the reason they are not
+/// the same value. Both manifests declare no contract surface, so both rows are
+/// curated — `guard` is a service waiting for its document and `caf` is a
+/// binary that will never have one, and nothing in either manifest tells those
+/// apart. This is the visible consequence of that: a client can now ask for
+/// `?kind=cli` and get caf, which it could not do before `cli` was a value.
 #[tokio::test]
-async fn a_service_whose_openapi_document_is_partial_still_serves_a_derived_base_path() {
-    // courier-03 shipped `openapi.yaml` at the repository root — not under
-    // `openapi/` like every other entry — covering `/v1/webhook_endpoints` only,
-    // and says so in the document's own header. Two things follow for a client
-    // and both are pinned here.
-    //
-    // 1. `basePath` is still a derivation and not a guess: every path the
-    //    document *does* publish is under `/v1`, which is core's rule, and
-    //    `tests/drift.rs` re-derives it from courier's file on every run. What
-    //    the document omits is courier's gap to close, not pantry's to invent.
-    // 2. `exposes.api` is the path the manifest states, verbatim. pantry does
-    //    not normalise it to `openapi/v1.yaml` for symmetry, because a client
-    //    that reads this field and fetches it has to be right.
+async fn the_two_curated_kinds_are_distinguishable_from_outside() {
+    let cli = call(app(), "/v1/services?kind=cli").await;
+    assert_eq!(cli.status, StatusCode::OK, "{cli}");
+    assert_eq!(names(&cli), ["caf"], "the one binary in the fleet");
+
+    let api = call(app(), "/v1/services?kind=api").await;
+    assert_eq!(api.status, StatusCode::OK, "{api}");
+    assert_eq!(
+        names(&api),
+        [
+            "billing", "courier", "darkroom", "guard", "identity", "muse", "pantry"
+        ],
+        "guard stays here: it serves HTTP and has not written the document yet, which is a \
+         gap rather than a false answer"
+    );
+}
+
+/// The one entry whose OpenAPI document is not shaped like the others, and the
+/// part of that which is observable from outside: `exposes.api` is served
+/// **verbatim**. `openapi.yaml`, at the repository root, is what the manifest
+/// says and that is what a client reads and fetches. pantry does not normalise it
+/// to `openapi/v1.yaml` for symmetry, because a client that reads this field has
+/// to be right.
+///
+/// This test was named for courier's document being PARTIAL, and it was:
+/// courier-03 shipped it covering `/v1/webhook_endpoints` only, with the
+/// notification preferences routes in the router and not in the file. courier-05
+/// completed it to every route the router serves except the two probes. The rule
+/// that made it registrable then — a partial document still yields a base path
+/// from the paths it publishes — is unchanged and still pinned, by a synthetic
+/// document in `a_partial_openapi_document_still_yields_a_base_path_from_the_\
+/// paths_it_publishes` in `tests/manifest.rs`, because the next service to
+/// publish an incomplete document has to meet it too. What is pinned *here* is
+/// the path, which has not changed and is the part a client can get wrong.
+#[tokio::test]
+async fn a_document_at_the_repository_root_is_served_verbatim() {
     let response = call(app(), "/v1/services/courier").await;
 
     assert_eq!(response.status, StatusCode::OK, "{response}");
@@ -289,9 +318,14 @@ async fn every_filter_narrows_the_list() {
         (
             "?kind=api",
             &[
-                "billing", "caf", "courier", "darkroom", "guard", "identity", "muse", "pantry",
+                "billing", "courier", "darkroom", "guard", "identity", "muse", "pantry",
             ],
         ),
+        // caf is not in the `api` list any more. It was there because the
+        // vocabulary had no value for a binary, so the registry recorded the
+        // least-wrong answer; `?kind=cli` is the true one and a client that
+        // routed on `api` would have looked for HTTP on a command.
+        ("?kind=cli", &["caf"]),
         // Two `go` repositories, and they are not the same thing: identity
         // serves HTTP, caf declares no surface at all. `language` is read off
         // the manifest, so it does not care which.
@@ -689,6 +723,38 @@ async fn the_openapi_document_and_the_router_agree() {
         served, documented,
         "the router and openapi/v1.yaml disagree: every documented operation must be \
          served and every served route documented"
+    );
+}
+
+/// The `kind` vocabulary is written in three places — `src/registry.rs`,
+/// `openapi/v1.yaml` and `README.md` — and the path a value takes through all
+/// three is short enough for one of them to be forgotten. The document is the
+/// one that matters most: it is what `caf gen` reads, so a value the enum does
+/// not carry becomes an unknown string in a generated client rather than a
+/// compile error at the point where pantry serves it.
+#[tokio::test]
+async fn the_documented_kind_vocabulary_is_the_vocabulary_that_is_served() {
+    let document: Value =
+        serde_yaml::from_str(&std::fs::read_to_string("openapi/v1.yaml").expect("openapi/v1.yaml"))
+            .expect("the document is YAML");
+
+    let documented: Vec<String> = document["components"]["schemas"]["ServiceKind"]["enum"]
+        .as_array()
+        .expect("ServiceKind is an enum in the document")
+        .iter()
+        .map(|value| value.as_str().expect("a string value").to_string())
+        .collect();
+
+    let served: Vec<String> = pantry::registry::ServiceKind::all()
+        .iter()
+        .map(|kind| kind.to_string())
+        .collect();
+
+    assert_eq!(
+        served, documented,
+        "ServiceKind in openapi/v1.yaml and ServiceKind in src/registry.rs are the same \
+         vocabulary written twice. A value added to one and not the other is a client that \
+         cannot read a response pantry serves — and the enum is what `caf gen` generates from"
     );
 }
 

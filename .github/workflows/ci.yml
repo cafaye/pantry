@@ -100,6 +100,12 @@ jobs:
   #      change where the file lives, never to edit the copy to make the badge
   #      green. A copy quietly edited to match the thing it is supposed to
   #      check is a registry that cannot be audited.
+  #   4. One curated repository is not in this workspace at all: `cafaye-rb`,
+  #      which is private. Its exclusion row's reason is therefore checked by a
+  #      developer's run of tests/schema.rs and not by this job. The row is
+  #      still there, still machine-checked, and still fails when its manifest
+  #      stops looking like a library — but only where the checkout exists. See
+  #      CAFAYE_UNREADABLE below for the fact and tests/ci.rs for the check.
   #
   # WHAT A PANTRY-ONLY CLONE WOULD HAVE PROVEN, which is the failure mode this
   # job was disabled for and the one to reintroduce by accident: nothing about
@@ -129,12 +135,37 @@ jobs:
     # registry/index.yml curates a repository this list does not name, so adding
     # a service to the registry and forgetting this list is a red within a
     # minute. `docs` is here because the coverage test in tests/drift.rs asks
-    # about it by name. `cafaye-rb` is deliberately absent: it has no repository
-    # in the cafaye organisation yet, and a clone of a repository that does not
-    # exist is a permanent red. `pantry` is absent because it is the checkout
-    # above.
+    # about it by name. `pantry` is absent because it is the checkout above.
+    #
+    # CAFAYE_UNREADABLE is the repositories this job cannot clone, and why. It
+    # is a fact about the runner, not an exemption from coverage:
+    #
+    #   cafaye-rb is PRIVATE — `gh repo view cafaye/cafaye-rb` says PRIVATE, and
+    #   an anonymous `git clone https://github.com/cafaye/cafaye-rb.git` from a
+    #   hosted runner is a 404. That is why it is named here rather than left to
+    #   fail the clone step: a 404 reads as "this repository does not exist", not
+    #   as "this repository is not yours", and the second reading is the true
+    #   one. The credential that would fix it is exactly what pantry-04 deleted
+    #   from this workflow — a long-lived key in repository settings, for one
+    #   private repository that is a Ruby gem and not a service.
+    #
+    # What it costs, stated here rather than left to be inferred from a green
+    # badge: `every_exclusion_reason_is_still_true` cannot check the
+    # `cafaye-rb` exclusion row, because there is no checkout to read. That row's
+    # reason is verified by a developer's run of the test with
+    # PANTRY_CAFAYE_ROOT pointed at a real workspace, and by nothing else.
+    # `tests/schema.rs` prints a SKIP for that row saying exactly that, and
+    # `tests/ci.rs` keeps this list and registry/index.yml honest in both
+    # directions — so a repository that becomes readable is a red rather than a
+    # silent loss of coverage.
+    #
+    # A repository belongs in this list only while it is genuinely unreadable
+    # from here. Moving one back into CAFAYE_REPOS once it is public is the fix,
+    # and `an_unreadable_repository_is_neither_cloned_nor_registered` below is
+    # what makes that move a decision rather than a forgetting.
     env:
       CAFAYE_REPOS: core caf identity billing courier darkroom muse guard parlor kit docs
+      CAFAYE_UNREADABLE: cafaye-rb
     steps:
       - uses: actions/checkout@v4
         with:

@@ -84,28 +84,63 @@ fn curated_repositories() -> BTreeSet<String> {
 /// this test and the job are reading the same list rather than two spellings
 /// of it that can drift apart.
 fn cloned_repositories() -> BTreeSet<String> {
+    listed_repositories("CAFAYE_REPOS")
+}
+
+/// The repositories this job is **not** expected to read, and why: the ones the
+/// runner has no credential for. One name today, and the workflow's comment says
+/// which and says why.
+///
+/// This exists because `the_drift_job_clones_every_repository_pantry_curates` was
+/// asserting something false about the world. Its claim was that every curated
+/// repository is cloned, and the reason was "a repository the workspace does not
+/// contain is a repository no drift test can compare against anything" — which is
+/// true of a *public* repository and false of a private one. `cafaye-rb` entered
+/// the exclusion record in this packet and turned that into a red: it is a
+/// repository pantry curates and no anonymous runner may read it. The
+/// alternatives were a credential (what pantry-04 deleted, on the grounds that
+/// the fleet is public) or leaving the row out of the registry, which is the
+/// silent omission the check exists to prevent. So the fact is stated in the file
+/// a reviewer of the workflow reads first, and checked here.
+fn unreadable_repositories() -> BTreeSet<String> {
+    let listed = listed_repositories("CAFAYE_UNREADABLE");
+
+    assert!(
+        listed.is_disjoint(&cloned_repositories()),
+        "a repository is in both CAFAYE_REPOS and CAFAYE_UNREADABLE: it is being cloned and \
+         also declared unreadable, so one of the two lists is wrong. A clone either succeeds or \
+         it does not — there is no state in which a repository is both."
+    );
+
+    listed
+}
+
+/// One whitespace-separated list out of the drift job's `env`.
+fn listed_repositories(key: &str) -> BTreeSet<String> {
     let job = drift_job();
     let raw = job
         .get("env")
-        .and_then(|env| env.get("CAFAYE_REPOS"))
+        .and_then(|env| env.get(key))
         .and_then(Value::as_str)
         .unwrap_or_else(|| {
             panic!(
-                "the {DRIFT_JOB} job has no CAFAYE_REPOS, so the repositories it clones are \
-                 only discoverable by reading shell out of a `run:` block"
+                "the {DRIFT_JOB} job has no {key}, so the repositories it clones are only \
+                 discoverable by reading shell out of a `run:` block"
             )
         })
         .to_string();
 
-    let cloned: BTreeSet<String> = raw.split_whitespace().map(str::to_string).collect();
+    let listed: BTreeSet<String> = raw.split_whitespace().map(str::to_string).collect();
 
-    assert!(
-        !cloned.is_empty(),
-        "CAFAYE_REPOS is empty, so the job would clone nothing and every drift test would \
-         skip — which is the exact failure this file exists to make impossible"
-    );
+    if key == "CAFAYE_REPOS" {
+        assert!(
+            !listed.is_empty(),
+            "CAFAYE_REPOS is empty, so the job would clone nothing and every drift test would \
+             skip — which is the exact failure this file exists to make impossible"
+        );
+    }
 
-    cloned
+    listed
 }
 
 /// The shell of every step in the drift job, as one string. Used for the checks
@@ -128,20 +163,33 @@ fn every_script() -> String {
 ///
 /// So the clone list is hand-maintained, and this test is what makes
 /// hand-maintained mean something: a new curation list entry turns the `build`
-/// job red until somebody widens `CAFAYE_REPOS` on purpose.
+/// job red until somebody widens `CAFAYE_REPOS` on purpose, or says in
+/// `CAFAYE_UNREADABLE` why the runner cannot read it.
+///
+/// The unreadable list is not a softener on that. It is one repository, it is
+/// named in the workflow next to the clone list, and two tests below keep it to
+/// what it can honestly be: no registered service, nothing already cloned, and
+/// nothing the registry has stopped curating.
 #[test]
 fn the_drift_job_clones_every_repository_pantry_curates() {
     let cloned = cloned_repositories();
+    let unreadable = unreadable_repositories();
     let curated = curated_repositories();
 
-    let missing: Vec<&String> = curated.difference(&cloned).collect();
+    let missing: Vec<&String> = curated
+        .difference(&cloned)
+        .filter(|name| !unreadable.contains(*name))
+        .collect();
 
     assert!(
         missing.is_empty(),
-        "{} cafaye repositor{} curated in registry/index.yml and absent from CAFAYE_REPOS in \
-         {WORKFLOW}:\n\n{}\n\nA repository the job does not clone is a repository no drift test \
-         can compare against anything, and the tests will not say so: the ones that need it print \
-         a SKIP and return green. Add the names to CAFAYE_REPOS.",
+        "{} cafaye repositor{} curated in registry/index.yml that {WORKFLOW} neither clones nor \
+         declares unreadable:\n\n{}\n\nA repository the job cannot read is a repository no \
+         drift test can compare against anything, and the tests will not say so: the ones that \
+         need it print a SKIP and return green. Add the names to CAFAYE_REPOS, or — if the \
+         runner genuinely has no credential for it, as it does for the private cafaye-rb — name \
+         it in CAFAYE_UNREADABLE with the reason in the comment beside that list. Do NOT leave \
+         it off both lists: that is the failure this test was written for.",
         missing.len(),
         if missing.len() == 1 {
             "y is"
@@ -150,10 +198,67 @@ fn the_drift_job_clones_every_repository_pantry_curates() {
         },
         missing
             .iter()
-            .map(|name| format!("  {name} — curated but never cloned"))
+            .map(|name| format!("  {name} — curated, and read by neither list"))
             .collect::<Vec<_>>()
             .join("\n"),
     );
+}
+
+/// What `CAFAYE_UNREADABLE` may and may not contain, which is the whole reason
+/// it is a list rather than a comment.
+///
+/// The failure it has to prevent is the quiet one: a repository goes on this
+/// list for a real reason today, and the reason goes away — the repository
+/// becomes public — and the entry stays. The job keeps not cloning it, nobody
+/// is told, and a coverage hole that was justified becomes unjustified without
+/// anything going red. Two of the four assertions below exist only for that.
+///
+/// 1. Nothing already cloned. Handled in `unreadable_repositories`.
+/// 2. Nothing this repository *registers*. A registered entry is a fact pantry
+///    publishes to every client that asks, so it is the one thing that must
+///    always be checkable against the real service. An unreadable service is a
+///    registry publishing an unverified claim, which is worse than an unlisted
+///    one.
+/// 3. Nothing the registry has stopped curating. A name here that no longer
+///    appears in `registry/index.yml` is a leftover: it is not describing
+///    anything, and it is the shape a stale exclusion takes.
+/// 4. The workflow says why. A repository in this list that the comment beside
+///    it never mentions is an exemption nobody approved, and this is the check
+///    that notices.
+#[test]
+fn an_unreadable_repository_is_neither_cloned_nor_registered() {
+    let unreadable = unreadable_repositories();
+    let index = registry::read_index(&registry_dir()).expect("registry/index.yml parses");
+
+    for name in &unreadable {
+        assert!(
+            !index.services.contains_key(name),
+            "{name} is in CAFAYE_UNREADABLE, so this job cannot read the service it describes \
+             — and it is REGISTERED, which means pantry publishes a claim about it that no CI \
+             run can verify. Either the repository becomes readable (add it to CAFAYE_REPOS) or \
+             the entry comes out of the registry. A registry entry nothing can check is a \
+             claim, not a fact."
+        );
+
+        assert!(
+            index.excluded.iter().any(|excluded| &excluded.name == name),
+            "{name} is in CAFAYE_UNREADABLE but registry/index.yml no longer curates it at \
+             all, so the list is describing a repository this registry does not care about. \
+             Remove it from CAFAYE_UNREADABLE: a leftover entry here is how an unjustified \
+             coverage hole survives."
+        );
+    }
+
+    let raw = std::fs::read_to_string(workflow_path()).expect("the workflow is readable");
+    for name in &unreadable {
+        assert!(
+            raw.contains(name.as_str()),
+            "{name} is declared unreadable in {WORKFLOW} and the file never says why. Every \
+             other name in these two lists is a fact a reader can check; this one is an \
+             exemption, and an exemption with no stated reason is the thing this file exists \
+             to stop."
+        );
+    }
 }
 
 /// The clone list must not be allowed to shrink into the registry it is meant
