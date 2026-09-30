@@ -1,0 +1,128 @@
+# pantry — the official cafaye service set.
+#
+# This file is the registry's index. `services/` holds one verbatim copy of each
+# registered service's own `cafaye.yml`, and this file holds only the two facts
+# a manifest cannot state: `kind` and `basePath`. Everything else a consumer
+# needs comes from the service's own file, so there is exactly one answer per
+# question and it is the one the service itself gave.
+#
+# WHY THE SPLIT. core's manifest schema closes with `additionalProperties:
+# false`, so `kind` and `basePath` cannot be added to a manifest — and adding
+# them would be inventing vocabulary core does not have. A copy of the
+# manifest therefore stays a manifest, and the facts that live only in pantry
+# live here. See README.md, "Where each fact comes from".
+#
+# HOW IT STAYS TRUE. tests/drift.rs reads the real service checkout for every
+# name below and fails if any field moved. A copy without that test is a copy
+# that rots; the test is the mechanism, not the discipline.
+#
+# SCOPE. Official cafaye services only. There is no submission flow, no
+# third-party registration, no plugin loader and no webhook — those are Phase 5
+# (PLAN.md §4b item 3) and building them here is how a registry turns into an
+# unaudited code-execution surface. Adding a service is a commit to this file
+# and a reviewed pull request, which is the whole trust model.
+schemaVersion: 1
+
+services:
+  # --- the four facts a cafaye client cannot read off a manifest ---
+
+  # identity serves HTTP and declares `exposes.api: openapi/v1.yaml`.
+  # kind: api — the manifest declares an api document and consumes nothing.
+  # basePath: /v1 — the common path prefix of every path in that document.
+  # core: ^0.1.0, which does NOT contain ^0.2.0. That is what identity's own
+  # file says and it is recorded here unchanged: pre-1.0, a caret pins the
+  # minor, so `?contract=^0.2.0` legitimately excludes identity.
+  identity:
+    kind: api
+    basePath: /v1
+
+  # billing serves HTTP; `consumes: []`, so `kind: api` and not `both`.
+  billing:
+    kind: api
+    basePath: /v1
+
+  # muse serves HTTP; `consumes: []`, so `kind: api`.
+  muse:
+    kind: api
+    basePath: /v1
+
+  # guard serves HTTP and its own manifest records the gap: it declares no
+  # `exposes` at all because its OpenAPI document has not been written (see the
+  # DECISION NEEDED block at the top of guard/cafaye.yml). So `kind: api` is
+  # curated rather than derived — it is the one fact in this file a manifest
+  # cannot currently speak for. src/registry.rs enforces the rest: as soon as
+  # guard declares `exposes.api`, this entry must say `api` or `both`, and the
+  # moment it says `worker` for a manifest with no event surface the load fails.
+  # basePath: null — no committed OpenAPI document, so no prefix to name.
+  guard:
+    kind: api
+    basePath: null
+
+# Official cafaye repositories that are deliberately NOT registered, each with
+# the reason and the command that proves it. This is a curation record, not a
+# queue: an entry here means the repository is known, checked, and held back
+# for a stated reason.
+#
+# tests/drift.rs asserts every one of these still fails `caf contract lint` (or
+# has no manifest at all). That assertion is a tripwire, not bureaucracy: the
+# moment courier's events gain the three-segment prefix core requires, its test
+# fails with "courier now validates — register it" instead of the registry
+# quietly going stale. Deleting a row is the fix.
+excluded:
+  - name: courier
+    reason: >-
+      Its manifest publishes `email.queued`, `email.delivered`, `email.bounced`,
+      `email.complained` and `notification.suppressed` — two-segment types.
+      core v0.2 made every event type `<service>.<entity>.<action>`, so
+      `exposes/events/0` fails the schema's eventType pattern. Registering it
+      would put a service in the registry whose own contract file does not
+      validate, which is the one thing a registry must never do.
+    verify: "cd ../caf && go run ./cmd/caf contract lint ../courier/cafaye.yml"
+    lint: >-
+      INVALID ../courier/cafaye.yml: exposes/events/0: "email.queued" does not
+      match "^[a-z][a-z0-9]*(-[a-z0-9]+)*\.[a-z][a-z0-9]*(_[a-z0-9]+)*\.[a-z][a-z0-9]*(_[a-z0-9]+)*$"
+
+  - name: darkroom
+    reason: >-
+      The manifest exists and lints clean, but only on the unmerged
+      `worker/darkroom-01` branch; `moon/cafaye/darkroom` on master carries no
+      `cafaye.yml` at all. A registry entry has to be verifiable against a real
+      service, and the real service is the one on master.
+    verify: "ls ../darkroom/cafaye.yml"
+
+  - name: parlor
+    reason: >-
+      Still the pre-core draft shape — `apiVersion: cafaye/v0-draft` with
+      `metadata`/`spec` instead of `name`/`language`/`core`/`repository`/
+      `owner`. It is an app shell, not a platform service, and its file names
+      the reconciliation as outstanding.
+    verify: "cd ../caf && go run ./cmd/caf contract lint ../parlor/cafaye.yml"
+    lint: 'INVALID ../parlor/cafaye.yml: is missing required fields ["name", "language", "core", "repository", "owner"]'
+
+  - name: caf
+    reason: >-
+      The platform CLI, and also still the pre-core draft shape (`version`,
+      `languages`, `contracts`, `dev` — every one of them a violation of
+      `additionalProperties: false` once core froze). A CLI is not a service in
+      the registry's sense: nothing routes to it and nothing depends on it.
+    verify: "cd ../caf && go run ./cmd/caf contract lint cafaye.yml"
+    lint: 'INVALID caf/cafaye.yml: is missing required fields ["language", "core", "repository", "owner"]'
+
+  - name: kit
+    reason: >-
+      Configuration only — CI workflows, lint configs, Docker bases. kit's own
+      AGENTS.md says it is "not a CLI, a package, or a service". It carries no
+      `cafaye.yml`, and inventing one to register it would be the registry
+      claiming a namespace for something that is not a service.
+    verify: "ls ../kit/cafaye.yml"
+
+  - name: core
+    reason: >-
+      `language: spec`. core's schema says that value is "for
+      specification-only repositories (core itself, contract-test fixtures)", so
+      core is a specification, not a service: nothing routes to it and no
+      manifest declares a dependency on it. src/registry.rs refuses any entry
+      whose language is `spec`, which is what keeps this row honest if someone
+      copies a manifest into registry/services/.
+    verify: "cd ../caf && go run ./cmd/caf contract lint ../core/cafaye.yml"
+    lint: "OK ../core/cafaye.yml — valid, and deliberately not a service"
