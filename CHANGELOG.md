@@ -98,6 +98,32 @@ bottom.
   real pre-1.0 boundary check rather than an accident of courier being excluded.
   A case that a registration can invalidate is still worth having; the fix is to
   pick a genuinely empty question, not to delete it.
+- **The CI workflow now says out loud what a green run does not prove, and
+  carries the missing job disabled rather than absent.** `.github/workflows/ci.yml`
+  clones pantry alone, so every drift test skips there. A green badge on this
+  repository means *pantry is internally consistent*, not *the registry matches
+  the fleet* — and the workflow says so in the job that runs, in the job that
+  does not, and in the README. A `workspace-drift` job is written out in full
+  with `if: false`: it clones the eight service repositories beside a `pantry`
+  checkout and runs the whole gate with `PANTRY_CAFAYE_ROOT` set. It is disabled
+  rather than absent because an absent job is forgotten and a disabled one says
+  on its face that the coverage does not exist yet. It cannot be enabled from
+  here — the cafaye repositories are private and kit's shared CI deliberately
+  reaches no cafaye service — so **how a runner authenticates is a manager
+  decision**, and the README says that rather than leaving a green badge to imply
+  coverage.
+- **The registry was found to be silently omitting two repositories.**
+  `docs` and `cafaye-rb` both carry a valid `cafaye.yml` on master and appeared
+  nowhere in this repository. The existing coverage test could not catch this:
+  it checks that the names it knows are registered or excluded, and a repository
+  nobody added to that hand-maintained list is invisible to it.
+  `no_workspace_repository_is_missing_from_the_curation_lists` walks the
+  workspace instead and asks from the other direction, which is the only
+  direction that catches a repository nobody remembered. Both are recorded in its
+  `UNDECIDED` constant with a reason and a `DECISION NEEDED`, because no
+  `blockedBy` value honestly describes "valid manifest, not a service" — the
+  vocabulary has `schema`, `no-manifest` and `not-a-service`, and a static site
+  and a library are none of them.
 - **No response shape changed.** No field was added, removed or renamed, so
   `info.version` stays at `1.0.0` and no `caf pantry` client needs regenerating
   for this packet.
