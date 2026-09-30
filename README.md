@@ -101,24 +101,34 @@ Three rules a generated client has to know:
 | `exposes.api`, no `consumes` | `api` |
 | `exposes.api` and a non-empty `consumes` | `both` |
 | no `exposes.api`, some event work (`exposes.events` or `consumes`) | `worker` |
-| no contract surface at all | curated |
+| no contract surface, and the repository serves HTTP | `api` (curated) |
+| no contract surface, and the repository is a binary | `cli` (curated) |
 
-The last row is the honest gap: a service that declares nothing cannot be
-classified from its manifest, so the registry states it and `Registry::load`
-refuses the curated answer the moment the manifest becomes decisive. Two entries
-are curated today, and they are curated for different reasons:
+The last two rows are the honest gap, and they are **two values rather than one
+because a manifest cannot tell them apart**. A repository that declares no
+contract surface says nothing about what it is: guard (a gateway whose OpenAPI
+document has not been written yet) and caf (a binary — "caf is a binary, not a
+service: it exposes no HTTP surface and publishes no events") declare the same
+absence, and core's own rule 3 says such a repository "is a library or a spec
+repo", which is neither of them. `language` does not help — it names a toolchain,
+not a shape — and the same shape arrives a third time with `cafaye-rb`, a gem in
+the exclusion record below. So the distinction is recorded by a person in
+`registry/index.yml`, and `Registry::load` holds it honest:
 
-* **guard** — serves HTTP, but has no OpenAPI document yet, so there is nothing
-  for its manifest to point `exposes.api` at. Its own file records this as a
-  `DECISION NEEDED`.
-* **caf** — the platform CLI, which omits `exposes` on purpose: "caf is a
-  binary, not a service: it exposes no HTTP surface and publishes no events."
+* for a manifest with no contract surface, **only** `api` and `cli` are
+  admitted, and the refusal names both — a fifth value added to the vocabulary
+  has to be given an answer there or the load says nothing about it;
+* `cli` is refused the moment the manifest declares a surface, and refused a
+  non-null `basePath`, because a binary publishes no document for one to be
+  derived from.
 
-Both say `api`, and for `caf` that is a choice under constraint rather than a
-true answer — `worker` and `both` are both refused by the checks for a manifest
-that declares no surface. `> DECISION NEEDED (pantry)` in `registry/index.yml`
-proposes a fourth value for binaries. Every other `kind` in the registry is
-checked against the manifest at load.
+`caf` was `api` before `cli` existed. That was a value the vocabulary offered for
+a command, and a client reading `kind: api` and routing to caf would have found
+a binary with no HTTP surface. The `> DECISION NEEDED (pantry)` on caf's row in
+`registry/index.yml` is now the **next** question rather than this one: core's
+manifest schema has no way to say "I am a binary" either, so `cli` stays
+curated. Every other `kind` in the registry is checked against the manifest at
+load.
 
 ### `basePath`
 
@@ -285,43 +295,72 @@ the manifest contradicts.
 
 `registry/index.yml` carries an exclusion record: a known repository, a reason, a
 command that proves it, and a machine-checked `blockedBy` — `schema`,
-`no-manifest` or `not-a-service`. `tests/schema.rs` asserts each reason still
-holds, so the record is a tripwire in one direction: the day courier's events
-gained the three-segment prefix core requires, its row failed with *"now
-validates — register it"* instead of the registry quietly going stale. courier-03
-renamed them, and this packet registered it.
+`no-manifest`, `not-a-service` or `library`. `tests/schema.rs` asserts each
+reason still holds, so the record is a tripwire in one direction: the day
+courier's events gained the three-segment prefix core requires, its row failed
+with *"now validates — register it"* instead of the registry quietly going stale.
+courier-03 renamed them, and pantry-03 registered it.
 
 | repository | held back because | re-verified against the checkout on |
 | --- | --- | --- |
-| `parlor` | still the pre-core draft shape (`apiVersion: cafaye/v0-draft`, `metadata`/`spec`); an app shell, not a platform service. `caf contract lint`: `is missing required fields ["name", "language", "core", "repository", "owner"]` | 2026-09-30 (pantry-03) |
-| `kit` | carries no `cafaye.yml`; configuration only, and its own AGENTS.md says "not a CLI, a package, or a service" | 2026-09-30 (pantry-03) |
-| `core` | `language: spec` — a specification, not a service. `Registry::load` refuses any `spec` manifest, so this stays true if someone copies one in. `caf contract lint`: `OK` | 2026-09-30 (pantry-03) |
+| `parlor` | still the pre-core draft shape (`apiVersion: cafaye/v0-draft`, `metadata`/`spec`); an app shell, not a platform service. `caf contract lint`: `is missing required fields ["name", "language", "core", "repository", "owner"]` | 2026-09-30 (pantry-05) |
+| `kit` | carries no `cafaye.yml`; configuration only, and its own AGENTS.md says "not a CLI, a package, or a service" | 2026-09-30 (pantry-05) |
+| `core` | `language: spec` — a specification, not a service. `Registry::load` refuses any `spec` manifest, so this stays true if someone copies one in. `caf contract lint`: `OK` | 2026-09-30 (pantry-05) |
+| `docs` | `library` — the documentation site. A valid manifest with no `exposes` on purpose: its own file says it "serves no HTTP traffic of its own … The same shape a library takes". A static site is depended on, not started. `caf contract lint`: `OK` | 2026-09-30 (pantry-05) |
+| `cafaye-rb` | `library` — the shared Ruby gem. core's schema says to "omit `exposes` entirely for libraries" and its manifest does, and says why: "it is not deployed, serves no traffic and publishes no events". `caf contract lint`: `OK` | 2026-09-30 (pantry-05), on a local checkout — see below |
 
-### Two repositories the registry does not describe at all
+All five were re-read against their checkouts in this packet, which is the
+fourth packet to do that by hand and each time it was necessary: every one of
+the first three had a reason another repository's packet made false.
 
-`docs` and `cafaye-rb` both carry a **valid** `cafaye.yml` on master, and neither
-is registered, excluded, or mentioned anywhere in this repository. They were
-invisible until `no_workspace_repository_is_missing_from_the_curation_lists` in
-`tests/drift.rs` walked the workspace and asked the question from the other
-direction — the existing coverage test checks the names it knows are handled, and
-a repository nobody added to that list is invisible to it.
+### `library` — valid, and not something anyone brings up
 
-They are recorded in that test's `UNDECIDED` constant with a reason, which is the
-honest state: known, undecided, and now impossible to forget. **They are a
-`DECISION NEEDED (pantry)`, not a silent omission.** Neither `blockedBy` value
-fits — `docs` is not `schema`-invalid, not `no-manifest`, and not
-`not-a-service` (which means `language: spec`); a static site and a library are
-valid and are none of those three. The recommendation is a fourth value.
+The fourth `blockedBy` value, and the reason it exists rather than a branch in a
+test. `docs` and `cafaye-rb` both carry a **valid** `cafaye.yml` and neither is a
+service anything starts, yet none of the original three values describes them:
+they are not `schema`-invalid, not `no-manifest`, and not `not-a-service` —
+which means `language: spec`, and a Starlight site is `typescript` and a gem is
+`ruby`. Both record that gap about their own `language` value in their own
+repositories.
+
+They were invisible until pantry-03's `no_workspace_repository_is_missing_from_
+the_curation_lists` walked the workspace and asked from the other direction, and
+they were parked in an `UNDECIDED` constant in that test while the question was
+open. **That constant is gone**, and its removal is the point: a third list
+where an undecided repository needs no reason is a check that can be made green
+by not checking. Both have a row and a machine-checked claim now, and the claim
+goes stale in the same direction as every other row's — a `library` whose
+manifest declares `exposes` or a non-empty `consumes` is something `caf dev`
+brings up and `guard` routes to, so `tests/schema.rs` fails it with *"now
+declares `exposes` … it must be REGISTERED"*.
+
+**Neither is registered**, and that is a decision rather than a gap.
+Registration claims `caf dev` can bring the thing up and gives it a base path to
+route to. A documentation site is read and a gem is depended on; neither is a
+process, and listing them as services would make `kind` mean two different things
+in one column.
 
 ### A green run does not mean this table is accurate
 
 `every_exclusion_reason_is_still_true` reports exclusions that have gone
-**stale**. It says nothing about whether the three reasons still **hold**. Those
+**stale**. It says nothing about whether the five reasons still **hold**. Those
 are different questions and only one of them is machine-checked, so a green run
 is not evidence that this list is right — it is a reason to go and read the
-three checkouts. That has now been necessary on three consecutive packets
-(darkroom, caf, courier), and each time it was: every one of those exclusions
-had a reason that another repository's packet made false.
+five checkouts. That has now been necessary on four consecutive packets
+(darkroom, caf, courier, and this one), and each time it was: every one of the
+first three exclusions had a reason that another repository's packet made false.
+
+One row is checked in fewer places than the other four. **`cafaye-rb` is a
+private repository**, so an anonymous runner cannot clone it — the GitHub API
+answers `404` for it without a credential, which reads as "does not exist" rather
+than "not yours". The `workspace-drift` job names it in `CAFAYE_UNREADABLE`, its
+reason is verified by a developer's run of `tests/schema.rs` and by nothing else,
+and `tests/schema.rs` prints a `SKIP` line saying so rather than passing quietly.
+`tests/ci.rs` keeps that list honest in both directions: a registered service may
+never be on it, a name the registry has stopped curating may not be on it, and
+nothing on it may also be cloned. The other answer — a credential in the
+workflow — is what pantry-04 removed on the grounds that the fleet is public, and
+adding it back for one gem would be worse than the gap.
 
 **The record is not a queue, and leaving it is not a way to avoid a decision.**
 `caf` and `courier` both sat in this list with one fact and one opinion each,
@@ -439,10 +478,17 @@ three things on its own face:
   has added to the job's clone list is not cloned, not registered and not
   noticed, and the list has to be updated by hand. `tests/ci.rs` is what makes
   that hand-maintained list mean something: it fails the `build` job when
-  `registry/index.yml` curates a repository the job does not clone;
+  `registry/index.yml` curates a repository the job neither clones nor declares
+  unreadable;
 - a red there is almost always a finding about **another** repository, and the
   fix is to report it and open the change where the file lives. `registry/`
   here is a copy of somebody else's file and this repository does not own it.
+
+**And one curated repository is not in that workspace at all.** `cafaye-rb` is
+private, so the job cannot clone it and its exclusion row's reason is not checked
+there — verified by a developer, with a `SKIP` line saying which row and why. It
+is a real gap in the coverage and it is named in the workflow rather than left to
+be inferred from a green badge; see "Not registered, and why" above.
 
 The job also guards its own workspace, because a clone that quietly did not
 happen is the one failure whose symptom is a green run: without core's schema

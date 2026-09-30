@@ -9,6 +9,47 @@ bottom.
 
 ### Added
 
+- **`kind: cli`, and `caf` stops being recorded as an `api`.** MD1. `caf` is a
+  binary — its own manifest says "caf is a binary, not a service: it exposes no
+  HTTP surface and publishes no events" — and the registry had no way to say so,
+  so it said `api`. A client reading that and routing to caf found a command with
+  no HTTP surface, which is the false answer the whole `kind` column exists to
+  avoid. `ServiceKind` has a fourth value, `?kind=cli` returns `[caf]`, and the
+  `DECISION NEEDED` on caf's row is answered and replaced by the next question.
+  `openapi/v1.yaml` moves to **1.1.0**: the `kind` enum and the `?kind=`
+  vocabulary both gained a value, which under the versioning table at the bottom
+  of this file is "a breaking change to a response, a filter" — a client
+  generated from 1.0.0 switches on `kind` exhaustively and now has a case it has
+  not handled. It is the right kind of break: the old vocabulary could not
+  express `caf`, so the registry was publishing `api` for a binary.
+
+  **The value is curated, and the reason is that a manifest cannot carry it.**
+  core's conventions rule 3 says a repository with no `exposes` "is a library or
+  a spec repo", which is neither guard nor caf; `language` names a toolchain
+  rather than a shape; and guard (a gateway whose OpenAPI document has not been
+  written yet) and caf declare the *same* absence of surface. So the two curated
+  values for a surface-less manifest are `api` and `cli`, and nothing in a
+  manifest decides between them. The tempting derivation — a compiled language
+  and no surface is a CLI — calls guard a binary, and since this same packet adds
+  `blockedBy: library` it would also call `cafaye-rb` one. Three repositories,
+  one rule, two wrong answers.
+
+- **`blockedBy: library`, and `docs` and `cafaye-rb` have rows.** MD2. Both carry
+  a valid `cafaye.yml` and appeared nowhere in the registry, parked in an
+  `UNDECIDED` constant in `tests/drift.rs` since pantry-03. Neither is registered
+  — registration claims `caf dev` can bring the thing up, and a documentation site
+  and a gem are depended on rather than started — and the `UNDECIDED` constant is
+  gone, because a third list where an undecided repository needs no reason is a
+  check that can be made green by not checking. The fourth `blockedBy` value is
+  the alternative MD2 chose over teaching the drift test that libraries are
+  exempt.
+
+  The row is not weaker than the others: `library` goes stale in one direction,
+  and it is the direction that has already fired three times. A library whose
+  manifest declares `exposes` or a non-empty `consumes` is something the platform
+  starts and routes to, so `every_exclusion_reason_is_still_true` fails it with
+  *"must be REGISTERED"*.
+
 - **CI now checks the registry against the fleet, and the badge means it.** The
   `workspace-drift` job is enabled. It was `if: false` because it cloned the
   cafaye repositories over SSH with a deploy key from this repository's
@@ -45,6 +86,26 @@ bottom.
   and it applies to every copy from here on.
 
 ### Decisions worth the changelog
+
+- **A new vocabulary value is not a branch, it is a closed set.** The curated
+  branch of `check_kind` used to refuse `worker` and say "curate this as `api`",
+  which left `both` admitted for a manifest that declares no contract surface.
+  Nothing in the check rejected it; a test in another file did. Adding `cli` is
+  exactly the moment that would have been baked in as a permanent hole, so the
+  branch now admits a closed set — `api` or `cli` — and its refusal names both.
+  `tests/kind.rs` is new and holds the whole table as a check rather than as a
+  comment: seven tests over real registry directories on disk, because the rule
+  being tested is that a row, a manifest and a `basePath` agree with each other.
+- **A private repository is a fact about the runner, and it is declared.** MD2's
+  `cafaye-rb` row makes `the_drift_job_clones_every_repository_pantry_curates`
+  true no matter how it is written, because an anonymous runner cannot clone a
+  private repository and a credential in the workflow is what pantry-04 deleted.
+  So the job carries `CAFAYE_UNREADABLE: cafaye-rb` beside `CAFAYE_REPOS`, with
+  the reason; `tests/schema.rs` prints a `SKIP` naming the row it could not check;
+  and `tests/ci.rs` refuses an unreadable name that is registered, that the
+  registry has stopped curating, or that is also being cloned. The coverage gap
+  is real and it is named in three files rather than being papered over by a
+  silent one.
 
 - **The exclusion record was fixed in the data, not in the test.** caf's and
   courier's rows each mixed one fact with one opinion, and each fact was made
@@ -87,6 +148,12 @@ bottom.
   surface and a real subscription), so it is a choice under constraint rather
   than a derivation, and the row says which. `> DECISION NEEDED (pantry)` in
   `registry/index.yml` proposes a fourth `kind` for binaries.
+  **Answered in pantry-05 (MD1): the vocabulary has `cli`, caf says it, and the
+  curated set for a surface-less manifest is `api` and `cli`.** What this entry
+  got right is kept: the value is still curated, because a manifest that declares
+  nothing cannot say which of the two it is. What it called a choice under
+  constraint is no longer that — it is the right answer for a binary, recorded by
+  a person.
 - **`basePath` for caf is `null`.** It declares no `exposes.api` and its
   checkout publishes no OpenAPI document, so core's `/vN` rule has nothing to
   read. `/v1` by analogy with the api entries would be the longest-common-prefix
