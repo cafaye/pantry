@@ -676,6 +676,8 @@ fn every_service_repository_in_the_workspace_is_registered_or_excluded() {
     // registered and both are excluded with `blockedBy: library`, and a name
     // that appears in the exclusion record without appearing here would be
     // checked by `every_exclusion_reason_is_still_true` and by nothing else.
+    // `cafaye-ts` is here for the opposite reason: it IS registered, as a `cli`,
+    // and it is the entry most likely to be argued with rather than forgotten.
     let known = [
         "identity",
         "billing",
@@ -690,6 +692,13 @@ fn every_service_repository_in_the_workspace_is_registered_or_excluded() {
         "pantry",
         "docs",
         "cafaye-rb",
+        "cafaye-ts",
+        // A directory rather than a repository, which is why the workspace walk
+        // below needed widening: this is the one name in the list that carries no
+        // cafaye.yml and is not a checkout, and it is curated anyway because the
+        // registry's opinion about a planned repository is worth more than a
+        // silent directory. See DECISIONS.md D2.
+        "cafaye-py",
     ];
 
     // The list above is hand-maintained, and a hand-maintained list has a
@@ -714,6 +723,120 @@ fn every_service_repository_in_the_workspace_is_registered_or_excluded() {
              is a registry that cannot be audited."
         );
     }
+}
+
+/// A `cli` is curated, so no manifest can hold the registry to it, and a `cli`
+/// that has quietly written an OpenAPI document is the state where that matters:
+/// the document is the manifest's own evidence arriving after the fact. A service
+/// that writes its document and has not yet declared `exposes` is a real
+/// half-finished packet, and for a `cli` it is the one state that means the
+/// curated row is wrong — because the file a `cli` must not have is precisely the
+/// file whose existence would make `api` a derivation instead of a judgement.
+///
+/// cafaye-ts is why this check exists, and it is the awkward case: it vendors
+/// **six** OpenAPI documents into `specs/`. They are inputs, and its own manifest
+/// says so at length. So the rule is not "a `cli` has no file whose name contains
+/// `openapi`" — it is where core's conventions put a document a repository
+/// PUBLISHES. Every service in the fleet publishes at `openapi/v1.yaml`, or at
+/// `openapi.yaml` in the repository root, and a repository that publishes a
+/// document publishes it there. A `cli` with one of those has a surface.
+#[test]
+fn a_registered_cli_publishes_no_openapi_document_of_its_own() {
+    let root = require_workspace!("cli surface");
+
+    let registry = Registry::load(&registry_dir()).expect("the official registry loads");
+    let clis: Vec<&str> = registry
+        .entries()
+        .iter()
+        .filter(|entry| entry.kind == ServiceKind::Cli)
+        .map(|entry| entry.name())
+        .collect();
+
+    assert!(
+        !clis.is_empty(),
+        "no `cli` is registered, so nothing was checked. The curated value exists and \
+         the fleet has members of it, and this is the only check that would notice one \
+         of them turning into a service"
+    );
+
+    // Every finding in one failure, not the first one: a repository that has
+    // written a document usually has one, and a reader sent back twice for two
+    // lines in the same tree learns less from the second run.
+    let published: Vec<String> = clis
+        .iter()
+        .flat_map(|name| {
+            published_documents(&service_root(&root, name))
+                .into_iter()
+                .map(move |document| format!("  {name} — {}\n", document.display()))
+        })
+        .collect();
+
+    assert!(
+        published.is_empty(),
+        "{} registered `cli`{} publishing an OpenAPI document:\n\n{}\n\
+         A `cli` is a thing installed and run — brought up by nobody, routed to by \
+         nobody — and a document in one of those two positions is a contract surface. \
+         The moment it exists the row's kind is no longer a curation: it is `api`, and \
+         nothing in the manifest will say so for you.\n\n\
+         Either the document is an INPUT rather than a surface, in which case it does \
+         not belong where core's conventions put published ones — cafaye-ts keeps its \
+         six vendored documents in specs/ and records their provenance in \
+         specs/index.json — or the repository is a service, in which case declare \
+         `exposes.api` in its cafaye.yml and change the row to `api`. `Registry::load` \
+         then derives the value and refuses the curated one.",
+        published.len(),
+        if published.len() == 1 { " is" } else { "s are" },
+        published.join("\n"),
+    );
+}
+
+/// Every OpenAPI document a checkout **publishes**, which is to say every one in
+/// the position core's conventions give a published document: a directory named
+/// `openapi`, or a file called `openapi.{yaml,yml,json}`.
+///
+/// The narrowness is the whole test. cafaye-ts carries six documents under
+/// `specs/` and they are correctly not matched, because a vendored copy of
+/// somebody else's specification is an input and the provenance record for an
+/// input is not a surface. `node_modules`, `target` and `.git` are skipped for
+/// the ordinary reason that another project's files are not this repository's.
+fn published_documents(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+
+            if matches!(name.as_str(), ".git" | "node_modules" | "target") {
+                continue;
+            }
+
+            // A file we cannot stat is a file we cannot classify, and a check
+            // that guesses is a check that has stopped checking.
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+
+            if file_type.is_dir() {
+                if name == "openapi" {
+                    found.push(entry.path());
+                }
+                stack.push(entry.path());
+            } else if matches!(
+                name.as_str(),
+                "openapi.yaml" | "openapi.yml" | "openapi.json"
+            ) {
+                found.push(entry.path());
+            }
+        }
+    }
+
+    found.sort();
+    found
 }
 
 /// Every directory in the workspace that carries a `cafaye.yml` must appear in
@@ -806,5 +929,167 @@ fn no_workspace_repository_is_missing_from_the_curation_lists() {
             "ies carry"
         },
         missing.join("\n"),
+    );
+}
+
+/// Every directory in the workspace is curated: registered, or excluded with a
+/// reason. **The test above asks the same question of the directories that carry
+/// a `cafaye.yml`, and this one exists because that is a condition, not a
+/// definition.**
+///
+/// A cafaye repository that lost its manifest — a merge that dropped it, a
+/// half-finished `git mv` — becomes invisible to the walk above, silently, and
+/// the registry keeps describing a fleet that has one fewer member. So does a
+/// directory that has been created for a repository nobody has written yet. Both
+/// happened: `cafaye-py/` sat in the workspace, empty and unregistered, through
+/// four packets, and the tripwire could not see it because the shape it looked
+/// for was a file.
+///
+/// Three exclusions, and each is a fact about what a *repository* is rather than
+/// an exemption from the check:
+///
+/// * a hidden directory is not a repository — `.git` and the workspace's own
+///   `.github` are configuration *for* repositories;
+/// * a worktree is not a repository — `moon/cafaye` holds several, named
+///   `<service>-worker-<packet>`, and a manifest inside one is that service's
+///   manifest, already checked through its own checkout;
+/// * anything else in that directory is a cafaye repository the registry has an
+///   opinion about, or it is a stray, and a stray is worth finding.
+#[test]
+fn every_directory_in_the_workspace_is_a_repository_the_registry_curates() {
+    let root = require_workspace!("workspace coverage");
+
+    let dir = registry_dir();
+    let index = registry::read_index(&dir).expect("registry/index.yml parses");
+    let registry = Registry::load(&dir).expect("the official registry loads");
+
+    let is_worktree = |name: &str| name.contains("-worker-");
+
+    let mut uncurated: Vec<String> = Vec::new();
+
+    for entry in std::fs::read_dir(&root).expect("the cafaye root is readable") {
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if name.starts_with('.') || is_worktree(&name) {
+            continue;
+        }
+
+        let registered = registry.get(&name).is_some();
+        let excluded = index.excluded.iter().any(|excluded| excluded.name == name);
+
+        if !registered && !excluded {
+            let shape = if entry.path().join("cafaye.yml").is_file() {
+                "carries a cafaye.yml"
+            } else {
+                "carries NO cafaye.yml — so it is a directory, not yet a repository"
+            };
+            uncurated.push(format!("  {name} — {} {shape}", entry.path().display()));
+        }
+    }
+
+    assert!(
+        uncurated.is_empty(),
+        "{} director{} in the workspace that registry/index.yml curates in neither \
+         direction:\n\n{}\n\n\
+         Every one of them is either a cafaye repository the registry has no opinion \
+         about, or something in the workspace that should not be there. A directory \
+         nobody registered is a member of the fleet this file does not describe, and \
+         `no_workspace_repository_is_missing_from_the_curation_lists` above cannot see \
+         it: that one looks for a cafaye.yml, so an empty directory — or a repository \
+         whose manifest was lost — passes it.\n\n\
+         Add each name to `known` in that test AND give it a row: registered, or \
+         excluded with a `blockedBy` and a reason. If it should not be in the \
+         workspace at all, delete it — but read the row's reason first, because \
+         `blockedBy: no-manifest` on a directory that is not yet a repository is a \
+         judgement and not a fact, and `DECISIONS.md` D2 is the open question about \
+         it. Do NOT add a list of tolerated directory names here: a check that can be \
+         made green by not checking is a check that has stopped checking.",
+        uncurated.len(),
+        if uncurated.len() == 1 {
+            "y is"
+        } else {
+            "ies are"
+        },
+        uncurated.join("\n"),
+    );
+}
+
+/// The walker's narrowness, pinned by a fixture rather than by cafaye-ts.
+///
+/// `a_registered_cli_publishes_no_openapi_document_of_its_own` above rests on one
+/// distinction: a document in the position core's conventions give a **published**
+/// one is a surface, and a document anywhere else is an input. cafaye-ts is the
+/// case that makes the distinction real — six vendored documents under `specs/`
+/// plus a config file whose name contains the word — and if the walker were
+/// widened to match either, that entry would start failing and the tempting fix
+/// would be to widen the exemption rather than narrow the rule.
+///
+/// So the rule is stated here, over a directory built to contain both sides of
+/// it. `node_modules`, `target` and `.git` are in there too, because a
+/// dependency's own files are not this repository's and a walker that cannot say
+/// so is a walker that will be widened.
+#[test]
+fn the_cli_document_walker_looks_only_where_core_puts_a_published_document() {
+    let root = std::env::temp_dir().join(format!("pantry-cli-docs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+
+    // The inputs: a vendored copy of somebody else's specification, and a config
+    // file whose name contains the word. Neither is a surface.
+    for path in [
+        "specs/identity.yaml",
+        "openapi-ts.config.ts",
+        "README.md",
+        "node_modules/hey-api/openapi.yaml",
+        ".git/openapi.yml",
+        "target/debug/openapi.json",
+    ] {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(&path, b"paths: {}\n").expect("write");
+    }
+
+    // The surfaces: the two positions core's conventions use, and the two
+    // spellings of the file at a repository root.
+    for path in [
+        "openapi/v1.yaml",
+        "services/thing/openapi.yaml",
+        "openapi.json",
+    ] {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(&path, b"paths: {}\n").expect("write");
+    }
+
+    let found: Vec<String> = published_documents(&root)
+        .iter()
+        .map(|path| {
+            path.strip_prefix(&root)
+                .expect("under the root")
+                .display()
+                .to_string()
+        })
+        .collect();
+
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(
+        found,
+        [
+            // A directory is reported as itself rather than by the document inside
+            // it: "this repository has an openapi/ directory" is the finding, and
+            // the file in it is the first thing the reader will go and look at.
+            "openapi",
+            "openapi.json",
+            "services/thing/openapi.yaml",
+        ],
+        "the two positions core's conventions use, in a stable order. A vendored \
+         document under specs/ and a config file called openapi-ts.config.ts are \
+         INPUTS and must never appear here: if this list grows, the rule has been \
+         widened and a `cli` with vendored documents would start failing."
     );
 }

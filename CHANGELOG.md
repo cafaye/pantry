@@ -9,6 +9,117 @@ bottom.
 
 ### Added
 
+- **`cafaye-ts` is registered — `kind: cli`, `basePath: null`.** The TypeScript
+  client, which has declared itself in the platform's own contract language
+  (`caf contract lint: OK`) and which the workspace walk found carrying a
+  `cafaye.yml` that appeared in no curation list. `registry/services/cafaye-ts/
+  cafaye.yml` is a byte-identical copy and the index row carries the two facts a
+  manifest cannot state.
+
+  **`kind: cli` and not `api`, which is the judgement worth reviewing.** This
+  package vendors the fleet's six OpenAPI documents into `specs/` and serves
+  none of them; its own manifest is explicit that `exposes` is absent because it
+  "does not serve traffic, does not receive it, and does not publish events", and
+  that reaching for `exposes.api: specs/` "would say this package SERVES an API
+  described by those documents. It serves nothing." So no row of the `kind` table
+  reaches it, `check_kind` refuses `worker` and `both`, and the other curated
+  value is guard's — a service serving HTTP whose document is unwritten, which
+  would be a falsehood a client acts on, since `kind: api` is a routing
+  instruction. `basePath: null` for the same reason: a base path is derived from
+  a document a service *publishes*, and these six were published by six other
+  repositories and copied at recorded commits.
+
+  **And `cli` is an overstatement, which is why the row carries a
+  `DECISION NEEDED` rather than a settled answer.** MD1 added `cli` for a binary
+  — installed *and run* — and this is a package with no entry point, imported
+  rather than run. The bill lands immediately: `cafaye-rb` is this repository in
+  Ruby, same shape, and it is held back as `library`. Two client libraries, two
+  answers in one file. **`DECISIONS.md` D1** has the three options and the
+  recommendation; nothing in the exclusion record was changed, because resolving
+  it means moving a row another packet wrote.
+
+- **`cafaye-py` is recorded, and it is a directory rather than a repository.**
+  `moon/cafaye/cafaye-py/` is empty, has no git checkout and no `cafaye.yml`, and
+  it is the planned hand-written Python client: MD6 ruled Python hand-written
+  rather than generated, because hey-api's Python generator is v0.0.24 and emits
+  parameterless methods with unsubstituted path templates, and openapi-generator
+  inverts `const` discriminants to `any`.
+
+  **It was not removed**, and the reason is worth more than the removal would
+  have been. An empty directory is not tracked by git, so deleting it is
+  *unreviewable*: a commit whose whole content is a CHANGELOG sentence about
+  something git cannot show a reader. It would also have taken MD6's Python
+  decision out of the filesystem, and `AGENTS.md` says not to touch anything
+  outside this worktree. So it is left, and the registry has an opinion about
+  it — `blockedBy: no-manifest`, which is the closest true value the vocabulary
+  has and a slight overstatement of it, since there is no repository yet. That
+  overstatement is `DECISIONS.md` **D2**, open, with a fifth value (`planned`)
+  recorded as the alternative and a recommendation to wait for a second such
+  directory before spending a precedent on one.
+
+  **What the row buys: a tripwire.** `every_exclusion_reason_is_still_true`
+  asserts the manifest is absent, so the day someone writes
+  `cafaye-py/cafaye.yml` the suite fails with *"now carries a cafaye.yml —
+  register it or change this row's blockedBy and say why it is still held back"*.
+  An empty directory tolerated by doing nothing is an empty directory forever;
+  this one has to be answered.
+
+  **What it does not buy, stated here so a green badge is not over-read:** the
+  check is **vacuous in CI**. There is no repository to clone, so "the manifest
+  is absent" is satisfied by a directory that is not there. It is verified by a
+  developer's run with `PANTRY_CAFAYE_ROOT` set and by nothing else.
+
+  **And the tripwire corrected this packet, which is why it is in the changelog
+  at all.** The row was written with `cafaye-py` deliberately absent from
+  `CAFAYE_UNREADABLE`, on the reasoning that the list is a claim about what a
+  runner cannot read and a repository nobody has written cannot be read by
+  anyone. `the_drift_job_clones_every_repository_pantry_curates` then refused the
+  whole registration: a curated name the job neither clones nor declares unreadable
+  is a claim no drift test can check. Cloning it would fail the job's clone step
+  on a 404 — the same 404 as `cafaye-rb`'s, for the opposite reason. So it is
+  declared, with the difference written beside the list. That difference is the
+  second half of D2's case for a `planned` value: "the runner cannot read this"
+  and "there is nothing to read" are two claims, and one list is now carrying
+  both.
+
+- **The workspace walk now sees a directory with no `cafaye.yml` in it.**
+  `every_directory_in_the_workspace_is_a_repository_the_registry_curates` asks
+  about every non-hidden, non-worktree directory, not only the ones carrying a
+  manifest. The existing walk asks the right question of the wrong set: a cafaye
+  repository that lost its `cafaye.yml` in a merge, and a directory created for a
+  repository nobody has written, are both invisible to it, silently.
+  `cafaye-py` had been in the workspace through four packets and the tripwire
+  could not see it, because the shape it looked for was a file.
+
+  Three exclusions and none of them is an exemption: a hidden directory is not a
+  repository (`.git`, and the workspace's own `.github`), a worktree is not a
+  repository (they are named `<service>-worker-<packet>`, and a manifest inside
+  one is that service's manifest, already checked through its own checkout), and
+  anything else in that directory is a repository the registry should have an
+  opinion about or a stray worth finding. There is deliberately **no list of
+  tolerated names**: a check that can be made green by not checking is a check
+  that has stopped checking.
+
+- **A `cli` that has written an OpenAPI document is now a test failure.**
+  `a_registered_cli_publishes_no_openapi_document_of_its_own` walks each `cli`'s
+  checkout for a document where core's conventions put a published one — a
+  directory named `openapi`, or `openapi.{yaml,yml,json}`. cafaye-ts is why the
+  check exists and it is the awkward case: it carries six documents, correctly
+  under `specs/` rather than in either of those positions, because a vendored
+  copy of somebody else's specification is an input and the provenance record for
+  an input is not a surface. Without the check, a repository that writes its
+  document and has not yet declared `exposes` would sit in the registry on a
+  curation that a file in its own tree has already made false.
+
+  That check's **narrowness is pinned by a fixture**,
+  `the_cli_document_walker_looks_only_where_core_puts_a_published_document`, over
+  a directory holding both sides of the distinction: a vendored
+  `specs/identity.yaml` and an `openapi-ts.config.ts` must never be found, and an
+  `openapi/` directory and an `openapi.json` must always be. If the rule were ever
+  widened to "any file whose name mentions openapi", this list would grow — and
+  the tempting fix at that point would be to widen the exemption rather than
+  narrow the rule, which is the failure this pins shut.
+
 - **`kind: cli`, and `caf` stops being recorded as an `api`.** MD1. `caf` is a
   binary — its own manifest says "caf is a binary, not a service: it exposes no
   HTTP surface and publishes no events" — and the registry had no way to say so,
@@ -169,6 +280,22 @@ bottom.
 
 ### Changed
 
+- **`?kind=cli` returns two entries, and `?language=typescript` returns two.**
+  `[caf, cafaye-ts]` and `[cafaye-ts, guard]` — a command, an imported package,
+  and a gateway whose document is unwritten. `?contract=^0.2.0` gains
+  `cafaye-ts` alongside `caf`; the `^0.1.0` group is unchanged, because
+  cafaye-ts's own manifest says `^0.2.0` and the registry records what the file
+  says. `?language=typescript&contract=^0.2.0` stopped being an empty question,
+  so the empty-list case became `?language=python&contract=^0.1.0` — muse is the
+  only python service and it is on `^0.2.0`. That case has now been invalidated
+  by a registration twice, and the third replacement was checked rather than
+  assumed.
+- **Paging over the whole registry is five pages, not four.** Nine entries at
+  `limit=2` finish on a page of one, so `a_page_limit_slices_the_list_and_the_
+  cursor_finishes_it` and its in-process twin now assert a short final page. A
+  limit is a maximum and an odd length produces one; a client that assumed full
+  pages would ask once more and find nothing.
+
 - **A checkout's remote is compared by repository, not by spelling.**
   `every_registered_repository_url_is_the_real_services_remote` compared the
   registry's declared URL to `remote.origin.url` as strings, and the two are
@@ -226,6 +353,24 @@ bottom.
 - **No response shape changed.** No field was added, removed or renamed, so
   `info.version` stays at `1.0.0` and no `caf pantry` client needs regenerating
   for this packet.
+
+### Fixed
+
+- **`registry/services/identity/cafaye.yml` was stale, and the field comparison
+  had been reporting it as WRONG rather than as out of date.** `identity-08` has
+  landed: it added the scoped API token routes, so identity's own manifest now
+  publishes two more events (`identity.api_key.created`,
+  `identity.api_key.revoked`) and a description that names scoped API tokens. The
+  copy in this repository had neither, so `every_registered_entry_matches_the_
+  real_service_on_disk` and `every_registered_entry_is_a_verbatim_copy_of_the_
+  services_own_bytes` were both red. Fixed with the `cp` the failure message
+  prints, which is the whole of the fix — a registry copy of another
+  repository's file is refreshed, never edited.
+
+  **It is in its own commit** because it has nothing to do with registering
+  `cafaye-ts`, and a reviewer should be able to see the two findings apart: this
+  one is drift the tripwire caught on its own, and the other is a repository the
+  registry never knew about.
 
 ## [0.1.0] — 2026-09-30
 

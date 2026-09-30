@@ -147,9 +147,13 @@ Specs are manager-owned: **you draft, the manager decides** (core's AGENTS.md).
 Never silently resolve a genuine design question, and never resolve it in a way
 that is hard to reverse. Mark it `> DECISION NEEDED (pantry):` in the affected
 file — what the choice is, the alternatives, your recommendation, and the cost of
-flipping — and report the open list. One number per decision, ever.
+flipping — and report the open list. One number per decision, ever. A decision
+recorded in the affected file **and** in `DECISIONS.md` (this repository's own
+open list, `D1`, `D2`, …) is recorded once in two places, not twice: the second
+reader is meant to find the same argument, not a second argument.
 
-Two are open, and both are recorded in `openapi/v1.yaml` and the README:
+Four are open. Two are the HTTP contract's, and both are recorded in
+`openapi/v1.yaml` and the README:
 
 1. **`method_not_allowed` (405)** is not in core's reserved code list. Recorded
    here for a core amendment rather than invented quietly. The cost of flipping:
@@ -172,6 +176,15 @@ refused: a value that is merely less wrong, chosen for want of a right one.
 Answered by `kind: cli` (pantry-05, 2026-09-30) — `ServiceKind::Cli`, caf's row
 says `cli`, and `openapi/v1.yaml` moves to 1.1.0 because a client that switches on
 `kind` exhaustively now has a case it has not handled.
+
+**It is now load-bearing a second time, and that is not what it was ratified
+for.** `cafaye-ts` (pantry-06) is registered as a `cli` too, and it is not a
+binary: no `bin`, no entry point, imported rather than run. So the value covers
+both "a binary" and "a package other programs import", and the registry now
+answers the same question two ways for the two client libraries in the fleet —
+`cafaye-ts` is a `cli`, the `cafaye-rb` gem is a `blockedBy: library`. **That is
+`DECISIONS.md` D1, and it is open.** Read it before touching either row: the
+tempting repair in either direction moves a row another packet wrote.
 
 The part worth keeping is **why the value is still curated**, because the obvious
 next question is why it is not derived like the other three. A manifest that
@@ -203,6 +216,9 @@ over: `cafaye-rb` is a **private** repository, so the CI job cannot clone it and
 that row's reason is verified by a developer's run of `tests/schema.rs` rather
 than on every CI run. See `CAFAYE_UNREADABLE` in `.github/workflows/ci.yml` and
 `an_unreadable_repository_is_neither_cloned_nor_registered` in `tests/ci.rs`.
+`cafaye-py's` row (pantry-06) has the same shape of gap for a different reason —
+there is no repository to clone, so CI satisfies "the manifest is absent" with a
+directory that does not exist. That one is `DECISIONS.md` D2.
 
 ## Git
 

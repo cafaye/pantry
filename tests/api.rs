@@ -100,7 +100,15 @@ async fn the_registry_is_the_whole_official_set_sorted_by_name() {
     assert_eq!(
         names(&response),
         [
-            "billing", "caf", "courier", "darkroom", "guard", "identity", "muse", "pantry"
+            "billing",
+            "caf",
+            "cafaye-ts",
+            "courier",
+            "darkroom",
+            "guard",
+            "identity",
+            "muse",
+            "pantry"
         ],
         "every official service, including pantry itself: a registry that cannot \
          describe the registry is one `caf dev` has to special-case"
@@ -211,6 +219,50 @@ async fn a_registered_binary_serves_the_same_absent_surface_as_a_registered_gap(
     );
 }
 
+/// The entry a reader is most likely to misfile, pinned where a client can see
+/// it.
+///
+/// cafaye-ts vendors the fleet's OpenAPI documents — one per service that has
+/// one, six in all — into `specs/`, and it serves none of them. Its own manifest
+/// spends fourteen lines on exactly this, and the sentence that matters is that
+/// the documents "are vendored INPUTS … the provenance record for an input is
+/// not a contract surface". So on the wire the six documents are visible only as
+/// their **absence**, which is the only honest way to show them: `exposes` is
+/// `null`, and there is no base path to prefix anything with.
+#[tokio::test]
+async fn a_package_that_vendors_the_fleets_documents_serves_none_of_them() {
+    let response = call(app(), "/v1/services/cafaye-ts").await;
+
+    assert_eq!(response.status, StatusCode::OK, "{response}");
+    assert_eq!(response.body["name"], json!("cafaye-ts"));
+    assert_eq!(response.body["language"], json!("typescript"));
+    assert_eq!(response.body["core"], json!("^0.2.0"));
+    assert_eq!(response.body["kind"], json!("cli"));
+    assert_eq!(
+        response.body["exposes"],
+        Value::Null,
+        "six OpenAPI documents are vendored in specs/ and not one of them is a surface \
+         this package serves. `exposes.api: specs/` would be the easy mistake and it \
+         would say this package SERVES those APIs; it serves nothing"
+    );
+    assert_eq!(
+        response.body["basePath"],
+        Value::Null,
+        "and with no document there is no prefix: basePath is derived from a document \
+         that exists, and a prefix invented for a repository that publishes no surface \
+         is the guess core's rule exists to prevent"
+    );
+    assert_eq!(response.body["consumes"], json!([]));
+    assert_eq!(
+        response.body["dependencies"],
+        json!([]),
+        "absent rather than empty is a different fact. The package builds on all six \
+         services, and `required: true` is the only value the schema offers, which is \
+         untrue — so the relationship is recorded where a sha can carry it, in \
+         specs/index.json, and here it is honestly absent"
+    );
+}
+
 /// The two entries whose `kind` cannot be derived, and the reason they are not
 /// the same value. Both manifests declare no contract surface, so both rows are
 /// curated — `guard` is a service waiting for its document and `caf` is a
@@ -221,7 +273,15 @@ async fn a_registered_binary_serves_the_same_absent_surface_as_a_registered_gap(
 async fn the_two_curated_kinds_are_distinguishable_from_outside() {
     let cli = call(app(), "/v1/services?kind=cli").await;
     assert_eq!(cli.status, StatusCode::OK, "{cli}");
-    assert_eq!(names(&cli), ["caf"], "the one binary in the fleet");
+    assert_eq!(
+        names(&cli),
+        ["caf", "cafaye-ts"],
+        "the artifacts a person installs, and the two the manifest cannot describe: a \
+         command, and a package that is imported rather than run. Both are `cli` because \
+         `api` and `both` would be false and `worker` is refused for a manifest with no \
+         surface — see the DECISION NEEDED on cafaye-ts's row for what that leaves \
+         unsaid, and for why the Ruby gem of the same shape is held back instead"
+    );
 
     let api = call(app(), "/v1/services?kind=api").await;
     assert_eq!(api.status, StatusCode::OK, "{api}");
@@ -321,11 +381,13 @@ async fn every_filter_narrows_the_list() {
                 "billing", "courier", "darkroom", "guard", "identity", "muse", "pantry",
             ],
         ),
-        // caf is not in the `api` list any more. It was there because the
-        // vocabulary had no value for a binary, so the registry recorded the
-        // least-wrong answer; `?kind=cli` is the true one and a client that
-        // routed on `api` would have looked for HTTP on a command.
-        ("?kind=cli", &["caf"]),
+        // Neither `cli` is in the `api` list, and neither was ever honestly in
+        // it. caf was there because the vocabulary had no value for a binary and
+        // the registry recorded the least-wrong answer; `?kind=cli` is the true
+        // one, and a client that routed on `api` would have looked for HTTP on a
+        // command. cafaye-ts is the same refusal about a package: it serves
+        // nothing either, whatever the six documents it vendors might suggest.
+        ("?kind=cli", &["caf", "cafaye-ts"]),
         // Two `go` repositories, and they are not the same thing: identity
         // serves HTTP, caf declares no surface at all. `language` is read off
         // the manifest, so it does not care which.
@@ -333,9 +395,13 @@ async fn every_filter_narrows_the_list() {
         ("?language=ruby", &["billing"]),
         ("?language=elixir", &["courier"]),
         ("?language=rust", &["darkroom", "pantry"]),
+        // Two `typescript` repositories and they are not the same thing, which
+        // is the point of asking by language: guard serves HTTP on ^0.1.0 and
+        // cafaye-ts is the client, on ^0.2.0, serving nothing.
+        ("?language=typescript", &["cafaye-ts", "guard"]),
         (
             "?contract=%5E0.2.0",
-            &["billing", "caf", "darkroom", "muse", "pantry"],
+            &["billing", "caf", "cafaye-ts", "darkroom", "muse", "pantry"],
         ),
         // courier joins identity and guard on ^0.1.0, which pre-1.0 does not
         // contain ^0.2.0.
@@ -362,11 +428,13 @@ async fn a_filter_that_matches_nothing_is_an_empty_list() {
         // to pick a genuinely empty question rather than to delete it.
         "?language=elixir&contract=%5E0.2.0",
         "?contract=%5E9.0.0",
-        // guard is the only `typescript` repository and it is on ^0.1.0, which
-        // pre-1.0 does not contain ^0.2.0. This used to be `language=go` and
-        // stopped being empty when caf registered: two filters are worth
-        // nothing if they cannot survive the next entry in the registry.
-        "?language=typescript&contract=%5E0.2.0",
+        // muse is the only `python` repository and it is on ^0.2.0, which
+        // pre-1.0 does not contain ^0.1.0. This used to be `language=go` (caf
+        // registered) and then `language=typescript` (cafaye-ts registered):
+        // two filters are worth nothing if they cannot survive the next entry
+        // in the registry, so each replacement has to be checked rather than
+        // assumed.
+        "?language=python&contract=%5E0.1.0",
     ] {
         let response = call(app(), &format!("/v1/services{query}")).await;
 
@@ -428,11 +496,11 @@ async fn a_page_limit_slices_the_list_and_the_cursor_finishes_it() {
         .to_string();
     let second = call(app(), &format!("/v1/services?limit=2&cursor={cursor}")).await;
 
-    assert_eq!(names(&second), ["courier", "darkroom"]);
+    assert_eq!(names(&second), ["cafaye-ts", "courier"]);
     assert_eq!(
         second.body["page"]["has_more"],
         json!(true),
-        "four of eight returned means four are left"
+        "four of nine returned means five are left"
     );
 
     let cursor = second.body["page"]["next_cursor"]
@@ -443,8 +511,8 @@ async fn a_page_limit_slices_the_list_and_the_cursor_finishes_it() {
 
     assert_eq!(
         names(&third),
-        ["guard", "identity"],
-        "six of eight returned means two are left"
+        ["darkroom", "guard"],
+        "six of nine returned means three are left"
     );
     assert_eq!(third.body["page"]["has_more"], json!(true));
 
@@ -454,9 +522,21 @@ async fn a_page_limit_slices_the_list_and_the_cursor_finishes_it() {
         .to_string();
     let fourth = call(app(), &format!("/v1/services?limit=2&cursor={cursor}")).await;
 
-    assert_eq!(names(&fourth), ["muse", "pantry"]);
-    assert_eq!(fourth.body["page"]["has_more"], json!(false));
-    assert_eq!(fourth.body["page"]["next_cursor"], Value::Null);
+    assert_eq!(names(&fourth), ["identity", "muse"]);
+    assert_eq!(fourth.body["page"]["has_more"], json!(true));
+
+    let cursor = fourth.body["page"]["next_cursor"]
+        .as_str()
+        .expect("a next cursor")
+        .to_string();
+    let fifth = call(app(), &format!("/v1/services?limit=2&cursor={cursor}")).await;
+
+    // One entry left, so one entry returned: the limit is a maximum and an odd
+    // length produces a short page. A client that assumed full pages would ask
+    // for a sixth and find nothing.
+    assert_eq!(names(&fifth), ["pantry"]);
+    assert_eq!(fifth.body["page"]["has_more"], json!(false));
+    assert_eq!(fifth.body["page"]["next_cursor"], Value::Null);
 }
 
 #[tokio::test]
@@ -572,7 +652,7 @@ async fn readyz_reports_a_loaded_registry_and_refuses_an_unloaded_one() {
     assert_eq!(ready.body["status"], json!("ok"));
     assert_eq!(
         ready.body["services"],
-        json!(8),
+        json!(9),
         "readiness counts what it loaded"
     );
 

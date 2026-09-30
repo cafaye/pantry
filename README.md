@@ -103,17 +103,20 @@ Three rules a generated client has to know:
 | no `exposes.api`, some event work (`exposes.events` or `consumes`) | `worker` |
 | no contract surface, and the repository serves HTTP | `api` (curated) |
 | no contract surface, and the repository is a binary | `cli` (curated) |
+| no contract surface, and it is an installed artifact with no entry point | `cli` (curated) |
 
-The last two rows are the honest gap, and they are **two values rather than one
-because a manifest cannot tell them apart**. A repository that declares no
-contract surface says nothing about what it is: guard (a gateway whose OpenAPI
-document has not been written yet) and caf (a binary — "caf is a binary, not a
-service: it exposes no HTTP surface and publishes no events") declare the same
-absence, and core's own rule 3 says such a repository "is a library or a spec
-repo", which is neither of them. `language` does not help — it names a toolchain,
-not a shape — and the same shape arrives a third time with `cafaye-rb`, a gem in
-the exclusion record below. So the distinction is recorded by a person in
-`registry/index.yml`, and `Registry::load` holds it honest:
+The last three rows are the honest gap, and they are **two values rather than
+three because a manifest cannot tell the cases apart**. A repository that
+declares no contract surface says nothing about what it is: guard (a gateway
+whose OpenAPI document has not been written yet) and caf (a binary — "caf is a
+binary, not a service: it exposes no HTTP surface and publishes no events")
+declare the same absence, and so does cafaye-ts, which serves nothing and
+vendors six other repositories' OpenAPI documents into `specs/`. core's own rule
+3 says such a repository "is a library or a spec repo", which is none of the
+three. `language` does not help — it names a toolchain, not a shape.
+
+So the distinction is recorded by a person in `registry/index.yml`, and
+`Registry::load` holds it honest:
 
 * for a manifest with no contract surface, **only** `api` and `cli` are
   admitted, and the refusal names both — a fifth value added to the vocabulary
@@ -130,11 +133,29 @@ manifest schema has no way to say "I am a binary" either, so `cli` stays
 curated. Every other `kind` in the registry is checked against the manifest at
 load.
 
+**cafaye-ts is the second `cli`, and it is where that gap started costing
+something.** It is a package, not a command — no `bin`, no entry point,
+`dependencies: {}` — so "installed and run" is only half true of it, and the
+other half of the answer is that it is *imported*. The vocabulary has no word
+for that, and the price is visible one screen down: `cafaye-rb` is this
+repository in Ruby, the same shape with the same absence, and it is held back as
+`library` rather than registered. **That is a DECISION NEEDED, not a settled
+distinction** — see `DECISIONS.md` D1 for the three options and which one is
+recommended, and the `> DECISION NEEDED (pantry-06, D1)` block on cafaye-ts's row
+for the argument the reviewer of a registration needs first. It is recorded
+rather than resolved because resolving it means moving a row another packet
+wrote, and that is not this packet's to do.
+
 ### `basePath`
 
 The `/vN` prefix every contract path in the service's OpenAPI document sits
-under — `/v1` for six of the eight entries, `null` for **guard** and **caf**,
-which publish no document for the rule to read.
+under — `/v1` for six of the nine entries, `null` for **guard**, **caf** and
+**cafaye-ts**, which publish no document for the rule to read. cafaye-ts is the
+one that looks like an exception: it vendors six OpenAPI documents into `specs/`,
+one per service that has one. Those are **inputs**, copied at recorded commits
+and provenanced in `specs/index.json`, and a base path is derived from a document
+a service *publishes* — so deriving one from a document this package copied would
+be core's longest-common-prefix guess, on six different documents.
 
 **A partial document is still a document — and the next one will be too.**
 courier's OpenAPI document *was* partial: it covered `/v1/webhook_endpoints`
@@ -216,6 +237,7 @@ registry/
 └── services/
     ├── billing/cafaye.yml       # verbatim copies of each service's own manifest
     ├── caf/cafaye.yml
+    ├── cafaye-ts/cafaye.yml
     ├── courier/cafaye.yml
     ├── darkroom/cafaye.yml
     ├── guard/cafaye.yml
@@ -311,10 +333,36 @@ courier-03 renamed them, and pantry-03 registered it.
 | `core` | `language: spec` — a specification, not a service. `Registry::load` refuses any `spec` manifest, so this stays true if someone copies one in. `caf contract lint`: `OK` | 2026-09-30 (pantry-05) |
 | `docs` | `library` — the documentation site. A valid manifest with no `exposes` on purpose: its own file says it "serves no HTTP traffic of its own … The same shape a library takes". A static site is depended on, not started. `caf contract lint`: `OK` | 2026-09-30 (pantry-05) |
 | `cafaye-rb` | `library` — the shared Ruby gem. core's schema says to "omit `exposes` entirely for libraries" and its manifest does, and says why: "it is not deployed, serves no traffic and publishes no events". `caf contract lint`: `OK` | 2026-09-30 (pantry-05), on a local checkout — see below |
+| `cafaye-py` | `no-manifest` — **a directory, not a repository.** No files, no checkout, no manifest: the planned hand-written Python client, which MD6 ruled hand-written rather than generated. The row is here so the registry has an opinion about a directory a reader can see, and so a `cafaye.yml` appearing there fails the suite | 2026-09-30 (pantry-06) — and **the check on it is vacuous in CI**, see below |
 
-All five were re-read against their checkouts in this packet, which is the
-fourth packet to do that by hand and each time it was necessary: every one of
-the first three had a reason another repository's packet made false.
+The first five were re-read against their checkouts in pantry-05, which was the
+fourth packet to do that by hand and each time it was necessary: every one of the
+first three had a reason another repository's packet made false.
+
+**The sixth row cannot be re-read, and saying so is why it is written down.**
+`cafaye-py` is a directory with nothing in it, so there is no checkout to confirm
+the reason against, and in the `workspace-drift` job it does not exist at all:
+the `no-manifest` arm asserts the manifest is *absent*, and a directory that was
+never cloned satisfies that. **A green run does not mean this row was checked.**
+It is verified by a developer's run of `tests/schema.rs` with
+`PANTRY_CAFAYE_ROOT` set, and by nothing else.
+
+It *is* named in `CAFAYE_UNREADABLE`, which this packet first claimed it would
+not be and was wrong about — `the_drift_job_clones_every_repository_pantry_curates`
+refuses a curated name the job neither clones nor declares unreadable, and the
+clone would fail the job's clone step on a 404. The entry is there with the
+reason written beside it, and that reason is a different one from `cafaye-rb`'s:
+nothing about `cafaye-py` is *unreadable*, because there is nothing there to
+read. One list now carries two different claims, which is the other half of
+`DECISIONS.md` **D2**'s argument for a fifth `blockedBy` value that says
+"planned" instead of "not readable".
+
+What the row does buy is a live tripwire. A `cafaye.yml` appearing in that
+directory fails `every_exclusion_reason_is_still_true` with *"now carries a
+cafaye.yml — register it or change this row's blockedBy and say why it is still
+held back"*, so an empty directory cannot be tolerated indefinitely by doing
+nothing. That `no-manifest` is a slight overstatement — the value presumes a
+repository, and there is not one yet — is `DECISIONS.md` **D2**, open.
 
 ### `library` — valid, and not something anyone brings up
 
@@ -343,18 +391,32 @@ route to. A documentation site is read and a gem is depended on; neither is a
 process, and listing them as services would make `kind` mean two different things
 in one column.
 
+**And the next entry added to the registry made that sentence false, which is
+the useful part.** `cafaye-ts` — the TypeScript client, the npm counterpart of
+`cafaye-rb`'s gem, with the same manifest shape and the same deliberate absence
+of `exposes` — **is** registered, as a `cli`. So the exclusion record now holds
+a client library and the registry serves another, and the reason given above
+("registration claims `caf dev` can bring the thing up") does not distinguish
+them: neither is brought up. This is `DECISIONS.md` **D1**, open, with three
+options and a recommendation; it is recorded rather than fixed because every fix
+moves a row this repository did not write. What is *not* left to chance is that
+the two rows are now three screens apart and neither comment mentions the other,
+which would be the actual rot.
+
 ### A green run does not mean this table is accurate
 
 `every_exclusion_reason_is_still_true` reports exclusions that have gone
-**stale**. It says nothing about whether the five reasons still **hold**. Those
+**stale**. It says nothing about whether the six reasons still **hold**. Those
 are different questions and only one of them is machine-checked, so a green run
 is not evidence that this list is right — it is a reason to go and read the
-five checkouts. That has now been necessary on four consecutive packets
-(darkroom, caf, courier, and this one), and each time it was: every one of the
-first three exclusions had a reason that another repository's packet made false.
+checkouts. That has been necessary on four consecutive packets (darkroom, caf,
+courier, and pantry-05), and each time it was: every one of the first three
+exclusions had a reason that another repository's packet made false. One of the
+six is not checkable at all, and its row says which and why.
 
-One row is checked in fewer places than the other four. **`cafaye-rb` is a
-private repository**, so an anonymous runner cannot clone it — the GitHub API
+Two rows are checked in fewer places than the other four, for two different
+reasons. **`cafaye-rb` is a private repository**, so an anonymous runner cannot
+clone it — the GitHub API
 answers `404` for it without a credential, which reads as "does not exist" rather
 than "not yours". The `workspace-drift` job names it in `CAFAYE_UNREADABLE`, its
 reason is verified by a developer's run of `tests/schema.rs` and by nothing else,
@@ -514,6 +576,7 @@ also fails if the drift job is disabled, if a secret reference reappears, or if
 pantry/
 ├── bin/prime                  # the gate
 ├── cafaye.yml                 # this service's own manifest
+├── DECISIONS.md               # this repository's open decisions, D1, D2, …
 ├── openapi/v1.yaml            # the HTTP contract, machine half of the table above
 ├── registry/                  # the official service set, as data
 ├── schemas/                   # core's manifest schema, vendored
