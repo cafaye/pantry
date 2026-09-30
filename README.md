@@ -396,20 +396,27 @@ reading the **live filesystem**: it looks for a cafaye workspace — a directory
 holding `core/`, `identity/` and the rest — next to this checkout, or at
 `PANTRY_CAFAYE_ROOT`. Those are sibling checkouts under `moon/cafaye/`.
 
-With a workspace, the eleven drift tests run and compare. Without one, each
-prints `SKIP …` on stderr naming the directory that would make it run, and
-returns. A skip is reported, never hidden. The full gate, run by hand:
+With a workspace, the drift tests run and compare. Without one, eight of the
+eleven print `SKIP …` on stderr naming the directory that would make them run,
+and return; three in `tests/schema.rs` skip for the same reason. A skip is
+reported, never hidden. The full gate, run by hand:
 
 ```console
 $ PANTRY_CAFAYE_ROOT=/Users/kaka/Code/any/moon/cafaye ./bin/prime
 ```
 
+The shape of the problem is that a pantry-only clone and a real workspace print
+**the same 79 passing tests and the same exit code**. The only difference
+between them is eleven `SKIP` lines. Nothing in a green run distinguishes
+"verified the fleet" from "verified itself" — which is why the job that has the
+fleet has to be a separate job with a name that says so.
+
 **A green badge on the `build` job has verified pantry against itself, not
-against reality.** That job is a clone of pantry alone, so the drift tests and
-three schema tests skip there. It proves the registry is internally consistent,
-that every entry satisfies core's vendored schema, and that the filter and
-paging contracts hold. It proves **nothing** about whether any entry still says
-what its service says. It is a fast inner loop, not the gate on the registry.
+against reality.** That job is a clone of pantry alone. It proves the registry
+is internally consistent, that every entry satisfies core's vendored schema,
+and that the filter and paging contracts hold. It proves **nothing** about
+whether any entry still says what its service says. It is a fast inner loop,
+not the gate on the registry.
 
 **The `workspace-drift` job is the gate, and it runs.** It clones the whole
 cafaye organisation beside the `pantry` checkout and runs the same
