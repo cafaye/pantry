@@ -144,7 +144,13 @@ jobs:
       - name: check out the fleet
         run: |
           set -euo pipefail
-          for repo in $CAFAYE_REPOS; do
+          # `read -a` rather than `for repo in $CAFAYE_REPOS`, because unquoted
+          # expansion splits on whitespace in bash and does not in zsh or fish:
+          # a guard that silently iterates one 90-character "repository name"
+          # is worse than no guard, and this file is read by more shells than
+          # the runner's.
+          read -r -a repos <<< "$CAFAYE_REPOS"
+          for repo in "${repos[@]}"; do
             git clone --depth 1 "https://github.com/cafaye/${repo}.git" "$repo"
           done
 
@@ -161,7 +167,8 @@ jobs:
       - name: prove the workspace is real
         run: |
           set -euo pipefail
-          for repo in $CAFAYE_REPOS; do
+          read -r -a repos <<< "$CAFAYE_REPOS"
+          for repo in "${repos[@]}"; do
             if [ ! -d "$repo/.git" ]; then
               echo "::error::$repo cloned to a directory with no git metadata — the drift tests would skip it"
               exit 1
@@ -171,6 +178,22 @@ jobs:
             echo "::error::core/schemas/cafaye.manifest.schema.json is missing, so cafaye_root() will not find this workspace and every drift test will SKIP"
             exit 1
           }
+
+      # `bin/prime` ends by running the platform CLI's own `contract lint` over
+      # this manifest and every registry entry, guarded on `../caf` being a
+      # checkout — and `caf` is on the list above, so that step RUNS here rather
+      # than skipping, which means the whole registry is validated by the
+      # platform's own CLI on every run. It needs a Go toolchain, and the runner
+      # image's is not a version this file can promise anything about: caf's
+      # go.mod says 1.25, and a runner shipping less would fail on a build
+      # rather than on a registry. `actions/setup-go@v7` with `stable` is the
+      # same action and the same default kit's reusable workflow uses,
+      # deliberately, so the two cannot drift apart. It runs after the clone
+      # because its cache key is `caf/go.sum`.
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache-dependency-path: caf/go.sum
 
       # The whole gate, with the workspace reachable, so the drift tests run
       # instead of skipping. The exit code is the last command's and nothing is

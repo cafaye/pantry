@@ -286,9 +286,144 @@ fn every_registered_entry_is_a_verbatim_copy_of_the_services_own_bytes() {
     );
 }
 
+/// A remote is one repository written several ways, and which way it is
+/// written is not a fact about the repository.
+///
+/// `git@github.com:cafaye/guard.git`, `ssh://git@github.com/cafaye/guard.git`
+/// and `https://github.com/cafaye/guard` are three transports for the same
+/// `cafaye/guard`, and which one a checkout has is decided by whoever cloned
+/// it: a developer with an SSH remote (PLAN.md §1 — the only form allowed for
+/// anything cafaye owns) and this repository's own CI, which clones
+/// anonymously over HTTPS because that is the only credential-free way to reach
+/// a public repository from a hosted runner.
+///
+/// Comparing the two strings instead of the repository they name is how
+/// `every_registered_repository_url_is_the_real_services_remote` below came to
+/// be unrunnable in the one environment that matters most: with the drift job
+/// enabled and a real workspace of anonymous HTTPS clones, it failed on
+/// `billing` for a checkout whose origin was correct in every respect a
+/// registry can observe. The registry was right and the check was measuring the
+/// clone mechanism.
+#[test]
+fn a_git_remote_and_an_https_url_can_name_the_same_repository() {
+    for (url, expected) in [
+        ("git@github.com:cafaye/guard.git", "cafaye/guard"),
+        ("git@github.com:cafaye/guard", "cafaye/guard"),
+        ("ssh://git@github.com/cafaye/guard.git", "cafaye/guard"),
+        ("https://github.com/cafaye/guard.git", "cafaye/guard"),
+        ("https://github.com/cafaye/guard", "cafaye/guard"),
+        ("https://github.com/cafaye/guard/", "cafaye/guard"),
+        // A credential in the URL is a credential, not part of the name.
+        (
+            "https://x-access-token:ghs_abc123@github.com/cafaye/guard.git",
+            "cafaye/guard",
+        ),
+    ] {
+        assert_eq!(
+            repository_identity(url).as_deref(),
+            Some(expected),
+            "{url} names {expected}"
+        );
+    }
+}
+
+/// The other half, and the one that keeps the comparison above honest: a
+/// repository is `owner/name` on one host. Anything that is not that has no
+/// identity to compare, and a check that quietly treated every unparseable
+/// origin as a match would make the whole remote test decorative.
+#[test]
+fn only_a_github_remote_has_a_repository_identity() {
+    for url in [
+        "../guard",                               // a path, not a remote
+        "/Users/kaka/Code/any/moon/cafaye/guard", // an absolute local path
+        "https://gitlab.com/cafaye/guard.git",    // a different host
+        "git@gitlab.com:cafaye/guard.git",
+        "https://github.com/cafaye", // no repository name
+        "https://github.com/",
+        "https://github.com/cafaye/guard/tree/main", // a path, not a remote
+        "banana",
+    ] {
+        assert_eq!(
+            repository_identity(url),
+            None,
+            "{url} is not a GitHub remote, so it has no repository identity to compare"
+        );
+    }
+}
+
+/// The `owner/name` a GitHub remote names, or `None` if it is not one.
+///
+/// Deliberately not a URL parser: the three spellings a cafaye remote takes are
+/// enumerated in the tests above and a fourth is a fact to add here rather than
+/// a case to discover in a panic message. `None` means "this is not a GitHub
+/// remote", which is never a match — a checkout with a local-path origin is a
+/// finding to report, not an origin to wave through.
+fn repository_identity(url: &str) -> Option<String> {
+    let url = url.trim();
+
+    let (host, path) = match url.split_once("://") {
+        // A real URL: scheme, authority, path. The userinfo is a credential
+        // and not part of the repository's name, and actions/checkout may put
+        // one there.
+        Some((scheme, rest)) => {
+            if !matches!(scheme, "https" | "http" | "ssh" | "git") {
+                return None;
+            }
+            let (authority, path) = rest.split_once('/')?;
+            (authority.rsplit('@').next()?, path)
+        }
+        // The scp form — `git@github.com:owner/repo` — which git accepts and
+        // which is not a URL at all: no scheme, and a colon where a URL has a
+        // slash. Nothing else may take this path, so `user` is checked rather
+        // than assumed.
+        None => {
+            let (user_at_host, path) = url.split_once(':')?;
+            let (user, host) = user_at_host.split_once('@')?;
+            if user != "git" {
+                return None;
+            }
+            (host, path)
+        }
+    };
+
+    if host != "github.com" {
+        return None;
+    }
+
+    // `https://github.com/cafaye/guard/` is a remote git accepts, so a
+    // trailing slash is not a different repository.
+    let path = path.trim_end_matches('/');
+
+    let mut segments = path.split('/');
+    let owner = segments.next()?;
+    let repository = segments.next()?.trim_end_matches(".git");
+
+    // Deeper than `owner/name` is a link to something inside a repository, not
+    // a remote for one.
+    if segments.next().is_some() || owner.is_empty() || repository.is_empty() {
+        return None;
+    }
+
+    Some(format!("{owner}/{repository}"))
+}
+
 /// The repository URL has to name the repository that is actually open: the
 /// remote's `origin` is the one thing in the workspace that cannot drift from
 /// GitHub without a commit.
+///
+/// The comparison is by repository, not by string, because the transport is not
+/// a fact about the repository — see
+/// `a_git_remote_and_an_https_url_can_name_the_same_repository` above, which
+/// exists because this test used to compare the two forms and failed in CI for
+/// a correct checkout.
+///
+/// The other half of the policy is not here and is not lost: that a *declared*
+/// `repository.url` must be SSH is core's schema, whose pattern accepts only
+/// the two SSH spellings and says "HTTPS remotes for cafaye/anywaye repos are
+/// a policy violation (PLAN.md §1)". `tests/schema.rs` validates every entry
+/// against that vendored copy, and `the_vendored_schema_is_byte_identical_to_\
+/// cores` anchors the copy to core. So the rule is enforced where it is written
+/// down, and this test enforces the part only the filesystem can answer.
 #[test]
 fn every_registered_repository_url_is_the_real_services_remote() {
     let root = require_workspace!("repository remote drift");
@@ -322,13 +457,29 @@ fn every_registered_repository_url_is_the_real_services_remote() {
         }
 
         let actual = String::from_utf8_lossy(&remote.stdout).trim().to_string();
-        let declared = entry.manifest.repository.url.trim_end_matches(".git");
+        let declared = entry.manifest.repository.url.as_str();
 
-        let normalise = |url: &str| url.trim_end_matches(".git").to_string();
+        let declared_repository = repository_identity(declared).unwrap_or_else(|| {
+            panic!(
+                "{name} declares remote {declared}, which is not a GitHub remote naming an \
+                 owner and a repository. core's schema accepts only the two SSH spellings, so \
+                 either this entry has not been validated or the schema's pattern is wrong."
+            )
+        });
+
+        let actual_repository = repository_identity(&actual).unwrap_or_else(|| {
+            panic!(
+                "{name} declares remote {declared} but {} has origin {actual}, which names no \
+                 GitHub repository. A checkout of a cafaye service is cloned from its GitHub \
+                 remote; a local path here means the workspace is not what it appears to be.",
+                repository.display()
+            )
+        });
+
         assert_eq!(
-            declared,
-            normalise(&actual),
-            "{} declares remote {declared} but the checkout's origin is {actual}",
+            declared_repository, actual_repository,
+            "{} declares remote {declared} ({declared_repository}) but the checkout's origin is \
+             {actual} ({actual_repository}). Same host, different repository: that is drift.",
             name
         );
     }
