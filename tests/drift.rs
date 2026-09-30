@@ -263,9 +263,10 @@ fn kind_agrees_with_what_the_manifest_can_prove() {
             );
         }
 
-        // The one curated fact in the registry, stated here so the next person
-        // to touch it knows it is load-bearing: a service whose manifest
-        // declares no surface has kind nothing can derive, and pantry records it.
+        // The curated facts in the registry, stated here so the next person to
+        // touch one knows it is load-bearing: a service whose manifest declares
+        // no surface has a kind nothing can derive — guard and caf today — and
+        // pantry records it rather than deriving a wrong one.
         if !serves_http && !publishes && !subscribes {
             eprintln!(
                 "note: {name} declares no contract surface at all, so its kind ({}) is \

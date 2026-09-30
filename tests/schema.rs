@@ -263,7 +263,7 @@ fn every_exclusion_reason_is_still_true() {
 
 /// Every official repository that pantry knows about is either registered or
 /// explicitly excluded. The registry knows about six cafaye repositories and
-/// four are registered; this test is what keeps a fifth from being invented in
+/// five are registered; this test is what keeps a sixth from being invented in
 /// some other repository without a decision recorded here.
 #[test]
 fn a_registered_service_is_never_also_excluded() {

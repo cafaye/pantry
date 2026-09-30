@@ -81,6 +81,44 @@ services:
     kind: api
     basePath: null
 
+  # caf is the platform CLI, and it is registered because it now declares a
+  # valid manifest in core's own contract language — not because something
+  # routes to it. A service that has declared itself is in the fleet whether or
+  # not anything routes to it, and this file describes the fleet. (caf-03 made
+  # the file valid; the exclusion record said "register it" and the tripwire
+  # tests/schema.rs:every_exclusion_reason_is_still_true said so out loud.)
+  #
+  # kind: api, and it is CURATED — the second curated entry, after guard, for
+  # the same structural reason. caf's manifest omits `exposes` entirely and says
+  # why in its own words: "caf is a binary, not a service: it exposes no HTTP
+  # surface and publishes no events". It declares no `consumes` either, so
+  # serves_http, publishes and subscribes are all false, and the `kind` table in
+  # src/registry.rs has no row for that: a service that declares nothing cannot
+  # be classified from its manifest. `api` is what the vocabulary admits —
+  # `worker` is refused by check_kind ("declares no contract surface at all")
+  # and `both` is refused by tests/drift.rs, which requires a real api surface
+  # and a real subscription — so this value is a choice under constraint, not a
+  # derivation, and the difference is recorded rather than papered over.
+  # > DECISION NEEDED (pantry): `kind` has no value for "a binary". The three
+  # > values describe things `caf dev` brings up and `guard` routes to, and a CLI
+  # > is neither. `api` is the least-wrong of the three, not a true answer, and a
+  # > client that reads `kind: api` and tries to route to caf will find a binary
+  # > with no HTTP surface. Alternatives: (a) a fourth value (`cli`), which is a
+  # > vocabulary change to `ServiceKind`, to `openapi/v1.yaml` and to `?kind=`;
+  # > (b) leave it as `api` and document it, which is what this row does.
+  # > Recommended: (a) — the vocabulary should be able to say what a manifest
+  # > proves, and "I am a binary" is something this manifest proves outright.
+  # > Cost of flipping: one enum variant, one enum in openapi/v1.yaml, and
+  # > check_kind's curated branch, which today hardcodes `api`.
+  # basePath: null — no `exposes.api` and no OpenAPI document anywhere in the caf
+  # checkout, so there is no `/vN` prefix to name. Not `/v1` by analogy with the
+  # five entries above: a base path is derived from a document that exists, and
+  # inventing one for a repository that publishes no surface is the exact
+  # longest-common-prefix guess core's rule exists to prevent.
+  caf:
+    kind: api
+    basePath: null
+
 # Official cafaye repositories that are deliberately NOT registered, each with
 # the reason and the command that proves it. This is a curation record, not a
 # queue: an entry here means the repository is known, checked, and held back
@@ -100,6 +138,16 @@ services:
 #                  `language: spec`, which core's schema defines as
 #                  "specification-only repositories". Nothing routes to a spec
 #                  repo and no manifest declares a dependency on one.
+#
+# caf WAS here, and how it left is the reason to trust the list. Its row said
+# two things — "still the pre-core draft shape", which caf-03 made false, and "a
+# CLI is not a service in the registry's sense", which was an opinion. The
+# tripwire fired on the first half and the fix was to register it, not to teach
+# the test that a CLI is exempt: an exemption branch is a check that has stopped
+# checking, and this one had already earned its keep twice (darkroom, then caf).
+# The row it replaced is not kept as a tombstone because the exclusion record is
+# a record of what is held back *now*, and registry/services/caf/cafaye.yml is
+# the honest record of what happened to it.
 #
 excluded:
   - name: courier
@@ -125,16 +173,6 @@ excluded:
       the reconciliation as outstanding.
     verify: "cd ../caf && go run ./cmd/caf contract lint ../parlor/cafaye.yml"
     lint: 'INVALID ../parlor/cafaye.yml: is missing required fields ["name", "language", "core", "repository", "owner"]'
-
-  - name: caf
-    blockedBy: schema
-    reason: >-
-      The platform CLI, and also still the pre-core draft shape (`version`,
-      `languages`, `contracts`, `dev` — every one of them a violation of
-      `additionalProperties: false` once core froze). A CLI is not a service in
-      the registry's sense: nothing routes to it and nothing depends on it.
-    verify: "cd ../caf && go run ./cmd/caf contract lint cafaye.yml"
-    lint: 'INVALID caf/cafaye.yml: is missing required fields ["language", "core", "repository", "owner"]'
 
   - name: kit
     blockedBy: no-manifest
