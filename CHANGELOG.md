@@ -227,6 +227,24 @@ bottom.
   `info.version` stays at `1.0.0` and no `caf pantry` client needs regenerating
   for this packet.
 
+### Fixed
+
+- **`registry/services/identity/cafaye.yml` was stale, and the field comparison
+  had been reporting it as WRONG rather than as out of date.** `identity-08` has
+  landed: it added the scoped API token routes, so identity's own manifest now
+  publishes two more events (`identity.api_key.created`,
+  `identity.api_key.revoked`) and a description that names scoped API tokens. The
+  copy in this repository had neither, so `every_registered_entry_matches_the_
+  real_service_on_disk` and `every_registered_entry_is_a_verbatim_copy_of_the_
+  services_own_bytes` were both red. Fixed with the `cp` the failure message
+  prints, which is the whole of the fix — a registry copy of another
+  repository's file is refreshed, never edited.
+
+  **It is in its own commit** because it has nothing to do with registering
+  `cafaye-ts`, and a reviewer should be able to see the two findings apart: this
+  one is drift the tripwire caught on its own, and the other is a repository the
+  registry never knew about.
+
 ## [0.1.0] — 2026-09-30
 
 The registry, official-only, as a service with an HTTP surface and as data in
