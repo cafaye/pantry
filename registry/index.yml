@@ -18,8 +18,10 @@
 # live here. See README.md, "Where each fact comes from".
 #
 # HOW IT STAYS TRUE. tests/drift.rs reads the real service checkout for every
-# name below and fails if any field moved. A copy without that test is a copy
-# that rots; the test is the mechanism, not the discipline.
+# name below and fails if any field moved — and, since pantry-03, if a single
+# BYTE moved, because these copies are verbatim including their comments. A copy
+# without that test is a copy that rots; the test is the mechanism, not the
+# discipline.
 #
 # SCOPE. Official cafaye services only. There is no submission flow, no
 # third-party registration, no plugin loader and no webhook — those are Phase 5
@@ -56,6 +58,40 @@ services:
   # darkroom/openapi/v1.yaml is under /v1 apart from the two probes, which
   # core's conventions keep out of the /v1 prefix and out of the derivation.
   darkroom:
+    kind: api
+    basePath: /v1
+
+  # courier serves HTTP; `consumes: []`, so `kind: api` and not `both` — even
+  # though it publishes five events. Publishing is not subscribing, and the
+  # `kind` table keys off `consumes`, so a service that emits and never listens
+  # is an `api`. This was the exclusion the tripwire fired on for the third
+  # time: courier-03 renamed `email.queued` and its siblings to
+  # `courier.email.queued` and siblings, and the stated reason — that the
+  # two-segment names fail core's eventType pattern — stopped being true.
+  #
+  # basePath: /v1, derived from courier's own openapi.yaml. Two things about
+  # that derivation, because the document is not like the others' and the reason
+  # it is still a derivation is not obvious:
+  #
+  #   1. The document lives at the REPOSITORY ROOT (`exposes.api: openapi.yaml`),
+  #      not under `openapi/` as every other entry's does. It is read from
+  #      wherever the manifest says it is, and the path is served verbatim — a
+  #      client that reads `exposes.api` and fetches it has to be right.
+  #   2. The document is PARTIAL, and says so in its own header: it covers
+  #      `/v1/webhook_endpoints` only, while `GET`/`PUT
+  #      /v1/notification_preferences/:user_id` are in courier's router and not
+  #      in the file. That does not make the derivation a guess. Every path the
+  #      document DOES publish is under `/v1`, which is core's rule, and every
+  #      non-probe route in courier's router is under `/v1` too — so the omitted
+  #      routes cannot move the prefix. What partial coverage means is that
+  #      pantry derives from what courier has published, and the day courier adds
+  #      a documented path under a second prefix, tests/drift.rs fails on this
+  #      row rather than guessing an average. A route courier documents later
+  #      under /v1 changes nothing here; a route it documents under /v2 is a
+  #      decision this file would then need.
+  #      (`a_partial_openapi_document_still_yields_a_base_path_from_the_paths_it_
+  #      publishes` in tests/manifest.rs pins the rule behind the decision.)
+  courier:
     kind: api
     basePath: /v1
 
@@ -114,7 +150,10 @@ services:
   # checkout, so there is no `/vN` prefix to name. Not `/v1` by analogy with the
   # five entries above: a base path is derived from a document that exists, and
   # inventing one for a repository that publishes no surface is the exact
-  # longest-common-prefix guess core's rule exists to prevent.
+  # longest-common-prefix guess core's rule exists to prevent. The same is true of
+  # courier's row, and there the document is partial rather than absent — which
+  # is a different thing, and `a_partial_openapi_document_…` in tests/manifest.rs
+  # is what keeps it one.
   caf:
     kind: api
     basePath: null
@@ -139,31 +178,41 @@ services:
 #                  "specification-only repositories". Nothing routes to a spec
 #                  repo and no manifest declares a dependency on one.
 #
-# caf WAS here, and how it left is the reason to trust the list. Its row said
-# two things — "still the pre-core draft shape", which caf-03 made false, and "a
-# CLI is not a service in the registry's sense", which was an opinion. The
-# tripwire fired on the first half and the fix was to register it, not to teach
-# the test that a CLI is exempt: an exemption branch is a check that has stopped
-# checking, and this one had already earned its keep twice (darkroom, then caf).
-# The row it replaced is not kept as a tombstone because the exclusion record is
-# a record of what is held back *now*, and registry/services/caf/cafaye.yml is
-# the honest record of what happened to it.
+# caf and courier WERE here, and how they left is the reason to trust the list.
+#
+# Both rows had one reason that was a fact and one that was an opinion, and in
+# both cases a sibling repository's packet made the fact false:
+#
+#   caf     — "still the pre-core draft shape", made false by caf-03.
+#   courier — "its event types are two-segment, so core's eventType pattern
+#              rejects them", made false by courier-03, which renamed them to
+#              `courier.email.delivered` and siblings.
+#
+# Each time the tripwire fired and each time the fix was to REGISTER, not to
+# teach the test that the case is exempt: an exemption branch is a check that
+# has stopped checking, and this one has now earned its keep three times
+# (darkroom, caf, courier). A carve-out here would be a weakened check, and
+# PLAN.md §1 forbids one.
+#
+# The rows they replaced are not kept as tombstones, because the exclusion record
+# is a record of what is held back *now*. registry/services/caf/cafaye.yml and
+# registry/services/courier/cafaye.yml are the honest record of what happened to
+# them.
+#
+# WHAT A GREEN RUN DOES NOT TELL YOU. The tripwire only reports exclusions that
+# have gone STALE. It says nothing about the three rows below still being
+# ACCURATE, so a green run is not a reason to believe this list — it is a reason
+# to re-read the three checkouts. This is the third packet to do that by hand
+# (darkroom, caf, courier), and each time it was necessary. Confirm each stated
+# reason against the checkout today, not against the last green run.
+#
+# This is also the structural point of the whole file: pantry's tests read the
+# LIVE filesystem, so any merge anywhere in the fleet can invalidate this
+# registry. That is the feature. The cost is that pantry's CI has to run against
+# a real workspace or it has verified pantry against itself — see README.md,
+# "The drift test needs a workspace", and .github/workflows/ci.yml.
 #
 excluded:
-  - name: courier
-    blockedBy: schema
-    reason: >-
-      Its manifest publishes `email.queued`, `email.delivered`, `email.bounced`,
-      `email.complained` and `notification.suppressed` — two-segment types.
-      core v0.2 made every event type `<service>.<entity>.<action>`, so
-      `exposes/events/0` fails the schema's eventType pattern. Registering it
-      would put a service in the registry whose own contract file does not
-      validate, which is the one thing a registry must never do.
-    verify: "cd ../caf && go run ./cmd/caf contract lint ../courier/cafaye.yml"
-    lint: >-
-      INVALID ../courier/cafaye.yml: exposes/events/0: "email.queued" does not
-      match "^[a-z][a-z0-9]*(-[a-z0-9]+)*\.[a-z][a-z0-9]*(_[a-z0-9]+)*\.[a-z][a-z0-9]*(_[a-z0-9]+)*$"
-
   - name: parlor
     blockedBy: schema
     reason: >-

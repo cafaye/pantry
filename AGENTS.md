@@ -24,8 +24,12 @@
    in `registry/index.yml` and is documented as a registry fact — which is how
    `kind` and `basePath` work.
 2. **A copy nobody checks is a copy that rots.** `registry/services/*/cafaye.yml`
-   are copies of other repositories' files. `tests/drift.rs` is the only thing
-   that makes them true, and it must fail the moment one diverges.
+   are copies of other repositories' files, kept **verbatim, comments
+   included** — see "Registering or changing a service" for why, and
+   `tests/drift.rs` for the byte-equality check that enforces it. A stale comment
+   in one of these files is not cosmetic: it is usually a missing
+   `DECISION NEEDED`, and a registry copy missing one is a service with open
+   questions that looks settled.
 3. **Tests first.** Per PLAN.md §3. Add the test, run it, watch it fail, then make
    it green by changing the implementation — not by loosening the assertion.
 
@@ -48,11 +52,18 @@ Adding or removing an entry is the change most likely to be wrong, so:
 
 1. `cd ../caf && go run ./cmd/caf contract lint ../<service>/cafaye.yml` — it
    must be `OK`.
-2. Copy it to `registry/services/<name>/cafaye.yml`. **Verbatim**, including its
-   comments: the copy is what a reviewer reads when asking "what does pantry
-   think this service is". The directory is not cosmetic — `caf contract lint`
-   only lints files named exactly `cafaye.yml`, so this layout lets the
-   platform's own CLI validate the whole registry:
+2. Copy it to `registry/services/<name>/cafaye.yml`. **Verbatim, byte for byte,
+   comments included** — and this is enforced, not merely intended:
+   `tests/drift.rs::every_registered_entry_is_a_verbatim_copy_of_the_services_own_bytes`
+   compares bytes and fails with the `cp` that fixes it. The reason is not
+   tidiness: the copy is what a reviewer reads when asking "what does pantry
+   think this service is", and a service's `DECISION NEEDED` blocks live in its
+   comments. A copy that has silently lost one makes a service with three open
+   questions look settled, which is the registry answering a question wrongly.
+
+   The directory is not cosmetic — `caf contract lint` only lints files named
+   exactly `cafaye.yml`, so this layout lets the platform's own CLI validate the
+   whole registry:
 
    ```sh
    cd ../caf && go run ./cmd/caf contract lint ../pantry/registry/services
@@ -60,10 +71,13 @@ Adding or removing an entry is the change most likely to be wrong, so:
 3. Add or edit the row in `registry/index.yml`, with a comment saying *why* that
    `kind` and that `basePath` are what they are.
 4. `cargo test --test drift`. If `basePath` is wrong the test prints what the real
-   OpenAPI document says.
+   OpenAPI document says; if the copy is stale it prints which service, which
+   line, whether the fields also moved, and the `cp` to run.
 5. If you are *removing* a service, add an `excluded` row with a `blockedBy`, a
    reason and a `verify` command. `tests/schema.rs` asserts the reason still
-   holds, so a row cannot rot into a fiction.
+   holds, so a row cannot rot into a fiction. It asserts a row that has gone
+   **stale**; it does not tell you a reason that is still **true** — re-read
+   each row against its checkout before trusting a green run.
 
 Never edit a service's real `cafaye.yml` from this worktree. This repository
 reads them; it does not own them.
@@ -135,7 +149,21 @@ that is hard to reverse. Mark it `> DECISION NEEDED (pantry):` in the affected
 file — what the choice is, the alternatives, your recommendation, and the cost of
 flipping — and report the open list. One number per decision, ever.
 
-Two are already recorded, both in `openapi/v1.yaml` and the README:
+Four are open. Two more are recorded in the files where the reader will hit them:
+
+3. **`kind` has no value for a binary.** `caf` is a CLI that publishes a valid
+   manifest. `api` is the only value the vocabulary and `check_kind` admit, and
+   it is a choice under constraint rather than a true answer. The full decision,
+   with alternatives and the cost of flipping, is on caf's row in
+   `registry/index.yml`. A fourth value (`cli`) is the recommended fix.
+4. **`blockedBy` has no value for "valid, and not a service".** `docs` and
+   `cafaye-rb` both carry valid manifests and neither is a service, so none of
+   `schema` / `no-manifest` / `not-a-service` describes them. They are recorded
+   in `UNDECIDED` in `tests/drift.rs::no_workspace_repository_is_missing_from_the_\
+   curation_lists`, with the decision marked on that constant, and a fourth value
+   (`library`) is the recommended fix.
+
+The other two are recorded in `openapi/v1.yaml` and the README:
 
 1. **`method_not_allowed` (405)** is not in core's reserved code list. Recorded
    here for a core amendment rather than invented quietly. The cost of flipping:

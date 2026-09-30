@@ -8,6 +8,8 @@ each of them.
 ```console
 $ curl -s localhost:8080/v1/services | jq '.data[].name'
 "billing"
+"caf"
+"courier"
 "darkroom"
 "guard"
 "identity"
@@ -121,8 +123,21 @@ checked against the manifest at load.
 ### `basePath`
 
 The `/vN` prefix every contract path in the service's OpenAPI document sits
-under — `/v1` for five of the seven entries, `null` for **guard** and **caf**,
+under — `/v1` for six of the eight entries, `null` for **guard** and **caf**,
 which publish no document for the rule to read.
+
+**A partial document is still a document.** courier's OpenAPI document covers
+`/v1/webhook_endpoints` only and says in its own header that the notification
+preferences routes are in the router and not in the file. That does not make
+`/v1` a guess: every path courier *publishes* is under `/v1`, and every
+non-probe route in courier's router is under `/v1` too, so the routes it has not
+documented yet cannot move the prefix. What pantry refuses to do is invent a
+prefix for a document that publishes none, or average two prefixes into one —
+both are refused, with the rule named, by
+`a_partial_openapi_document_still_yields_a_base_path_from_the_paths_it_publishes`
+in `tests/manifest.rs`. `basePath` is re-derived from the service's own file on
+every run, so the day courier documents a path under a second prefix this row
+fails rather than drifting.
 
 It is core's rule and not a pantry invention: `docs/openapi-conventions.md` says
 every path carries one, that the prefix *is* the API version, and that `caf
@@ -188,6 +203,7 @@ registry/
 └── services/
     ├── billing/cafaye.yml       # verbatim copies of each service's own manifest
     ├── caf/cafaye.yml
+    ├── courier/cafaye.yml
     ├── darkroom/cafaye.yml
     ├── guard/cafaye.yml
     ├── identity/cafaye.yml
@@ -217,18 +233,48 @@ service is a commit and a reviewed pull request — that is the entire trust mod
 
 **Why a copy at all.** A container has no sibling checkouts, so the registry has
 to be self-contained; but a copy nobody checks is a copy that rots. So
-`tests/drift.rs` verifies every copy against the real service on every run, field
-by field, and also verifies the two registry-side facts against the real service's
-OpenAPI document and git remote. That test is the mechanism. Discipline is not.
+`tests/drift.rs` verifies every copy against the real service on every run —
+**byte for byte**, and also field by field, plus the two registry-side facts
+against the real service's OpenAPI document and git remote. That test is the
+mechanism. Discipline is not.
+
+### A copy is verbatim, comments included
+
+`registry/services/<name>/cafaye.yml` is a byte-for-byte copy of the service's
+own file, and `every_registered_entry_is_a_verbatim_copy_of_the_services_own_bytes`
+is what keeps it that way. It fails with the `cp` that fixes it, names the first
+line that differs, and says whether the YAML fields moved as well or only the
+comments did.
+
+The reason is worth stating, because it is not tidiness. **These files carry
+their services' `DECISION NEEDED` blocks**, and a copy that has silently lost one
+is not a stale comment — it is the registry answering a reviewer's question
+wrongly. A reviewer asking "what does pantry think guard is" would have been told
+a gateway with three open questions has none, because the copy predated guard-04's
+`REDIS_URL` block. The same was true of billing and nobody had reported it. A
+comment-only edit upstream is therefore drift here, and the fix for it is
+mechanical rather than a judgement call.
+
+This settles a contradiction that was live until this packet: `AGENTS.md` said
+copies are kept "verbatim, including its comments" while the drift test's own doc
+comment said "a comment-only edit upstream is not drift". Both were in this
+repository and they cannot both have been true. The field comparison is kept as
+well as the byte comparison — it is the one that names *which field* moved — but
+byte-equality is the check that catches a copy nobody has refreshed.
 
 ### Registering a service
 
 1. The service's `cafaye.yml` must validate:
    `cd ../caf && go run ./cmd/caf contract lint ../<service>/cafaye.yml`
-2. Copy it to `registry/services/<name>/cafaye.yml`.
-3. Add a row to `registry/index.yml` with `kind` and `basePath`.
+2. Copy it to `registry/services/<name>/cafaye.yml` — **byte for byte,
+   comments included.** A drifted copy is a failed test, not a nit.
+3. Add a row to `registry/index.yml` with `kind` and `basePath`, and a comment
+   saying why those two values are what they are. They are the only facts
+   pantry states that a manifest cannot state for itself, so they are the only
+   facts a reader cannot get from the service's own file.
 4. `cargo test --test drift`. If `basePath` is wrong the test says what the real
-   document says instead.
+   document says instead; if the copy is stale it says which service, which
+   line, whether fields moved too, and the `cp` to run.
 
 `Registry::load` refuses, with a message saying what to do: a file misnamed for
 its service, a manifest with no index row, an index row with no manifest, a
@@ -240,26 +286,51 @@ the manifest contradicts.
 `registry/index.yml` carries an exclusion record: a known repository, a reason, a
 command that proves it, and a machine-checked `blockedBy` — `schema`,
 `no-manifest` or `not-a-service`. `tests/schema.rs` asserts each reason still
-holds, so the record is a tripwire in both directions: the day courier's events
-gain the three-segment prefix core requires, its row fails with *"now validates —
-register it"* instead of the registry quietly going stale.
+holds, so the record is a tripwire in one direction: the day courier's events
+gained the three-segment prefix core requires, its row failed with *"now
+validates — register it"* instead of the registry quietly going stale. courier-03
+renamed them, and this packet registered it.
 
-| repository | held back because |
-| --- | --- |
-| `courier` | its events are two-segment (`email.queued`); core v0.2 requires `<service>.<entity>.<action>`, so `caf contract lint` rejects it |
-| `parlor` | still the pre-core draft shape (`apiVersion`/`metadata`/`spec`); an app shell, not a platform service |
-| `kit` | carries no `cafaye.yml`; configuration only, and its own AGENTS.md says "not a CLI, a package, or a service" |
-| `core` | `language: spec` — a specification, not a service. `Registry::load` refuses any `spec` manifest, so this stays true if someone copies one in |
+| repository | held back because | re-verified against the checkout on |
+| --- | --- | --- |
+| `parlor` | still the pre-core draft shape (`apiVersion: cafaye/v0-draft`, `metadata`/`spec`); an app shell, not a platform service. `caf contract lint`: `is missing required fields ["name", "language", "core", "repository", "owner"]` | 2026-09-30 (pantry-03) |
+| `kit` | carries no `cafaye.yml`; configuration only, and its own AGENTS.md says "not a CLI, a package, or a service" | 2026-09-30 (pantry-03) |
+| `core` | `language: spec` — a specification, not a service. `Registry::load` refuses any `spec` manifest, so this stays true if someone copies one in. `caf contract lint`: `OK` | 2026-09-30 (pantry-03) |
+
+### Two repositories the registry does not describe at all
+
+`docs` and `cafaye-rb` both carry a **valid** `cafaye.yml` on master, and neither
+is registered, excluded, or mentioned anywhere in this repository. They were
+invisible until `no_workspace_repository_is_missing_from_the_curation_lists` in
+`tests/drift.rs` walked the workspace and asked the question from the other
+direction — the existing coverage test checks the names it knows are handled, and
+a repository nobody added to that list is invisible to it.
+
+They are recorded in that test's `UNDECIDED` constant with a reason, which is the
+honest state: known, undecided, and now impossible to forget. **They are a
+`DECISION NEEDED (pantry)`, not a silent omission.** Neither `blockedBy` value
+fits — `docs` is not `schema`-invalid, not `no-manifest`, and not
+`not-a-service` (which means `language: spec`); a static site and a library are
+valid and are none of those three. The recommendation is a fourth value.
+
+### A green run does not mean this table is accurate
+
+`every_exclusion_reason_is_still_true` reports exclusions that have gone
+**stale**. It says nothing about whether the three reasons still **hold**. Those
+are different questions and only one of them is machine-checked, so a green run
+is not evidence that this list is right — it is a reason to go and read the
+three checkouts. That has now been necessary on three consecutive packets
+(darkroom, caf, courier), and each time it was: every one of those exclusions
+had a reason that another repository's packet made false.
 
 **The record is not a queue, and leaving it is not a way to avoid a decision.**
-`caf` sat in this list for one packet with two reasons — one of them a fact and
-one of them an opinion — and when `caf-03` made the fact false the tripwire
-failed the suite. The fix was to register it. The alternative, teaching
-`every_exclusion_reason_is_still_true` that a CLI is exempt, would have turned
-the check that caught `caf` into a check that catches only the cases nobody
-disagrees with, so the answer is fixed in the data and never in the test. A
-service that has declared itself in the platform's own contract language is in
-the fleet whether or not anything routes to it.
+`caf` and `courier` both sat in this list with one fact and one opinion each,
+and both left by being registered — never by teaching
+`every_exclusion_reason_is_still_true` that their case is exempt. An exemption
+branch is a check that has stopped checking, and a carve-out here would be a
+weakened check, which PLAN.md §1 forbids. A service that has declared itself in
+the platform's own contract language is in the fleet whether or not anything
+routes to it.
 
 ---
 
@@ -315,15 +386,59 @@ $ PANTRY_CAFAYE_ROOT=/Users/kaka/Code/any/moon/cafaye ./bin/prime
 drives the axum router in-process, and `jsonschema` is built with
 `default-features = false` so it has no HTTP fetcher to reach out with.
 
-### The drift test needs a workspace
+### The drift test needs a workspace, and CI does not have one
 
-`tests/drift.rs` reads the real services, which are sibling checkouts under
-`moon/cafaye/`. Run the suite from inside that directory and it finds them; set
-`PANTRY_CAFAYE_ROOT` to point at it from anywhere else. With neither, the drift
-tests print a `SKIP` on stderr naming the directory that would make them run and
-return. **A skip is reported, not hidden** — a green run without a workspace has
-verified pantry against itself, not against reality. CI runs the rest of the gate
-and says so in the job's comment.
+**Read this before reading a green badge on this repository.**
+
+`registry/` is a set of copies of other repositories' files. `tests/drift.rs` is
+the only thing in this repository that makes those copies true, and it works by
+reading the **live filesystem**: it looks for a cafaye workspace — a directory
+holding `core/`, `identity/` and the rest — next to this checkout, or at
+`PANTRY_CAFAYE_ROOT`. Those are sibling checkouts under `moon/cafaye/`.
+
+With a workspace, the eight drift tests run and compare. Without one, each prints
+`SKIP …` on stderr naming the directory that would make it run, and returns.
+A skip is reported, never hidden. The full gate:
+
+```console
+$ PANTRY_CAFAYE_ROOT=/Users/kaka/Code/any/moon/cafaye ./bin/prime
+```
+
+**What this repository's CI actually verifies.** `.github/workflows/ci.yml` runs
+on a clone of pantry alone. There is no cafaye workspace there, so the drift
+tests and two schema tests skip, and the consequence is this:
+
+> A green CI run on pantry has verified **pantry against itself, not against
+> reality.** It proves the registry is internally consistent, that every entry
+> satisfies core's vendored schema, and that the filter and paging contracts
+> hold. It proves **nothing** about whether any entry still says what its
+> service says.
+
+That is not a gap being minimised. It is a consequence of the design — the
+registry is verified against the real fleet, so the verification needs the real
+fleet — and it is the same property that made the exclusion tripwire fire three
+times correctly (darkroom, caf, courier). Every one of those three was found by
+running the gate **in the workspace**, not by CI.
+
+**The job that would fix it exists and is disabled.** `ci.yml` carries a
+`workspace-drift` job written out in full, `if: false`, which clones the eight
+service repositories beside a `pantry` checkout and runs the whole gate with
+`PANTRY_CAFAYE_ROOT` set. It is disabled rather than absent on purpose: an
+absent job is forgotten, a disabled one says on its face that the coverage does
+not exist yet. It cannot be enabled from this repository, for two reasons that
+are properties of the platform —
+
+- the cafaye repositories are private, so a hosted runner cannot clone them
+  without a deploy key pantry should not hold; and
+- kit's reusable workflow states that nothing in it reaches a cafaye service, so
+  it needs no secrets. That is a deliberate property of kit's shared CI.
+
+**What the manager has to decide:** how a CI runner authenticates to the private
+cafaye repositories, or whether a self-hosted runner with the workspace already
+on disk is acceptable. Either unblocks the job as written.
+
+Until then, the honest summary is one line: **CI proves pantry is well-formed;
+the fleet-facing check is `./bin/prime` in the workspace, run by hand.**
 
 ---
 
