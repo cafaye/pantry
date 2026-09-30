@@ -38,6 +38,68 @@ bottom.
   recommendation; nothing in the exclusion record was changed, because resolving
   it means moving a row another packet wrote.
 
+- **`cafaye-py` is recorded, and it is a directory rather than a repository.**
+  `moon/cafaye/cafaye-py/` is empty, has no git checkout and no `cafaye.yml`, and
+  it is the planned hand-written Python client: MD6 ruled Python hand-written
+  rather than generated, because hey-api's Python generator is v0.0.24 and emits
+  parameterless methods with unsubstituted path templates, and openapi-generator
+  inverts `const` discriminants to `any`.
+
+  **It was not removed**, and the reason is worth more than the removal would
+  have been. An empty directory is not tracked by git, so deleting it is
+  *unreviewable*: a commit whose whole content is a CHANGELOG sentence about
+  something git cannot show a reader. It would also have taken MD6's Python
+  decision out of the filesystem, and `AGENTS.md` says not to touch anything
+  outside this worktree. So it is left, and the registry has an opinion about
+  it — `blockedBy: no-manifest`, which is the closest true value the vocabulary
+  has and a slight overstatement of it, since there is no repository yet. That
+  overstatement is `DECISIONS.md` **D2**, open, with a fifth value (`planned`)
+  recorded as the alternative and a recommendation to wait for a second such
+  directory before spending a precedent on one.
+
+  **What the row buys: a tripwire.** `every_exclusion_reason_is_still_true`
+  asserts the manifest is absent, so the day someone writes
+  `cafaye-py/cafaye.yml` the suite fails with *"now carries a cafaye.yml —
+  register it or change this row's blockedBy and say why it is still held back"*.
+  An empty directory tolerated by doing nothing is an empty directory forever;
+  this one has to be answered.
+
+  **What it does not buy, stated here so a green badge is not over-read:** the
+  check is **vacuous in CI**. There is no repository to clone, so "the manifest
+  is absent" is satisfied by a directory that is not there. It is verified by a
+  developer's run with `PANTRY_CAFAYE_ROOT` set and by nothing else.
+
+  **And the tripwire corrected this packet, which is why it is in the changelog
+  at all.** The row was written with `cafaye-py` deliberately absent from
+  `CAFAYE_UNREADABLE`, on the reasoning that the list is a claim about what a
+  runner cannot read and a repository nobody has written cannot be read by
+  anyone. `the_drift_job_clones_every_repository_pantry_curates` then refused the
+  whole registration: a curated name the job neither clones nor declares unreadable
+  is a claim no drift test can check. Cloning it would fail the job's clone step
+  on a 404 — the same 404 as `cafaye-rb`'s, for the opposite reason. So it is
+  declared, with the difference written beside the list. That difference is the
+  second half of D2's case for a `planned` value: "the runner cannot read this"
+  and "there is nothing to read" are two claims, and one list is now carrying
+  both.
+
+- **The workspace walk now sees a directory with no `cafaye.yml` in it.**
+  `every_directory_in_the_workspace_is_a_repository_the_registry_curates` asks
+  about every non-hidden, non-worktree directory, not only the ones carrying a
+  manifest. The existing walk asks the right question of the wrong set: a cafaye
+  repository that lost its `cafaye.yml` in a merge, and a directory created for a
+  repository nobody has written, are both invisible to it, silently.
+  `cafaye-py` had been in the workspace through four packets and the tripwire
+  could not see it, because the shape it looked for was a file.
+
+  Three exclusions and none of them is an exemption: a hidden directory is not a
+  repository (`.git`, and the workspace's own `.github`), a worktree is not a
+  repository (they are named `<service>-worker-<packet>`, and a manifest inside
+  one is that service's manifest, already checked through its own checkout), and
+  anything else in that directory is a repository the registry should have an
+  opinion about or a stray worth finding. There is deliberately **no list of
+  tolerated names**: a check that can be made green by not checking is a check
+  that has stopped checking.
+
 - **A `cli` that has written an OpenAPI document is now a test failure.**
   `a_registered_cli_publishes_no_openapi_document_of_its_own` walks each `cli`'s
   checkout for a document where core's conventions put a published one — a

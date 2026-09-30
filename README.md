@@ -333,10 +333,36 @@ courier-03 renamed them, and pantry-03 registered it.
 | `core` | `language: spec` — a specification, not a service. `Registry::load` refuses any `spec` manifest, so this stays true if someone copies one in. `caf contract lint`: `OK` | 2026-09-30 (pantry-05) |
 | `docs` | `library` — the documentation site. A valid manifest with no `exposes` on purpose: its own file says it "serves no HTTP traffic of its own … The same shape a library takes". A static site is depended on, not started. `caf contract lint`: `OK` | 2026-09-30 (pantry-05) |
 | `cafaye-rb` | `library` — the shared Ruby gem. core's schema says to "omit `exposes` entirely for libraries" and its manifest does, and says why: "it is not deployed, serves no traffic and publishes no events". `caf contract lint`: `OK` | 2026-09-30 (pantry-05), on a local checkout — see below |
+| `cafaye-py` | `no-manifest` — **a directory, not a repository.** No files, no checkout, no manifest: the planned hand-written Python client, which MD6 ruled hand-written rather than generated. The row is here so the registry has an opinion about a directory a reader can see, and so a `cafaye.yml` appearing there fails the suite | 2026-09-30 (pantry-06) — and **the check on it is vacuous in CI**, see below |
 
-All five were re-read against their checkouts in this packet, which is the
-fourth packet to do that by hand and each time it was necessary: every one of
-the first three had a reason another repository's packet made false.
+The first five were re-read against their checkouts in pantry-05, which was the
+fourth packet to do that by hand and each time it was necessary: every one of the
+first three had a reason another repository's packet made false.
+
+**The sixth row cannot be re-read, and saying so is why it is written down.**
+`cafaye-py` is a directory with nothing in it, so there is no checkout to confirm
+the reason against, and in the `workspace-drift` job it does not exist at all:
+the `no-manifest` arm asserts the manifest is *absent*, and a directory that was
+never cloned satisfies that. **A green run does not mean this row was checked.**
+It is verified by a developer's run of `tests/schema.rs` with
+`PANTRY_CAFAYE_ROOT` set, and by nothing else.
+
+It *is* named in `CAFAYE_UNREADABLE`, which this packet first claimed it would
+not be and was wrong about — `the_drift_job_clones_every_repository_pantry_curates`
+refuses a curated name the job neither clones nor declares unreadable, and the
+clone would fail the job's clone step on a 404. The entry is there with the
+reason written beside it, and that reason is a different one from `cafaye-rb`'s:
+nothing about `cafaye-py` is *unreadable*, because there is nothing there to
+read. One list now carries two different claims, which is the other half of
+`DECISIONS.md` **D2**'s argument for a fifth `blockedBy` value that says
+"planned" instead of "not readable".
+
+What the row does buy is a live tripwire. A `cafaye.yml` appearing in that
+directory fails `every_exclusion_reason_is_still_true` with *"now carries a
+cafaye.yml — register it or change this row's blockedBy and say why it is still
+held back"*, so an empty directory cannot be tolerated indefinitely by doing
+nothing. That `no-manifest` is a slight overstatement — the value presumes a
+repository, and there is not one yet — is `DECISIONS.md` **D2**, open.
 
 ### `library` — valid, and not something anyone brings up
 
@@ -380,15 +406,17 @@ which would be the actual rot.
 ### A green run does not mean this table is accurate
 
 `every_exclusion_reason_is_still_true` reports exclusions that have gone
-**stale**. It says nothing about whether the five reasons still **hold**. Those
+**stale**. It says nothing about whether the six reasons still **hold**. Those
 are different questions and only one of them is machine-checked, so a green run
 is not evidence that this list is right — it is a reason to go and read the
-five checkouts. That has now been necessary on four consecutive packets
-(darkroom, caf, courier, and this one), and each time it was: every one of the
-first three exclusions had a reason that another repository's packet made false.
+checkouts. That has been necessary on four consecutive packets (darkroom, caf,
+courier, and pantry-05), and each time it was: every one of the first three
+exclusions had a reason that another repository's packet made false. One of the
+six is not checkable at all, and its row says which and why.
 
-One row is checked in fewer places than the other four. **`cafaye-rb` is a
-private repository**, so an anonymous runner cannot clone it — the GitHub API
+Two rows are checked in fewer places than the other four, for two different
+reasons. **`cafaye-rb` is a private repository**, so an anonymous runner cannot
+clone it — the GitHub API
 answers `404` for it without a credential, which reads as "does not exist" rather
 than "not yours". The `workspace-drift` job names it in `CAFAYE_UNREADABLE`, its
 reason is verified by a developer's run of `tests/schema.rs` and by nothing else,

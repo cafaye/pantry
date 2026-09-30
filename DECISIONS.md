@@ -129,9 +129,25 @@ hide. In CI the `workspace-drift` job clones repositories; `cafaye-py` is not on
 so the directory is absent and `every_exclusion_reason_is_still_true`'s
 `no-manifest` arm — "the file is not there" — is satisfied by a directory that
 does not exist. That is a **vacuous pass**, and it is named as one in the row and
-in `README.md` rather than being left to be inferred. It is not in
-`CAFAYE_UNREADABLE`, because that list is a claim about what the runner cannot
-read, and a repository that has not been written cannot be read by anyone.
+in `README.md` rather than being left to be inferred.
+
+**This packet got the second half wrong first, and the tripwire corrected it.**
+The row was written with `cafaye-py` deliberately absent from
+`CAFAYE_UNREADABLE`, on the reasoning that the list is a claim about what the
+runner cannot *read* and a repository nobody has written cannot be read by
+anyone. Then `the_drift_job_clones_every_repository_pantry_curates` refused the
+whole registration: a curated name the job neither clones nor declares unreadable
+is a claim no drift test can check, and cloning it would fail the job's clone step
+on a 404 — the same 404 as `cafaye-rb`'s, for the opposite reason. So it is now
+declared, with the difference spelled out beside the list.
+
+That correction is the **second half of the argument for a `planned` value**, and
+it is stronger than the first half. `CAFAYE_UNREADABLE` is now carrying two
+different claims — *the runner has no credential for this* and *there is nothing
+here to clone* — under one name, and its own comment has to explain which is
+which for each entry. A list whose entries mean different things is a list whose
+entries eventually mean neither. `blockedBy` already has the same problem one
+level up: `no-manifest` on a directory that is not yet a repository.
 
 **Alternatives.**
 
@@ -152,13 +168,17 @@ read, and a repository that has not been written cannot be read by anyone.
    does not exist yet, with the decision that shapes it named in the reason. This
    is the honest vocabulary, and it is the same move MD2 made with `library`
    rather than teaching the drift test that documentation sites are exempt. It
-   costs a fifth value for one row, and a fifth value is a precedent.
+   costs a fifth value for one row, and a fifth value is a precedent — but it
+   would also give `CAFAYE_UNREADABLE` its honest name back, because a `planned`
+   row would not be a coverage claim the runner has to answer for.
 
 **Recommended: (1) now, (3) when a second planned repository appears.** (1) is
 correct for a single row and its tripwire is real. The argument for (3) is the
 count: `planned` is a vocabulary gap that MD6's own decisions will keep opening —
 Go and Rust clients are also unstarted, and a third empty directory is a matter
-of time. One value per decision, and the first one to arrive is not this row.
+of time — and the CI correction above has now shown the gap costs something
+outside the registry as well. One value per decision, and the first value to
+arrive is not this row.
 
 **Cost of flipping to (2):** one `rmdir` outside this worktree, one CHANGELOG
 line, and a tripwire that no longer exists. **Cost of flipping to (3):** one

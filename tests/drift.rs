@@ -693,6 +693,12 @@ fn every_service_repository_in_the_workspace_is_registered_or_excluded() {
         "docs",
         "cafaye-rb",
         "cafaye-ts",
+        // A directory rather than a repository, which is why the workspace walk
+        // below needed widening: this is the one name in the list that carries no
+        // cafaye.yml and is not a checkout, and it is curated anyway because the
+        // registry's opinion about a planned repository is worth more than a
+        // silent directory. See DECISIONS.md D2.
+        "cafaye-py",
     ];
 
     // The list above is hand-maintained, and a hand-maintained list has a
@@ -923,5 +929,92 @@ fn no_workspace_repository_is_missing_from_the_curation_lists() {
             "ies carry"
         },
         missing.join("\n"),
+    );
+}
+
+/// Every directory in the workspace is curated: registered, or excluded with a
+/// reason. **The test above asks the same question of the directories that carry
+/// a `cafaye.yml`, and this one exists because that is a condition, not a
+/// definition.**
+///
+/// A cafaye repository that lost its manifest — a merge that dropped it, a
+/// half-finished `git mv` — becomes invisible to the walk above, silently, and
+/// the registry keeps describing a fleet that has one fewer member. So does a
+/// directory that has been created for a repository nobody has written yet. Both
+/// happened: `cafaye-py/` sat in the workspace, empty and unregistered, through
+/// four packets, and the tripwire could not see it because the shape it looked
+/// for was a file.
+///
+/// Three exclusions, and each is a fact about what a *repository* is rather than
+/// an exemption from the check:
+///
+/// * a hidden directory is not a repository — `.git` and the workspace's own
+///   `.github` are configuration *for* repositories;
+/// * a worktree is not a repository — `moon/cafaye` holds several, named
+///   `<service>-worker-<packet>`, and a manifest inside one is that service's
+///   manifest, already checked through its own checkout;
+/// * anything else in that directory is a cafaye repository the registry has an
+///   opinion about, or it is a stray, and a stray is worth finding.
+#[test]
+fn every_directory_in_the_workspace_is_a_repository_the_registry_curates() {
+    let root = require_workspace!("workspace coverage");
+
+    let dir = registry_dir();
+    let index = registry::read_index(&dir).expect("registry/index.yml parses");
+    let registry = Registry::load(&dir).expect("the official registry loads");
+
+    let is_worktree = |name: &str| name.contains("-worker-");
+
+    let mut uncurated: Vec<String> = Vec::new();
+
+    for entry in std::fs::read_dir(&root).expect("the cafaye root is readable") {
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if name.starts_with('.') || is_worktree(&name) {
+            continue;
+        }
+
+        let registered = registry.get(&name).is_some();
+        let excluded = index.excluded.iter().any(|excluded| excluded.name == name);
+
+        if !registered && !excluded {
+            let shape = if entry.path().join("cafaye.yml").is_file() {
+                "carries a cafaye.yml"
+            } else {
+                "carries NO cafaye.yml — so it is a directory, not yet a repository"
+            };
+            uncurated.push(format!("  {name} — {} {shape}", entry.path().display()));
+        }
+    }
+
+    assert!(
+        uncurated.is_empty(),
+        "{} director{} in the workspace that registry/index.yml curates in neither \
+         direction:\n\n{}\n\n\
+         Every one of them is either a cafaye repository the registry has no opinion \
+         about, or something in the workspace that should not be there. A directory \
+         nobody registered is a member of the fleet this file does not describe, and \
+         `no_workspace_repository_is_missing_from_the_curation_lists` above cannot see \
+         it: that one looks for a cafaye.yml, so an empty directory — or a repository \
+         whose manifest was lost — passes it.\n\n\
+         Add each name to `known` in that test AND give it a row: registered, or \
+         excluded with a `blockedBy` and a reason. If it should not be in the \
+         workspace at all, delete it — but read the row's reason first, because \
+         `blockedBy: no-manifest` on a directory that is not yet a repository is a \
+         judgement and not a fact, and `DECISIONS.md` D2 is the open question about \
+         it. Do NOT add a list of tolerated directory names here: a check that can be \
+         made green by not checking is a check that has stopped checking.",
+        uncurated.len(),
+        if uncurated.len() == 1 {
+            "y is"
+        } else {
+            "ies are"
+        },
+        uncurated.join("\n"),
     );
 }

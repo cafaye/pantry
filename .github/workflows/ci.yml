@@ -137,8 +137,10 @@ jobs:
     # minute. `docs` is here because the coverage test in tests/drift.rs asks
     # about it by name. `pantry` is absent because it is the checkout above.
     #
-    # CAFAYE_UNREADABLE is the repositories this job cannot clone, and why. It
-    # is a fact about the runner, not an exemption from coverage:
+    # CAFAYE_UNREADABLE is the curated names this job cannot clone, and why,
+    # because the two reasons are not the same and collapsing them would make the
+    # list mean one thing twice. It is a fact about the runner, not an exemption
+    # from coverage:
     #
     #   cafaye-rb is PRIVATE — `gh repo view cafaye/cafaye-rb` says PRIVATE, and
     #   an anonymous `git clone https://github.com/cafaye/cafaye-rb.git` from a
@@ -148,6 +150,21 @@ jobs:
     #   one. The credential that would fix it is exactly what pantry-04 deleted
     #   from this workflow — a long-lived key in repository settings, for one
     #   private repository that is a Ruby gem and not a service.
+    #
+    #   cafaye-py DOES NOT EXIST YET — `moon/cafaye/cafaye-py/` is a directory
+    #   with nothing in it, curated in registry/index.yml as
+    #   `blockedBy: no-manifest` so the registry has an opinion about it. There
+    #   is no repository to clone and no remote that would answer: the same 404,
+    #   for the opposite reason, and it would take the job's clone step down with
+    #   `set -euo pipefail`. This entry is here because
+    #   `the_drift_job_clones_every_repository_pantry_curates` refuses a curated
+    #   name that is in neither list — the check fired, and this is the answer it
+    #   demanded. It is a claim about coverage, not about permissions: nothing
+    #   about cafaye-py is unreadable, because there is nothing there to read.
+    #   When the Python client is written, this name moves to CAFAYE_REPOS and
+    #   the row in registry/index.yml is deleted in the same commit. The honest
+    #   vocabulary for that row is a fifth `blockedBy` — `planned` — and it is
+    #   `DECISIONS.md` D2, open.
     #
     # What it costs, stated here rather than left to be inferred from a green
     # badge: `every_exclusion_reason_is_still_true` cannot check the
@@ -159,13 +176,14 @@ jobs:
     # directions — so a repository that becomes readable is a red rather than a
     # silent loss of coverage.
     #
-    # A repository belongs in this list only while it is genuinely unreadable
-    # from here. Moving one back into CAFAYE_REPOS once it is public is the fix,
-    # and `an_unreadable_repository_is_neither_cloned_nor_registered` below is
-    # what makes that move a decision rather than a forgetting.
+    # A name belongs in this list only while the runner genuinely cannot clone
+    # it — because it is private, or because it is not a repository yet. Moving
+    # one back into CAFAYE_REPOS when that stops being true is the fix, and
+    # `an_unreadable_repository_is_neither_cloned_nor_registered` below is what
+    # makes that move a decision rather than a forgetting.
     env:
       CAFAYE_REPOS: core caf cafaye-ts identity billing courier darkroom muse guard parlor kit docs
-      CAFAYE_UNREADABLE: cafaye-rb
+      CAFAYE_UNREADABLE: cafaye-rb cafaye-py
     steps:
       - uses: actions/checkout@v4
         with:

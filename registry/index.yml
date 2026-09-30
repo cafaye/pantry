@@ -316,13 +316,21 @@ services:
 # them.
 #
 # WHAT A GREEN RUN DOES NOT TELL YOU. The tripwire only reports exclusions that
-# have gone STALE. It says nothing about whether the five rows below still being
+# have gone STALE. It says nothing about whether the six rows below still being
 # ACCURATE, so a green run is not a reason to believe this list — it is a reason
-# to re-read the five checkouts. Confirm each stated reason against the checkout
+# to re-read the checkouts. Confirm each stated reason against the checkout
 # today, not against the last green run. This is the fourth packet to do that by
-# hand (darkroom, caf, courier, and this one), and each time it was necessary:
+# hand (darkroom, caf, courier, and pantry-05), and each time it was necessary:
 # every one of those exclusions had a reason another repository's packet made
 # false.
+#
+# The sixth row is different in kind and says so on its face. Five of these are
+# repositories, and pantry-05 re-read all five. `cafaye-py` is a DIRECTORY — no
+# files, no checkout, no manifest — so there is nothing to re-read against and,
+# in CI, nothing to check: the `no-manifest` arm asks whether the manifest is
+# absent, and a directory that is not cloned satisfies it. That is a vacuous
+# pass and it is recorded as one in the row, because a green badge must not be
+# allowed to imply it was checked. See DECISIONS.md D2.
 #
 # This is also the structural point of the whole file: pantry's tests read the
 # LIVE filesystem, so any merge anywhere in the fleet can invalidate this
@@ -422,3 +430,82 @@ excluded:
     verify: "cd ../caf && go run ./cmd/caf contract lint ../cafaye-rb/cafaye.yml"
     lint: "OK ../cafaye-rb/cafaye.yml — valid, and deliberately not a service"
 
+  # --- a directory, not yet a repository ------------------------------------
+  #
+  # `cafaye-py/` is a directory in the workspace with no files in it and no git
+  # repository, and it is here because the alternative was for the registry to
+  # have no opinion about a directory a reader can see. It is the planned
+  # hand-written Python client: MD6 (the fleet's DECISIONS.md) ruled that Python
+  # is HAND-WRITTEN and not generated, on the evidence that hey-api's Python
+  # generator is v0.0.24 and emits parameterless methods with unsubstituted path
+  # templates — a request for the literal string
+  # `/v1/accounts/{account_id}/oidc-clients` — and that openapi-generator inverts
+  # `const` discriminants to `any`, which defeats narrowing on exactly the
+  # problem-details shape this platform uses. So the shape of the work is
+  # decided and the repository is not written.
+  #
+  # `blockedBy: no-manifest` is the closest true statement the vocabulary has,
+  # and it is a slight overstatement: that value means "the repository carries no
+  # cafaye.yml on master yet", and there is no repository yet. That is DECISIONS.md
+  # D2, which is open, and this row is the thing it is about — the honest
+  # alternative was a fifth `blockedBy` for "planned", which is a real gap but a
+  # precedent for one row.
+  #
+  # What the row buys, and it is not nothing:
+  #
+  #   * the tripwire is live. `every_exclusion_reason_is_still_true` asserts the
+  #     manifest is ABSENT, so the day someone writes `cafaye-py/cafaye.yml` this
+  #     row fails with "now carries a cafaye.yml — register it or change this
+  #     row's blockedBy and say why it is still held back". An empty directory
+  #     that is tolerated is an empty directory forever; this one has to be
+  #     answered.
+  #   * the workspace walk now sees it.
+  #     `every_directory_in_the_workspace_is_a_repository_the_registry_curates`
+  #     asks about every non-hidden, non-worktree directory rather than every
+  #     directory carrying a manifest, and cafaye-py is the reason that test
+  #     exists. `no_workspace_repository_is_missing_from_the_curation_lists`
+  #     could not see this directory and never will, by construction: it looks
+  #     for a cafaye.yml, and this one has none.
+  #
+  # WHAT A GREEN RUN DOES NOT PROVE, which is the honest part and the reason this
+  # paragraph is here rather than a `verify` command's output. In the
+  # `workspace-drift` job there is no `cafaye-py/` to clone — there is no
+  # repository — so the check on this row ("the manifest is not there") is
+  # satisfied by a directory that does not exist, and it is a VACUOUS pass. It is
+  # checked on a developer's machine, by `PANTRY_CAFAYE_ROOT`, and by nothing
+  # else.
+  #
+  # It IS in `CAFAYE_UNREADABLE`, which this packet first wrote as "deliberately
+  # not" and was wrong about: `the_drift_job_clones_every_repository_pantry_curates`
+  # refuses a curated name the job neither clones nor declares unreadable, because
+  # a curated name the runner cannot read is a claim no drift test can check.
+  # Cloning it would fail the job's clone step on a 404 — the same 404 as
+  # cafaye-rb's, for the opposite reason. So it is declared, with the difference
+  # spelled out beside the list, and that difference is the second half of D2's
+  # argument for a `planned` value: "the runner cannot read this" and "there is
+  # nothing to read" are two claims, and `CAFAYE_UNREADABLE` is now asked to carry
+  # both. See DECISIONS.md D2.
+  - name: cafaye-py
+    blockedBy: no-manifest
+    reason: >-
+      A directory, not yet a repository: no files, no git checkout, no
+      cafaye.yml. It is the planned hand-written Python client, and MD6 ruled
+      Python hand-written rather than generated — hey-api's Python generator is
+      v0.0.24 and emits parameterless methods with unsubstituted path
+      templates, and openapi-generator turns `const` discriminants into `any`.
+      The work is decided and unwritten, so there is nothing to register and
+      nothing to lint; this row exists so the registry has an opinion about a
+      directory a reader can see, and so that the moment a cafaye.yml appears
+      here this row fails with "register it or say why it is still held back".
+      `blockedBy: no-manifest` is the closest true value the vocabulary has and
+      it is a slight overstatement — there is no repository yet — which is
+      DECISIONS.md D2, open. In CI the check on this row is VACUOUS: there is no
+      repository to clone, so "the manifest is absent" is satisfied by a
+      directory that is not there. It is verified by a developer's run of
+      tests/schema.rs and by nothing else. It IS named in CAFAYE_UNREADABLE,
+      which the drift job's coverage check required: a curated name the job
+      neither clones nor declares unreadable is a claim nothing can check, and
+      cloning this one would fail the clone step on a 404. That entry says
+      "there is nothing to clone", which is a different claim from cafaye-rb's
+      "the runner has no credential", and one list now carries both.
+    verify: "ls -A ../cafaye-py   # empty: the directory exists, the repository does not"
