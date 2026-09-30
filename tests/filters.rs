@@ -42,7 +42,7 @@ fn no_filter_returns_every_official_service_sorted_by_name() {
     assert_eq!(
         names,
         [
-            "billing", "caf", "darkroom", "guard", "identity", "muse", "pantry"
+            "billing", "caf", "courier", "darkroom", "guard", "identity", "muse", "pantry"
         ]
     );
     // Sorted, not filesystem order: a directory walk is not a contract, and a
@@ -65,14 +65,19 @@ fn kind_filter_accepts_every_kind_in_the_vocabulary() {
             ServiceKind::Api => assert_eq!(
                 matched,
                 [
-                    "billing", "caf", "darkroom", "guard", "identity", "muse", "pantry"
+                    "billing", "caf", "courier", "darkroom", "guard", "identity", "muse", "pantry"
                 ]
             ),
-            // No official service is a pure worker or a hybrid today: courier
-            // and darkroom-worker are the candidates and both are held out of
-            // the registry with a recorded reason (registry/index.yml). An
-            // empty list here is a fact about the registry, not a broken
-            // filter, and it is the honest answer until those rows land.
+            // No official service is a pure worker or a hybrid today, and that is
+            // a fact about the registry rather than a broken filter. courier is
+            // the obvious worker candidate — it publishes five events and relays
+            // them — and it is `api` because its own manifest declares an
+            // `exposes.api` and an empty `consumes`, so the vocabulary says api
+            // and the manifest is decisive. darkroom-worker does not exist yet.
+            // These empty lists are the honest answer until those rows land, and
+            // they are the check that catches a real `worker` the moment one
+            // does — a registry that quietly had no workers would be a registry
+            // nobody had checked.
             ServiceKind::Worker | ServiceKind::Both => assert_eq!(
                 matched,
                 Vec::<String>::new(),
@@ -93,7 +98,11 @@ fn language_filter_covers_every_language_the_manifest_schema_allows_for_a_servic
         (Language::Ruby, &["billing"]),
         (Language::Typescript, &["guard"]),
         (Language::Python, &["muse"]),
-        (Language::Elixir, &[]),
+        // The one Elixir service. This list used to read `&[]` and was the
+        // honest answer while courier's events were two-segment and its manifest
+        // did not validate; it is a member now, which is the exclusion tripwire
+        // doing its job a third time.
+        (Language::Elixir, &["courier"]),
         (Language::Rust, &["darkroom", "pantry"]),
     ];
 
@@ -114,7 +123,11 @@ fn language_filter_covers_every_language_the_manifest_schema_allows_for_a_servic
 fn contract_filter_matches_by_range_intersection() {
     let cases: &[(&str, &[&str])] = &[
         ("^0.2.0", &["billing", "caf", "darkroom", "muse", "pantry"]),
-        ("^0.1.0", &["guard", "identity"]),
+        // courier joins identity and guard on ^0.1.0. Its own manifest records
+        // that as unresolved — "`core: ^0.1.0` assumes core's first release is
+        // 0.1.0" — and the registry records what the file says rather than what
+        // the file hopes, exactly as it does for identity.
+        ("^0.1.0", &["courier", "guard", "identity"]),
         ("~0.2.0", &["billing", "caf", "darkroom", "muse", "pantry"]),
         (">=0.2.0", &["billing", "caf", "darkroom", "muse", "pantry"]),
         // An open floor from below every constraint matches everything: a
@@ -122,10 +135,10 @@ fn contract_filter_matches_by_range_intersection() {
         (
             ">=0.1.0",
             &[
-                "billing", "caf", "darkroom", "guard", "identity", "muse", "pantry",
+                "billing", "caf", "courier", "darkroom", "guard", "identity", "muse", "pantry",
             ],
         ),
-        ("0.1.0", &["guard", "identity"]),
+        ("0.1.0", &["courier", "guard", "identity"]),
         ("0.2.0", &["billing", "caf", "darkroom", "muse", "pantry"]),
         // A caret on a future minor intersects nothing on this platform yet.
         ("^0.3.0", &[]),
@@ -134,7 +147,7 @@ fn contract_filter_matches_by_range_intersection() {
         // The boundary: ^0.2.0 and ^0.1.0 touch at 0.2.0 without sharing a
         // version, so a caller asking "is anything on ^0.2.0" must not get the
         // services still on ^0.1.0.
-        ("^0.1.0", &["guard", "identity"]),
+        ("^0.1.0", &["courier", "guard", "identity"]),
     ];
 
     for (range, want) in cases {
@@ -149,6 +162,9 @@ fn contract_filter_matches_by_range_intersection() {
 #[test]
 fn a_filter_that_matches_nothing_is_an_empty_list_not_an_error() {
     let registry = registry();
+    // courier is the only elixir service and it is an `api`, so this is empty
+    // for a reason that is worth naming: the combination is impossible, not
+    // unimplemented. It used to be empty because courier was excluded.
     let filter = query(&[("kind", "worker"), ("language", "elixir")]);
 
     assert!(registry.query(&filter).is_empty());
@@ -176,6 +192,17 @@ fn two_filters_are_both_applied() {
         ("contract", "^0.2.0"),
     ]);
     assert_eq!(names(three), ["muse"]);
+
+    // The same pre-1.0 boundary on the other side of the fleet: courier is the
+    // only elixir service and it is on ^0.1.0, so asking for both matches
+    // nothing while either half alone matches it.
+    let elixir = query(&[("language", "elixir")]);
+    assert_eq!(names(elixir), ["courier"]);
+    let elixir_on_v2 = query(&[("language", "elixir"), ("contract", "^0.2.0")]);
+    assert!(
+        registry.query(&elixir_on_v2).is_empty(),
+        "courier is on ^0.1.0, which pre-1.0 does not contain ^0.2.0"
+    );
 }
 
 #[test]
@@ -270,18 +297,19 @@ fn a_page_limit_slices_the_filtered_list_and_says_whether_more_is_left() {
     let page = registry.page(&filter, &third).expect("a page");
 
     assert_eq!(page.items.len(), 2);
-    assert_eq!(page.items[0].name(), "identity");
-    assert_eq!(page.items[1].name(), "muse");
-    assert!(page.has_more, "six of seven returned means one is left");
+    assert_eq!(page.items[0].name(), "guard");
+    assert_eq!(page.items[1].name(), "identity");
+    assert!(page.has_more, "six of eight returned means two are left");
 
     let fourth = Page::new(2, page.next_cursor).expect("the last cursor pantry issued");
     let page = registry.page(&filter, &fourth).expect("a page");
 
-    assert_eq!(page.items.len(), 1);
-    assert_eq!(page.items[0].name(), "pantry");
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(page.items[0].name(), "muse");
+    assert_eq!(page.items[1].name(), "pantry");
     assert!(
         !page.has_more,
-        "the list is seven long and all four pages are taken"
+        "the list is eight long and all four pages are taken"
     );
     assert_eq!(page.next_cursor, None);
 }

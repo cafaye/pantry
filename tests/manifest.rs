@@ -296,6 +296,77 @@ fn base_path_is_the_api_version_prefix_a_service_serves_under() {
 }
 
 #[test]
+fn a_partial_openapi_document_still_yields_a_base_path_from_the_paths_it_publishes() {
+    // courier-03's document, in the shape its own header describes: one resource
+    // published, the probes deliberately not spec'd, and a header that says in
+    // words that other routes exist and are not here yet.
+    //
+    // The rule this pins is that pantry derives from what a document *says*, not
+    // from how much of the service it happens to cover. A partial document is
+    // still a document: the base path is the `/vN` its published paths agree on,
+    // and refusing to derive from it would mean a service becomes unregisterable
+    // for an incompleteness its own repository owns and records. What pantry
+    // will not do is invent a prefix for a document that publishes none, and
+    // will not average two prefixes into one — both of which are the cases
+    // directly below.
+    let partial = r#"
+# courier's HTTP surface. /v1/webhook_endpoints is documented because it is
+# the first surface courier ships with a contract. The notification preferences
+# routes are in the router and are NOT here. /healthz and /readyz are not
+# spec'd: they are infrastructure probes.
+openapi: 3.1.0
+info:
+  version: 1.1.0
+  title: caFaye courier
+servers:
+  - url: https://courier.cafaye.com
+paths:
+  /v1/webhook_endpoints:
+    get: {}
+  /v1/webhook_endpoints/{id}:
+    get: {}
+  /v1/webhook_endpoints/{id}/test:
+    post: {}
+components: {}
+"#
+    .as_bytes();
+
+    assert_eq!(
+        manifest::openapi_base_path(partial).expect("one agreed prefix"),
+        "/v1",
+        "every path the document publishes is under /v1, so /v1 is derived, not guessed"
+    );
+
+    // A document that publishes no versioned path at all, however complete it
+    // claims to be, has no base path — that is a different failure and it is
+    // named rather than papered over.
+    let unversioned = b"openapi: 3.1.0\npaths:\n  /users:\n    get: {}\n";
+    let error =
+        manifest::openapi_base_path(unversioned).expect_err("no /vN prefix, so no base path");
+    assert!(
+        error.to_string().contains("/vN"),
+        "the rejection names the rule it broke: {error}"
+    );
+
+    // Partial is not the same as ambiguous. A transition document that
+    // publishes /v1 and /v2 is refused, because a registry has one basePath
+    // per service and averaging the two would invent a prefix no service serves.
+    let transitional =
+        b"openapi: 3.1.0\npaths:\n  /v1/users:\n    get: {}\n  /v2/users:\n    get: {}\n";
+    let error = manifest::openapi_base_path(transitional)
+        .expect_err("two prefixes at once need a decision, not a derivation");
+    let message = error.to_string();
+    assert!(
+        message.contains("/v1") && message.contains("/v2"),
+        "{message}"
+    );
+    assert!(
+        message.contains("decision"),
+        "the message says what kind of answer this needs: {message}"
+    );
+}
+
+#[test]
 fn a_document_that_is_not_openapi_is_rejected_rather_than_guessed_at() {
     let error = manifest::openapi_base_path(b"openapi: 3.1.0\ninfo:\n  title: x\n")
         .expect_err("no paths, no base path");

@@ -100,7 +100,7 @@ async fn the_registry_is_the_whole_official_set_sorted_by_name() {
     assert_eq!(
         names(&response),
         [
-            "billing", "caf", "darkroom", "guard", "identity", "muse", "pantry"
+            "billing", "caf", "courier", "darkroom", "guard", "identity", "muse", "pantry"
         ],
         "every official service, including pantry itself: a registry that cannot \
          describe the registry is one `caf dev` has to special-case"
@@ -212,6 +212,56 @@ async fn a_registered_binary_serves_the_same_absent_surface_as_a_registered_gap(
 }
 
 #[tokio::test]
+async fn a_service_whose_openapi_document_is_partial_still_serves_a_derived_base_path() {
+    // courier-03 shipped `openapi.yaml` at the repository root — not under
+    // `openapi/` like every other entry — covering `/v1/webhook_endpoints` only,
+    // and says so in the document's own header. Two things follow for a client
+    // and both are pinned here.
+    //
+    // 1. `basePath` is still a derivation and not a guess: every path the
+    //    document *does* publish is under `/v1`, which is core's rule, and
+    //    `tests/drift.rs` re-derives it from courier's file on every run. What
+    //    the document omits is courier's gap to close, not pantry's to invent.
+    // 2. `exposes.api` is the path the manifest states, verbatim. pantry does
+    //    not normalise it to `openapi/v1.yaml` for symmetry, because a client
+    //    that reads this field and fetches it has to be right.
+    let response = call(app(), "/v1/services/courier").await;
+
+    assert_eq!(response.status, StatusCode::OK, "{response}");
+    assert_eq!(response.body["name"], json!("courier"));
+    assert_eq!(response.body["language"], json!("elixir"));
+    assert_eq!(
+        response.body["core"],
+        json!("^0.1.0"),
+        "what the manifest says. Its own comment calls this unresolved; the \
+         registry records the file, it does not predict core's first release"
+    );
+    assert_eq!(
+        response.body["exposes"]["api"],
+        json!("openapi.yaml"),
+        "the repository-relative path the manifest states, not a normalised one"
+    );
+    assert_eq!(response.body["basePath"], json!("/v1"));
+    assert_eq!(
+        response.body["kind"],
+        json!("api"),
+        "derived, not curated: exposes.api is declared and consumes is empty"
+    );
+    assert_eq!(
+        response.body["exposes"]["events"],
+        json!([
+            "courier.email.queued",
+            "courier.email.delivered",
+            "courier.email.bounced",
+            "courier.email.complained",
+            "courier.notification.suppressed"
+        ]),
+        "three segments each, which is the whole reason courier was excluded and \
+         is now registered: `courier-03` renamed them to satisfy core's grammar"
+    );
+}
+
+#[tokio::test]
 async fn one_service_is_a_bare_object_not_a_wrapped_one() {
     // `GET /v1/services/{name}` answers with the same object the list wraps, so
     // a client reads one shape and not two. core's convention wraps
@@ -239,7 +289,7 @@ async fn every_filter_narrows_the_list() {
         (
             "?kind=api",
             &[
-                "billing", "caf", "darkroom", "guard", "identity", "muse", "pantry",
+                "billing", "caf", "courier", "darkroom", "guard", "identity", "muse", "pantry",
             ],
         ),
         // Two `go` repositories, and they are not the same thing: identity
@@ -247,13 +297,15 @@ async fn every_filter_narrows_the_list() {
         // the manifest, so it does not care which.
         ("?language=go", &["caf", "identity"]),
         ("?language=ruby", &["billing"]),
+        ("?language=elixir", &["courier"]),
         ("?language=rust", &["darkroom", "pantry"]),
         (
             "?contract=%5E0.2.0",
             &["billing", "caf", "darkroom", "muse", "pantry"],
         ),
-        // identity and guard are on ^0.1.0, which pre-1.0 does not contain ^0.2.0.
-        ("?contract=%5E0.1.0", &["guard", "identity"]),
+        // courier joins identity and guard on ^0.1.0, which pre-1.0 does not
+        // contain ^0.2.0.
+        ("?contract=%5E0.1.0", &["courier", "guard", "identity"]),
         ("?kind=api&language=python&contract=%5E0.2.0", &["muse"]),
     ];
 
@@ -268,7 +320,13 @@ async fn every_filter_narrows_the_list() {
 async fn a_filter_that_matches_nothing_is_an_empty_list() {
     for query in [
         "?kind=worker",
-        "?language=elixir",
+        "?kind=both",
+        // courier is the only elixir service and it is on ^0.1.0, so `elixir`
+        // plus `^0.2.0` matches nothing. This used to be `?language=elixir` on
+        // its own and stopped being empty when courier registered: a case that
+        // a registration can invalidate is a case worth having, and the fix is
+        // to pick a genuinely empty question rather than to delete it.
+        "?language=elixir&contract=%5E0.2.0",
         "?contract=%5E9.0.0",
         // guard is the only `typescript` repository and it is on ^0.1.0, which
         // pre-1.0 does not contain ^0.2.0. This used to be `language=go` and
@@ -336,11 +394,11 @@ async fn a_page_limit_slices_the_list_and_the_cursor_finishes_it() {
         .to_string();
     let second = call(app(), &format!("/v1/services?limit=2&cursor={cursor}")).await;
 
-    assert_eq!(names(&second), ["darkroom", "guard"]);
+    assert_eq!(names(&second), ["courier", "darkroom"]);
     assert_eq!(
         second.body["page"]["has_more"],
         json!(true),
-        "four of seven returned means three are left"
+        "four of eight returned means four are left"
     );
 
     let cursor = second.body["page"]["next_cursor"]
@@ -351,8 +409,8 @@ async fn a_page_limit_slices_the_list_and_the_cursor_finishes_it() {
 
     assert_eq!(
         names(&third),
-        ["identity", "muse"],
-        "six of seven returned means one is left"
+        ["guard", "identity"],
+        "six of eight returned means two are left"
     );
     assert_eq!(third.body["page"]["has_more"], json!(true));
 
@@ -362,7 +420,7 @@ async fn a_page_limit_slices_the_list_and_the_cursor_finishes_it() {
         .to_string();
     let fourth = call(app(), &format!("/v1/services?limit=2&cursor={cursor}")).await;
 
-    assert_eq!(names(&fourth), ["pantry"]);
+    assert_eq!(names(&fourth), ["muse", "pantry"]);
     assert_eq!(fourth.body["page"]["has_more"], json!(false));
     assert_eq!(fourth.body["page"]["next_cursor"], Value::Null);
 }
