@@ -149,21 +149,7 @@ that is hard to reverse. Mark it `> DECISION NEEDED (pantry):` in the affected
 file — what the choice is, the alternatives, your recommendation, and the cost of
 flipping — and report the open list. One number per decision, ever.
 
-Four are open. Two more are recorded in the files where the reader will hit them:
-
-3. **`kind` has no value for a binary.** `caf` is a CLI that publishes a valid
-   manifest. `api` is the only value the vocabulary and `check_kind` admit, and
-   it is a choice under constraint rather than a true answer. The full decision,
-   with alternatives and the cost of flipping, is on caf's row in
-   `registry/index.yml`. A fourth value (`cli`) is the recommended fix.
-4. **`blockedBy` has no value for "valid, and not a service".** `docs` and
-   `cafaye-rb` both carry valid manifests and neither is a service, so none of
-   `schema` / `no-manifest` / `not-a-service` describes them. They are recorded
-   in `UNDECIDED` in `tests/drift.rs::no_workspace_repository_is_missing_from_the_\
-   curation_lists`, with the decision marked on that constant, and a fourth value
-   (`library`) is the recommended fix.
-
-The other two are recorded in `openapi/v1.yaml` and the README:
+Two are open, and both are recorded in `openapi/v1.yaml` and the README:
 
 1. **`method_not_allowed` (405)** is not in core's reserved code list. Recorded
    here for a core amendment rather than invented quietly. The cost of flipping:
@@ -172,6 +158,51 @@ The other two are recorded in `openapi/v1.yaml` and the README:
    `cursor_expired`; the registry is repository data that does not change between
    deploys, so there is nothing for a stale cursor to mis-read. The cost of
    flipping: a timestamp in the cursor encoding.
+
+## Answered decisions, and where they went
+
+Kept, because the reasoning is what stops the next packet from re-opening them,
+and because a list that only grows reads as though nothing was ever settled. **Do
+not delete an entry to tidy this section** — the numbers were one per decision,
+so a later packet inherits a number and never reuses one.
+
+**MD1 — `kind` had no value for a binary.** `caf` is a CLI that publishes a valid
+manifest, and `api` was admitted only because `worker` and `both` were both
+refused: a value that is merely less wrong, chosen for want of a right one.
+Answered by `kind: cli` (pantry-05, 2026-09-30) — `ServiceKind::Cli`, caf's row
+says `cli`, and `openapi/v1.yaml` moves to 1.1.0 because a client that switches on
+`kind` exhaustively now has a case it has not handled.
+
+The part worth keeping is **why the value is still curated**, because the obvious
+next question is why it is not derived like the other three. A manifest that
+declares no contract surface cannot say what it is: core's rule 3 says such a
+repository is "a library or a spec repo", guard and caf are neither, and their
+manifests declare the same absence. So `api` and `cli` are the only two values
+admitted for a surface-less manifest, `check_kind`'s curated branch is a **closed
+set** rather than a list of refusals, and `tests/kind.rs` holds all of it down.
+The question that replaced it is on caf's row: core has no way to say "I am a
+binary" either.
+
+**MD2 — `blockedBy` had no value for "valid, and not a service".** `docs` and
+`cafaye-rb` carry valid manifests and neither is a service, so none of `schema` /
+`no-manifest` / `not-a-service` described them. Answered by `blockedBy: library`
+(pantry-05, 2026-09-30), with both recorded and **neither registered** —
+registration claims `caf dev` can bring the thing up, and a documentation site and
+a gem are depended on rather than started.
+
+The part worth keeping is what was **not** done: the `UNDECIDED` constant in
+`tests/drift.rs` is gone rather than kept as a third list. The alternative to a
+fourth value was teaching the drift test that libraries are exempt, and an
+exemption branch in a check that has caught three real problems is a check that
+has stopped checking. The new value's tripwire is the same one in the same
+direction: a library whose manifest declares `exposes` or a non-empty `consumes`
+is something the platform starts, so the row fails with "register it".
+
+One coverage gap came with it and is named in three files rather than papered
+over: `cafaye-rb` is a **private** repository, so the CI job cannot clone it and
+that row's reason is verified by a developer's run of `tests/schema.rs` rather
+than on every CI run. See `CAFAYE_UNREADABLE` in `.github/workflows/ci.yml` and
+`an_unreadable_repository_is_neither_cloned_nor_registered` in `tests/ci.rs`.
 
 ## Git
 

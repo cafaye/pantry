@@ -445,8 +445,10 @@ $ PANTRY_CAFAYE_ROOT=/Users/kaka/Code/any/moon/cafaye ./bin/prime
 ```
 
 The shape of the problem is that a pantry-only clone and a real workspace print
-**the same 79 passing tests and the same exit code**. The only difference
-between them is eleven `SKIP` lines. Nothing in a green run distinguishes
+**the same 89 passing tests and the same exit code**. The only difference
+between them is eleven `SKIP` lines — and, since pantry-05, one more for the
+private repository this job cannot clone (see "Not registered, and why" below).
+Nothing in a green run distinguishes
 "verified the fleet" from "verified itself" — which is why the job that has the
 fleet has to be a separate job with a name that says so.
 
