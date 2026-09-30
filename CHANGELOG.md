@@ -9,6 +9,29 @@ bottom.
 
 ### Added
 
+- **`gate.yml`: pantry's gate is now declared rather than guessed.** Written
+  against core's `schemas/gate.schema.json` and checked by core's
+  `harness/gate_check.py`, it records the command (`bin/prime`), the mise task
+  (`mise run prime`, which resolves to the same file), the entrypoint, eight
+  proofs with three numeric floors, the four things the gate needs that are not
+  in this repository, and the CI job that runs it.
+
+  Every number came from a real run at 92ca41e on a saturated 8-core arm64 host
+  (rustc 1.95.0, cargo 1.95.0, mise 2026.8.4): 114 tests across 11 integration
+  test binaries, 0 ignored, ~4m17s warm. Nothing here is copied from another
+  repository's declaration.
+
+- **`bin/gate-self-test`: the proof that `gate.yml` is able to be wrong.** It
+  copies the repository, breaks exactly one thing at a time, and asserts core's
+  checker goes red *and names the finding it expects* — naming being the half
+  that decays silently, since a check written for one specific defect can be
+  dead code forever while everything stays green. A control on the unmodified
+  repository runs first in both phases, `edit` fails loudly when a breakage
+  recipe stops applying, and pass and skip counts are reported separately. Not
+  part of `bin/prime`: the checker is core's and is not vendored here, and a
+  self-test inside every gate invocation is a second gate that can disagree with
+  the first.
+
 - **`recordedAt`: every registry copy now records the commit it was taken from,
   and the copy is verified against that commit rather than the sibling checkout's
   working tree.** `registry/index.yml` gains `recordedAt` per service, and
@@ -34,6 +57,51 @@ bottom.
   behind, 0 unmeasured**. Two copies were refreshed (`identity`, `muse` — the two
   `pantry-07` found) and three `recordedAt` values were bumped to a newer head
   whose `cafaye.yml` bytes are identical to the recorded ones.
+
+### Fixed
+
+- **`bin/prime` now asserts the toolchain pin before it does anything else.** The
+  pin lives in three files — `mise.toml`'s `[tools] rust`, `Cargo.toml`'s
+  `rust-version`, and `docker/Dockerfile`'s `ARG RUST_VERSION` — and there is no
+  `rust-toolchain.toml`, so nothing made cargo enforce it. Whatever rustc
+  answered on PATH was what formatted, built, linted and tested the gate, and a
+  mismatched toolchain reported itself as a wall of cargo errors about features
+  and dependency versions that reads as a defect in the code under test.
+
+  `bin/prime` now reads the pin out of `mise.toml` — the file that owns it, so
+  there is no fourth copy to forget — and exits 127 naming `mise install` when
+  the answering rustc is a different minor version. A patch release of the
+  pinned toolchain (1.95.x) passes, because that is the same toolchain. This is
+  the cafaye-rb lesson applied here: a requirement the gate does not check is a
+  comment.
+
+
+- **A stand-down tier is now visible in the gate's output.** This suite has no
+  `#[ignore]`. Every environment-gated tier — drift, schema, core-pin,
+  recorded-copy — prints `SKIP …` and returns early from the test body, which
+  libtest scores as a **PASS**, and libtest captures a passing test's stderr and
+  discards it.
+
+  Both halves were measured, on a real `git clone` in a directory with no
+  cafaye sibling anywhere up the tree, which is what a pantry-only clone is and
+  what CI's `build` job sees: **`bin/prime` exited 0 reporting `114 passed; 0
+  failed; 0 ignored` with the entire drift tier skipped, and printed no SKIP line
+  anywhere.** A developer could not have told that run from one that compared
+  every registry copy against the real services. That is the `cafaye-rb` defect
+  — 1430 tests green against an empty schema — wearing a Rust hat, and it was
+  live in this repository.
+
+  `bin/prime` now runs the suite with `--nocapture`, counts the `SKIP` lines, and
+  prints `skips: N` on **every** run — not only when it is non-zero, because a
+  report that only appears when something is wrong is a report nobody learns to
+  read. When N is not zero it names `PANTRY_CAFAYE_ROOT` and says plainly that
+  those tests counted as passes. It also prints `suite: N passed across 11 test
+  binaries`, which gives the declaration a floor that moves when any test is
+  lost rather than when the alphabetically-last file is.
+
+  No assertion was weakened and no test was changed: the skip still happens, the
+  suite still passes, and the gate still exits 0. What changed is that it now
+  says so.
 
 - **`vendir.lock.yml`: this repository records which commit of `core` it
   vendored**, and `schemas/cafaye.manifest.schema.json` is verified against
