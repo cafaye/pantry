@@ -110,7 +110,12 @@ impl Version {
 
     /// Numeric, component by component: `10.0.0` is newer than `9.0.0`, which a
     /// string comparison gets backwards.
-    pub fn cmp(&self, other: &Version) -> Ordering {
+    ///
+    /// Named `compare` rather than `cmp` because clippy's `should_implement_trait`
+    /// is right that `cmp` reads as `Ord::cmp`, and implementing `Ord` would
+    /// claim a total order over versions that includes prereleases this grammar
+    /// deliberately cannot express. This is the only ordering there is.
+    pub fn compare(&self, other: &Version) -> Ordering {
         self.major
             .cmp(&other.major)
             .then(self.minor.cmp(&other.minor))
@@ -128,7 +133,29 @@ impl Constraint {
     /// Reads a constraint in core's grammar, and says what the grammar is when
     /// it says no — the message is what a person reads when they typed it wrong.
     pub fn parse(text: &str) -> Result<Constraint, ConstraintError> {
-        Err(ConstraintError::NotAConstraint(text.to_string()))
+        let (operator, version_text) = match text.strip_prefix('^') {
+            Some(rest) => (Operator::Caret, rest),
+            None => match text.strip_prefix('~') {
+                Some(rest) => (Operator::Tilde, rest),
+                None => match text.strip_prefix(">=") {
+                    Some(rest) => (Operator::Floor, rest),
+                    None => (Operator::Exact, text),
+                },
+            },
+        };
+
+        // A second operator is not a version. `>1.2.3`, `<=1.2.3` and
+        // `>= 1.2.3` all reach here with a character the components reject, and
+        // `^1.0.0 || ^2.0.0` reaches it with the wrong number of components.
+        // Both come out as the same one-sentence explanation of the grammar,
+        // which is what a person needs and what a resolver must not guess at.
+        let version =
+            Version::parse(version_text).map_err(|source| ConstraintError::BadVersion {
+                whole: text.to_string(),
+                reason: source.reason().to_string(),
+            })?;
+
+        Ok(Constraint { operator, version })
     }
 
     pub fn operator(&self) -> Operator {
@@ -176,16 +203,16 @@ impl Constraint {
     /// the same answer.
     pub fn satisfies(&self, version: &Version) -> bool {
         if self.operator == Operator::Exact {
-            return self.version.cmp(version) == Ordering::Equal;
+            return self.version.compare(version) == Ordering::Equal;
         }
 
         let interval = self.interval();
-        if version.cmp(&interval.floor) == Ordering::Less {
+        if version.compare(&interval.floor) == Ordering::Less {
             return false;
         }
         match interval.upper {
             None => true,
-            Some(upper) => version.cmp(&upper) == Ordering::Less,
+            Some(upper) => version.compare(&upper) == Ordering::Less,
         }
     }
 
@@ -200,7 +227,7 @@ impl Constraint {
         let mine = self.interval();
         let theirs = other.interval();
 
-        let floor = if mine.floor.cmp(&theirs.floor) == Ordering::Less {
+        let floor = if mine.floor.compare(&theirs.floor) == Ordering::Less {
             theirs.floor
         } else {
             mine.floor
@@ -210,11 +237,21 @@ impl Constraint {
         // version the interval is inclusive only if BOTH are, which is exactly
         // the case where both constraints are that one version.
         let (upper, upper_inclusive) = match (mine.upper, theirs.upper) {
-            (None, theirs) => (theirs, false),
-            (mine, None) => (mine, false),
-            (Some(left), Some(right)) => match left.cmp(&right) {
-                Ordering::Less => (Some(left), false),
-                Ordering::Greater => (Some(right), false),
+            // Both open above: everything from the floor up is common.
+            (None, None) => return true,
+            // One open above: the other's ceiling decides, and so does its
+            // inclusivity — `>=0.2.0` and `0.2.0` share exactly the point
+            // 0.2.0, because an exact version's ceiling is inside its range.
+            (None, Some(right)) => (Some(right), theirs.upper_inclusive),
+            (Some(left), None) => (Some(left), mine.upper_inclusive),
+            (Some(left), Some(right)) => match left.compare(&right) {
+                // Whichever constraint supplies the tighter ceiling also
+                // supplies its inclusivity: an exact version's ceiling is a
+                // point that IS in the range, while a caret's is a version that
+                // is NOT. Taking the tighter bound and the looser bound's
+                // inclusivity would drop the last version of every range.
+                Ordering::Less => (Some(left), mine.upper_inclusive),
+                Ordering::Greater => (Some(right), theirs.upper_inclusive),
                 Ordering::Equal => (Some(left), mine.upper_inclusive && theirs.upper_inclusive),
             },
         };
@@ -223,7 +260,7 @@ impl Constraint {
             return true;
         };
 
-        match floor.cmp(&upper) {
+        match floor.compare(&upper) {
             Ordering::Less => true,
             Ordering::Equal => upper_inclusive,
             Ordering::Greater => false,
@@ -311,11 +348,30 @@ fn component_number(component: &str, whole: &str) -> Result<u64, VersionError> {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum VersionError {
-    #[error("{0} is not a core version: want MAJOR.MINOR.PATCH, with no prefix and no leading zeros")]
+    #[error(
+        "{0} is not a core version: want MAJOR.MINOR.PATCH, with no prefix and no leading zeros"
+    )]
     NotAVersion(String),
 
-    #[error("{component:?} in {whole:?} is not a number: a leading zero is a second spelling of the same version")]
+    #[error(
+        "{component:?} in {whole:?} is not a number: a leading zero is a second spelling of the same version"
+    )]
     LeadingZero { component: String, whole: String },
+}
+
+impl VersionError {
+    /// The clause that goes inside "is not a cafaye core constraint (...)".
+    /// Split out so the grammar sentence is written once and every rejection
+    /// carries it — a message that only says why *this* string failed leaves a
+    /// person to guess what would have worked.
+    fn reason(&self) -> &'static str {
+        match self {
+            VersionError::NotAVersion(_) => "a version is three dot-separated integers",
+            VersionError::LeadingZero { .. } => {
+                "a leading zero is a second spelling of the same version"
+            }
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -326,9 +382,9 @@ pub enum ConstraintError {
     )]
     NotAConstraint(String),
 
-    #[error("{whole:?} is not a cafaye core constraint: {source}")]
-    BadVersion {
-        whole: String,
-        source: VersionError,
-    },
+    #[error(
+        "{whole:?} is not a cafaye core constraint ({reason}): want MAJOR.MINOR.PATCH, \
+         optionally prefixed by ^ (compatible), ~ (pin the minor) or >= (floor)"
+    )]
+    BadVersion { whole: String, reason: String },
 }

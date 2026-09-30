@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 
 use pantry::manifest::{self, Language};
-use pantry::registry::{self, registry_dir, Registry, ServiceKind};
+use pantry::registry::{self, Registry, ServiceKind, registry_dir};
 
 /// The cafaye workspace: the directory holding `core/`, `identity/`, and the
 /// rest. `PANTRY_CAFAYE_ROOT` overrides it; otherwise the parent of this
@@ -26,14 +26,33 @@ use pantry::registry::{self, registry_dir, Registry, ServiceKind};
 fn cafaye_root() -> Option<PathBuf> {
     let candidates = [
         std::env::var_os("PANTRY_CAFAYE_ROOT").map(PathBuf::from),
-        Some(Path::new(env!("CARGO_MANIFEST_DIR")).parent()?.to_path_buf()),
+        Some(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()?
+                .to_path_buf(),
+        ),
     ];
 
     candidates.into_iter().flatten().find(|root| {
         // A directory that merely exists is not proof. The workspace has core in
         // it, and that is the one repository every cafaye repo depends on.
-        root.join("core/schemas/cafaye.manifest.schema.json").is_file()
+        root.join("core/schemas/cafaye.manifest.schema.json")
+            .is_file()
     })
+}
+
+/// Where a registered service's own files live.
+///
+/// Every service is a sibling checkout, and pantry is this repository — the one
+/// name whose "real service" and registry copy are the same file in the same
+/// tree. That case is resolved here rather than special-cased at each use, so
+/// all four drift checks agree about it.
+fn service_root(root: &Path, name: &str) -> PathBuf {
+    if name == "pantry" {
+        Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
+    } else {
+        root.join(name)
+    }
 }
 
 /// Skips loudly, and says exactly what would make it run.
@@ -65,18 +84,21 @@ fn every_registered_entry_matches_the_real_service_on_disk() {
     let root = require_workspace!("registry drift");
 
     let registry = Registry::load(&registry_dir()).expect("the official registry loads");
-    assert!(!registry.entries().is_empty(), "the registry is empty, so nothing was checked");
+    assert!(
+        !registry.entries().is_empty(),
+        "the registry is empty, so nothing was checked"
+    );
 
     for entry in registry.entries() {
         let name = entry.name();
-        let real = root.join(name).join("cafaye.yml");
+        let real = service_root(&root, name).join("cafaye.yml");
 
         assert!(
             real.is_file(),
-            "{} is registered but {}/cafaye.yml does not exist. Either the \
-             repository moved or the entry is fiction; both are drift.",
+            "{} is registered but {} does not exist. Either the repository moved \
+             or the entry is fiction; both are drift.",
             name,
-            root.join(name).display()
+            real.display()
         );
 
         let upstream = manifest::read(&real)
@@ -85,14 +107,32 @@ fn every_registered_entry_matches_the_real_service_on_disk() {
         // identity is the worked example: if someone adds a field to
         // registry/services/identity.cafaye.yml that upstream does not have,
         // this is the line that says so.
-        assert_eq!(entry.manifest, upstream, "{} does not match {}", name, real.display());
+        assert_eq!(
+            entry.manifest,
+            upstream,
+            "{} does not match {}",
+            name,
+            real.display()
+        );
 
         // The identity fields, named out loud, because a struct comparison
         // fails with a diff and a reader should not have to know which field
         // the diff refers to.
-        assert_eq!(entry.manifest.repository.url, upstream.repository.url, "{} repository.url", name);
-        assert_eq!(entry.manifest.core, upstream.core, "{} core constraint", name);
-        assert_eq!(entry.manifest.language, upstream.language, "{} language", name);
+        assert_eq!(
+            entry.manifest.repository.url, upstream.repository.url,
+            "{} repository.url",
+            name
+        );
+        assert_eq!(
+            entry.manifest.core, upstream.core,
+            "{} core constraint",
+            name
+        );
+        assert_eq!(
+            entry.manifest.language, upstream.language,
+            "{} language",
+            name
+        );
     }
 }
 
@@ -107,12 +147,15 @@ fn every_registered_repository_url_is_the_real_services_remote() {
 
     for entry in registry.entries() {
         let name = entry.name();
-        let repository = root.join(name);
+        let repository = service_root(&root, name);
 
         // A checkout with no git metadata is a tarball, not a worktree. Skip
         // that one entry rather than the whole test, and say so.
         if !repository.join(".git").exists() {
-            eprintln!("SKIP remote check for {name}: {} is not a git checkout", repository.display());
+            eprintln!(
+                "SKIP remote check for {name}: {} is not a git checkout",
+                repository.display()
+            );
             continue;
         }
 
@@ -133,7 +176,7 @@ fn every_registered_repository_url_is_the_real_services_remote() {
 
         let normalise = |url: &str| url.trim_end_matches(".git").to_string();
         assert_eq!(
-            normalise(&declared),
+            declared,
             normalise(&actual),
             "{} declares remote {declared} but the checkout's origin is {actual}",
             name
@@ -151,7 +194,8 @@ fn a_missing_default_branch_is_reported_absent_not_invented() {
     let registry = Registry::load(&registry_dir()).expect("the official registry loads");
 
     for entry in registry.entries() {
-        let upstream = manifest::read(&root.join(entry.name()).join("cafaye.yml")).expect("parses");
+        let upstream =
+            manifest::read(&service_root(&root, entry.name()).join("cafaye.yml")).expect("parses");
         assert_eq!(
             entry.manifest.repository.default_branch,
             upstream.repository.default_branch,
@@ -166,7 +210,7 @@ fn a_missing_default_branch_is_reported_absent_not_invented() {
 /// stand in for that.
 #[test]
 fn kind_agrees_with_what_the_manifest_can_prove() {
-    let root = require_workspace!("kind consistency");
+    require_workspace!("kind consistency");
 
     let registry = Registry::load(&registry_dir()).expect("the official registry loads");
 
@@ -174,7 +218,11 @@ fn kind_agrees_with_what_the_manifest_can_prove() {
         let manifest = &entry.manifest;
         let name = entry.name();
 
-        let serves_http = manifest.exposes.as_ref().and_then(|e| e.api.as_deref()).is_some();
+        let serves_http = manifest
+            .exposes
+            .as_ref()
+            .and_then(|e| e.api.as_deref())
+            .is_some();
         let subscribes = manifest.consumes.as_ref().is_some_and(|c| !c.is_empty());
         let publishes = manifest
             .exposes
@@ -252,7 +300,7 @@ fn base_path_agrees_with_the_services_own_openapi_document() {
             continue;
         };
 
-        let document = root.join(name).join(reference);
+        let document = service_root(&root, name).join(reference);
         assert!(
             document.is_file(),
             "{name} declares exposes.api: {reference}, which does not exist at {}",

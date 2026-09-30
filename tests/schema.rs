@@ -18,13 +18,17 @@ use pantry::registry::BlockedBy;
 fn cafaye_root() -> Option<std::path::PathBuf> {
     let candidates = [
         std::env::var_os("PANTRY_CAFAYE_ROOT").map(std::path::PathBuf::from),
-        Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent()?.to_path_buf()),
+        Some(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()?
+                .to_path_buf(),
+        ),
     ];
 
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|root| root.join("core/schemas/cafaye.manifest.schema.json").is_file())
+    candidates.into_iter().flatten().find(|root| {
+        root.join("core/schemas/cafaye.manifest.schema.json")
+            .is_file()
+    })
 }
 
 fn skip_without_workspace(what: &str) {
@@ -43,8 +47,7 @@ fn the_vendored_schema_is_byte_identical_to_cores() {
 
     let upstream = std::fs::read(root.join("core/schemas/cafaye.manifest.schema.json"))
         .expect("core's schema is readable");
-    let vendored =
-        std::fs::read(manifest::schema_path()).expect("the vendored schema is readable");
+    let vendored = std::fs::read(manifest::schema_path()).expect("the vendored schema is readable");
 
     assert_eq!(
         String::from_utf8_lossy(&upstream),
@@ -63,7 +66,10 @@ fn the_vendored_schema_is_the_draft_the_schema_declares() {
         schema["$schema"], "https://json-schema.org/draft/2020-12/schema",
         "core's schemas are Draft 2020-12 and pantry validates against that dialect"
     );
-    assert_eq!(schema["$id"], "https://cafaye.com/schemas/cafaye.manifest.schema.json");
+    assert_eq!(
+        schema["$id"],
+        "https://cafaye.com/schemas/cafaye.manifest.schema.json"
+    );
 }
 
 /// The gate `/readyz` depends on. If this test is deleted the readiness probe
@@ -159,7 +165,10 @@ fn the_schema_accepts_core_s_own_valid_examples() {
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "yml"))
         .collect();
-    assert!(!examples.is_empty(), "core has no valid examples to check against");
+    assert!(
+        !examples.is_empty(),
+        "core has no valid examples to check against"
+    );
 
     for path in examples {
         manifest::validate_schema(&std::fs::read(&path).expect("readable"), &path)
@@ -195,10 +204,15 @@ fn every_exclusion_reason_is_still_true() {
 
     for excluded in &index.excluded {
         let manifest_path = root.join(&excluded.name).join("cafaye.yml");
-        let validates = manifest_path
-            .is_file()
-            .then(|| pantry::manifest::validate_schema(&std::fs::read(&manifest_path).unwrap(), &manifest_path).is_ok())
-            .unwrap_or(false);
+        let validates = if manifest_path.is_file() {
+            pantry::manifest::validate_schema(
+                &std::fs::read(&manifest_path).expect("readable"),
+                &manifest_path,
+            )
+            .is_ok()
+        } else {
+            false
+        };
 
         match excluded.blocked_by {
             BlockedBy::Schema => assert!(
@@ -216,7 +230,11 @@ fn every_exclusion_reason_is_still_true() {
                 excluded.name
             ),
             BlockedBy::NotAService => {
-                assert!(validates, "{} is held back for being a non-service, so its manifest must still validate", excluded.name);
+                assert!(
+                    validates,
+                    "{} is held back for being a non-service, so its manifest must still validate",
+                    excluded.name
+                );
                 let manifest = pantry::manifest::read(&manifest_path).expect("validates");
                 assert_eq!(
                     manifest.language,
@@ -257,4 +275,3 @@ fn a_registered_service_is_never_also_excluded() {
         );
     }
 }
-

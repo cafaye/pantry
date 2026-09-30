@@ -226,8 +226,53 @@ impl Registry {
     /// reason about. `/readyz` reports the failure and the process keeps running
     /// so the failure is observable rather than a crash loop.
     pub fn load(dir: &Path) -> Result<Registry, RegistryError> {
-        let _ = dir;
-        Ok(Registry::default())
+        let index = read_index(dir)?;
+
+        if index.schema_version != SUPPORTED_SCHEMA_VERSION {
+            return Err(RegistryError::Invariant(format!(
+                "registry index declares schemaVersion {} and this build reads {SUPPORTED_SCHEMA_VERSION}; \
+                 a pantry that guessed at a newer index would serve entries it did not understand",
+                index.schema_version
+            )));
+        }
+
+        let mut entries = Vec::new();
+
+        for path in manifest_paths(dir) {
+            let manifest = manifest::read(&path).map_err(|source| RegistryError::Manifest {
+                path: path.clone(),
+                source,
+            })?;
+
+            let entry = entry_for(&manifest, &index, &path)?;
+            entries.push(entry);
+        }
+
+        if entries.is_empty() {
+            return Err(RegistryError::Invariant(format!(
+                "{} holds no manifests; an empty registry answers every question with \"no\" and \
+                 that is indistinguishable from a platform with no services",
+                dir.join("services").display()
+            )));
+        }
+
+        // Every manifest has an index row and every index row has a manifest. An
+        // orphan in either direction is a curation mistake, and both would
+        // otherwise be invisible: the orphan manifest is served with no kind and
+        // the orphan row is a service the registry claims and cannot describe.
+        for name in index.services.keys() {
+            if !entries.iter().any(|entry| entry.name() == name) {
+                return Err(RegistryError::Invariant(format!(
+                    "registry/index.yml lists {name} but there is no \
+                     {}/{name}.cafaye.yml",
+                    dir.join("services").display()
+                )));
+            }
+        }
+
+        entries.sort_by(|left, right| left.name().cmp(right.name()));
+
+        Ok(Registry { entries })
     }
 
     pub fn entries(&self) -> &[ServiceEntry] {
@@ -299,6 +344,91 @@ pub fn read_index(dir: &Path) -> Result<RegistryIndex, RegistryError> {
         path,
         message: format!("is not a registry index: {error}"),
     })
+}
+
+/// The index schema this build reads. Bumping it is a breaking change to
+/// `registry/index.yml`, which is a pantry-internal file and not core's.
+const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+
+/// Joins one parsed manifest to its index row, refusing every inconsistency.
+///
+/// The order of the checks is the order of what a reader needs to be told first:
+/// the file is named for the service it declares, the service is one pantry can
+/// register, the index has a row for it, and the row's two facts survive the
+/// manifest. A load that fails at the first one leaves the later questions
+/// unasked, which is right — they are not answerable yet.
+fn entry_for(
+    manifest: &Manifest,
+    index: &RegistryIndex,
+    path: &Path,
+) -> Result<ServiceEntry, RegistryError> {
+    let expected_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.trim_end_matches(".cafaye.yml"))
+        .unwrap_or_default();
+
+    if manifest.name != expected_name {
+        return Err(RegistryError::Invariant(format!(
+            "{} declares name {:?}, so the file is misnamed: a service's registry file is \
+             <name>.cafaye.yml, and a mismatch means one of the two is wrong",
+            path.display(),
+            manifest.name
+        )));
+    }
+
+    // A specification repository is not a service. core's schema defines
+    // `language: spec` as "specification-only repositories (core itself,
+    // contract-test fixtures)", and nothing routes to a specification or depends
+    // on one — registering core here would make the registry claim a namespace
+    // for the substrate.
+    if manifest.language == Language::Spec {
+        return Err(RegistryError::Invariant(format!(
+            "{} declares `language: spec`, which core defines for specification-only \
+             repositories. It belongs in this file's `excluded` list with a reason, not in \
+             the registry: no caller routes to a specification.",
+            path.display()
+        )));
+    }
+
+    let index_entry = index.services.get(&manifest.name).ok_or_else(|| {
+        RegistryError::Invariant(format!(
+            "{} is not in registry/index.yml. A manifest is only a registry entry once the \
+             index says which kind it is and what its base path is — copy it into \
+             services/ and add the row in the same commit.",
+            path.display()
+        ))
+    })?;
+
+    // A constraint the resolver cannot read is not a constraint. Failing the
+    // load here is what lets `ServiceEntry::core_constraint` be infallible, and
+    // therefore what lets a request handler not re-parse on every filter.
+    Constraint::parse(&manifest.core).map_err(|error| {
+        RegistryError::Invariant(format!(
+            "{} declares core: {:?}, which this build cannot resolve: {error}",
+            path.display(),
+            manifest.core
+        ))
+    })?;
+
+    if let Some(base_path) = index_entry.base_path.as_deref()
+        && !base_path.starts_with('/')
+    {
+        return Err(RegistryError::Invariant(format!(
+            "{}.base_path is {base_path:?}; a base path is a URL path prefix and starts with `/`",
+            manifest.name
+        )));
+    }
+
+    let entry = ServiceEntry {
+        manifest: manifest.clone(),
+        kind: index_entry.kind,
+        base_path: index_entry.base_path.clone(),
+    };
+
+    check_kind(&entry)?;
+
+    Ok(entry)
 }
 
 /// The kind rules from the [`ServiceKind`] table, as a check rather than as

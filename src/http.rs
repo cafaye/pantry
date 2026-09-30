@@ -180,7 +180,10 @@ async fn healthz() -> Json<HealthView> {
 
 /// `GET /readyz` — readiness. Checks the thing an orchestrator is about to send
 /// traffic to.
-async fn readyz(State(state): State<AppState>, Query(_query): Query<HashMap<String, String>>) -> Response {
+async fn readyz(
+    State(state): State<AppState>,
+    Query(_query): Query<HashMap<String, String>>,
+) -> Response {
     let trace_id = TraceId::current();
     let instance = "/readyz";
 
@@ -286,8 +289,7 @@ impl IntoResponse for Problem {
     fn into_response(self) -> Response {
         tracing::warn!(problem = %self, "request refused");
 
-        let status =
-            StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let mut response = (status, Json(self)).into_response();
         response.headers_mut().insert(
             header::CONTENT_TYPE,

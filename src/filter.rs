@@ -58,7 +58,7 @@ impl Filter {
                     return Err(FilterError::UnknownParameter {
                         parameter: other.to_string(),
                         value: value.clone(),
-                    })
+                    });
                 }
             }
         }
@@ -148,14 +148,19 @@ impl Default for Page {
 }
 
 impl Page {
+    /// Checks what can be checked without the list: a sane limit, and a cursor
+    /// that decodes.
+    ///
+    /// The split is deliberate. Whether a cursor is *well-formed* is a property
+    /// of the string, and belongs here so a malformed one is refused before
+    /// anything reads a registry. Whether it is *in range* needs the length, so
+    /// it belongs in [`Page::offset`].
     pub fn new(limit: usize, cursor: Option<String>) -> Result<Page, PageError> {
         if !(1..=MAX_LIMIT).contains(&limit) {
             return Err(PageError::BadLimit(limit));
         }
-        if let Some(cursor) = cursor.as_deref()
-            && cursor.is_empty()
-        {
-            return Err(PageError::BadCursor(String::new()));
+        if let Some(cursor) = cursor.as_deref() {
+            decode_cursor(cursor)?;
         }
 
         Ok(Page { limit, cursor })
@@ -170,7 +175,8 @@ impl Page {
                 if raw.trim().is_empty() {
                     return Err(PageError::BadLimitValue(raw.clone()));
                 }
-                raw.parse::<usize>().map_err(|_| PageError::BadLimitValue(raw.clone()))?
+                raw.parse::<usize>()
+                    .map_err(|_| PageError::BadLimitValue(raw.clone()))?
             }
         };
 
@@ -179,24 +185,15 @@ impl Page {
 
     /// The index the cursor points at.
     ///
-    /// The cursor is base64url of an index, so it is opaque on the wire and
-    /// stable in a log. An undecodable cursor is rejected rather than treated as
-    /// page one: silently restarting is how a caller loses rows without noticing.
+    /// An out-of-range cursor is an error rather than page one: silently
+    /// restarting is how a caller loses rows without noticing, and a list that
+    /// shrank between two requests is exactly when that happens.
     pub fn offset(&self, length: usize) -> Result<usize, PageError> {
         let Some(cursor) = self.cursor.as_deref() else {
             return Ok(0);
         };
 
-        let decoded = URL_SAFE_NO_PAD
-            .decode(cursor)
-            .ok()
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .ok_or_else(|| PageError::BadCursor(cursor.to_string()))?;
-
-        let offset: usize = decoded
-            .parse()
-            .map_err(|_| PageError::BadCursor(cursor.to_string()))?;
-
+        let offset = decode_cursor(cursor)?;
         if offset > length {
             return Err(PageError::PastEnd { length });
         }
@@ -208,6 +205,21 @@ impl Page {
     pub fn cursor_for(&self, offset: usize) -> String {
         URL_SAFE_NO_PAD.encode(offset.to_string())
     }
+}
+
+/// The cursor encoding, in one place: base64url of the decimal offset.
+///
+/// Opaque on the wire and stable in a log — the point of the encoding is that a
+/// client cannot read or edit it, so `?cursor=2` is refused rather than
+/// interpreted. The encoding may change without notice (core's conventions),
+/// which is why nothing outside this module looks at a cursor's bytes.
+fn decode_cursor(cursor: &str) -> Result<usize, PageError> {
+    let bad = || PageError::BadCursor(cursor.to_string());
+
+    let decoded = URL_SAFE_NO_PAD.decode(cursor).map_err(|_| bad())?;
+    let text = String::from_utf8(decoded).map_err(|_| bad())?;
+
+    text.parse().map_err(|_| bad())
 }
 
 fn non_empty<'a>(parameter: &str, value: &'a str) -> Result<&'a str, FilterError> {
@@ -241,7 +253,10 @@ pub enum FilterError {
     },
 
     #[error("contract={value:?} is not a cafaye constraint: {source}")]
-    BadConstraint { value: String, source: ConstraintError },
+    BadConstraint {
+        value: String,
+        source: ConstraintError,
+    },
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

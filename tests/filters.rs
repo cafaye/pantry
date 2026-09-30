@@ -9,9 +9,8 @@
 use pantry::contract::Constraint;
 use pantry::filter::{Filter, Page};
 use pantry::manifest::Language;
-use pantry::registry::{registry_dir, Registry, ServiceKind};
+use pantry::registry::{Registry, ServiceKind, registry_dir};
 use std::collections::HashMap;
-
 
 fn registry() -> Registry {
     Registry::load(&registry_dir()).expect("the official registry loads")
@@ -40,7 +39,10 @@ fn no_filter_returns_every_official_service_sorted_by_name() {
     let entries = registry.query(&Filter::default());
 
     let names: Vec<&str> = entries.iter().map(|e| e.name()).collect();
-    assert_eq!(names, ["billing", "guard", "identity", "muse"]);
+    assert_eq!(
+        names,
+        ["billing", "darkroom", "guard", "identity", "muse", "pantry"]
+    );
     // Sorted, not filesystem order: a directory walk is not a contract, and a
     // client diffing two responses should see a stable list.
     let mut sorted = names.clone();
@@ -58,7 +60,10 @@ fn kind_filter_accepts_every_kind_in_the_vocabulary() {
         let matched = names(filter);
 
         match kind {
-            ServiceKind::Api => assert_eq!(matched, ["billing", "guard", "identity", "muse"]),
+            ServiceKind::Api => assert_eq!(
+                matched,
+                ["billing", "darkroom", "guard", "identity", "muse", "pantry"]
+            ),
             // No official service is a pure worker or a hybrid today: courier
             // and darkroom-worker are the candidates and both are held out of
             // the registry with a recorded reason (registry/index.yml). An
@@ -85,7 +90,7 @@ fn language_filter_covers_every_language_the_manifest_schema_allows_for_a_servic
         (Language::Typescript, &["guard"]),
         (Language::Python, &["muse"]),
         (Language::Elixir, &[]),
-        (Language::Rust, &[]),
+        (Language::Rust, &["darkroom", "pantry"]),
     ];
 
     for (language, want) in expected {
@@ -104,13 +109,18 @@ fn language_filter_covers_every_language_the_manifest_schema_allows_for_a_servic
 #[test]
 fn contract_filter_matches_by_range_intersection() {
     let cases: &[(&str, &[&str])] = &[
-        ("^0.2.0", &["billing", "muse"]),
+        ("^0.2.0", &["billing", "darkroom", "muse", "pantry"]),
         ("^0.1.0", &["guard", "identity"]),
-        ("~0.2.0", &["billing", "muse"]),
-        (">=0.2.0", &["billing", "muse"]),
-        (">=0.1.0", &["guard", "identity"]),
+        ("~0.2.0", &["billing", "darkroom", "muse", "pantry"]),
+        (">=0.2.0", &["billing", "darkroom", "muse", "pantry"]),
+        // An open floor from below every constraint matches everything: a
+        // service on ^0.2.0 contains versions that are also at or above 0.1.0.
+        (
+            ">=0.1.0",
+            &["billing", "darkroom", "guard", "identity", "muse", "pantry"],
+        ),
         ("0.1.0", &["guard", "identity"]),
-        ("0.2.0", &["billing", "muse"]),
+        ("0.2.0", &["billing", "darkroom", "muse", "pantry"]),
         // A caret on a future minor intersects nothing on this platform yet.
         ("^0.3.0", &[]),
         ("^0.0.1", &[]),
@@ -154,7 +164,11 @@ fn two_filters_are_both_applied() {
         "identity is on ^0.1.0, so language=go plus contract=^0.2.0 matches nothing"
     );
 
-    let three = query(&[("kind", "api"), ("language", "python"), ("contract", "^0.2.0")]);
+    let three = query(&[
+        ("kind", "api"),
+        ("language", "python"),
+        ("contract", "^0.2.0"),
+    ]);
     assert_eq!(names(three), ["muse"]);
 }
 
@@ -180,8 +194,16 @@ fn an_empty_value_for_a_known_filter_is_rejected() {
 fn a_filter_value_outside_the_vocabulary_is_rejected_with_the_vocabulary() {
     let cases = [
         ("kind", "database", &["api", "worker", "both"][..]),
-        ("language", "cobol", &["go", "ruby", "elixir", "python", "typescript", "rust"][..]),
-        ("language", "spec", &["go", "ruby", "elixir", "python", "typescript", "rust"][..]),
+        (
+            "language",
+            "cobol",
+            &["go", "ruby", "elixir", "python", "typescript", "rust"][..],
+        ),
+        (
+            "language",
+            "spec",
+            &["go", "ruby", "elixir", "python", "typescript", "rust"][..],
+        ),
         ("contract", "1.x", &["MAJOR.MINOR.PATCH"][..]),
     ];
 
@@ -205,8 +227,7 @@ fn a_filter_value_outside_the_vocabulary_is_rejected_with_the_vocabulary() {
 /// unfiltered list and believes it asked a question.
 #[test]
 fn an_unknown_query_parameter_is_rejected() {
-    let map: HashMap<String, String> =
-        [("runtime".to_string(), "node".to_string())].into();
+    let map: HashMap<String, String> = [("runtime".to_string(), "node".to_string())].into();
 
     let error = Filter::from_query(&map).expect_err("runtime is not a filter");
 
@@ -225,17 +246,30 @@ fn a_page_limit_slices_the_filtered_list_and_says_whether_more_is_left() {
 
     assert_eq!(page.items.len(), 2);
     assert_eq!(page.items[0].name(), "billing");
-    assert_eq!(page.items[1].name(), "guard");
-    assert!(page.has_more, "two of four returned means two left");
-    assert!(page.next_cursor.is_some(), "a caller needs somewhere to go next");
+    assert_eq!(page.items[1].name(), "darkroom");
+    assert!(page.has_more, "two of six returned means four are left");
+    assert!(
+        page.next_cursor.is_some(),
+        "a caller needs somewhere to go next"
+    );
 
     let second = Page::new(2, page.next_cursor).expect("the cursor pantry handed out");
     let page = registry.page(&filter, &second).expect("a page");
 
     assert_eq!(page.items.len(), 2);
-    assert_eq!(page.items[0].name(), "identity");
-    assert_eq!(page.items[1].name(), "muse");
-    assert!(!page.has_more, "the list is four long and both halves are taken");
+    assert_eq!(page.items[0].name(), "guard");
+    assert_eq!(page.items[1].name(), "identity");
+
+    let third = Page::new(2, page.next_cursor).expect("still a cursor pantry issued");
+    let page = registry.page(&filter, &third).expect("a page");
+
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(page.items[0].name(), "muse");
+    assert_eq!(page.items[1].name(), "pantry");
+    assert!(
+        !page.has_more,
+        "the list is six long and all three pages are taken"
+    );
     assert_eq!(page.next_cursor, None);
 }
 
@@ -252,7 +286,9 @@ fn a_cursor_is_opaque_and_a_rewritten_one_is_rejected() {
     // means it never appears in a log as a bare integer.
     assert_ne!(cursor, "2");
     assert!(
-        cursor.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+        cursor
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
         "base64url, no padding: {cursor}"
     );
 
@@ -267,7 +303,10 @@ fn a_cursor_is_opaque_and_a_rewritten_one_is_rejected() {
 #[test]
 fn page_limits_follow_core_s_bounds() {
     // core: `limit` defaults to 25 and is capped at 100.
-    assert!(Page::new(0, None).is_err(), "a page of nothing is a bug, not a filter");
+    assert!(
+        Page::new(0, None).is_err(),
+        "a page of nothing is a bug, not a filter"
+    );
     assert!(Page::new(101, None).is_err(), "core caps limit at 100");
     assert!(Page::new(100, None).is_ok());
     assert!(Page::new(usize::MAX, None).is_err());
@@ -305,4 +344,3 @@ fn paging_parameters_are_not_filters() {
     assert_eq!(page.limit, 2);
     assert_eq!(page.cursor.as_deref(), Some("MTA"));
 }
-

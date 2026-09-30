@@ -11,11 +11,7 @@ use std::path::Path;
 use pantry::manifest::{self, Language};
 
 fn write_temp(name: &str, contents: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "pantry-manifest-{}-{}",
-        std::process::id(),
-        name
-    ));
+    let dir = std::env::temp_dir().join(format!("pantry-manifest-{}-{}", std::process::id(), name));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let path = dir.join("cafaye.yml");
     std::fs::write(&path, contents).expect("write");
@@ -62,25 +58,40 @@ fn a_valid_manifest_parses_into_its_own_fields() {
     assert_eq!(manifest.description.as_deref(), Some("A service."));
     assert_eq!(manifest.language, Language::Go);
     assert_eq!(manifest.core, "^0.1.0");
-    assert_eq!(manifest.repository.url, "git@github.com:cafaye/identity.git");
-    assert_eq!(manifest.repository.default_branch.as_deref(), Some("master"));
+    assert_eq!(
+        manifest.repository.url,
+        "git@github.com:cafaye/identity.git"
+    );
+    assert_eq!(
+        manifest.repository.default_branch.as_deref(),
+        Some("master")
+    );
     assert_eq!(manifest.repository.visibility.as_deref(), Some("public"));
     assert_eq!(manifest.owner.team, "identity");
-    assert_eq!(manifest.owner.contact.as_deref(), Some("identity@cafaye.com"));
+    assert_eq!(
+        manifest.owner.contact.as_deref(),
+        Some("identity@cafaye.com")
+    );
 
     let exposes = manifest.exposes.as_ref().expect("exposes is declared");
     assert_eq!(exposes.api.as_deref(), Some("openapi/v1.yaml"));
-    assert_eq!(exposes.events.as_deref(), Some(&["identity.user.created".to_string()][..]));
+    assert_eq!(
+        exposes.events.as_deref(),
+        Some(&["identity.user.created".to_string()][..])
+    );
 
     assert_eq!(
         manifest.consumes.as_deref(),
         Some(&["billing.customer.created".to_string()][..])
     );
 
+    // `required: false` is a soft dependency and survives the round trip as
+    // written: the field is optional in the schema, and pantry reports what the
+    // manifest says rather than what core's default would have said.
     let dependency = &manifest.dependencies.as_ref().expect("declared")[0];
     assert_eq!(dependency.name, "billing");
     assert_eq!(dependency.version.as_deref(), Some("^0.2.0"));
-    assert_eq!(dependency.required, Some(true));
+    assert_eq!(dependency.required, Some(false));
 }
 
 #[test]
@@ -147,7 +158,10 @@ fn malformed_yaml_names_the_file_and_the_position() {
     let error = manifest::read(&path).expect_err("bad indentation is not a manifest");
 
     let message = error.to_string();
-    assert!(message.contains("cafaye.yml"), "message names the file: {message}");
+    assert!(
+        message.contains("cafaye.yml"),
+        "message names the file: {message}"
+    );
     assert!(
         message.contains("line"),
         "message carries a position, not just a rejection: {message}"
@@ -166,7 +180,10 @@ fn an_unknown_key_is_rejected_and_named() {
 
     let message = error.to_string();
     assert!(message.contains("unknown field"), "{message}");
-    assert!(message.contains("version"), "names the offending key: {message}");
+    assert!(
+        message.contains("version"),
+        "names the offending key: {message}"
+    );
     for allowed in ["name", "language", "core", "exposes", "repository", "owner"] {
         assert!(
             message.contains(allowed),
@@ -198,7 +215,10 @@ fn a_missing_required_field_is_rejected_and_named() {
     let error = manifest::read(&path).expect_err("language is required");
 
     let message = error.to_string();
-    assert!(message.contains("language"), "names the missing field: {message}");
+    assert!(
+        message.contains("language"),
+        "names the missing field: {message}"
+    );
 }
 
 #[test]
@@ -228,6 +248,61 @@ fn an_empty_manifest_is_rejected_as_empty() {
     );
 }
 
+/// `basePath` is core's `/vN` rule, applied. The muse case is the reason this is
+/// not "the longest common path prefix": muse publishes one path, `/v1/route`,
+/// and the longest common prefix of one path is the whole path.
+#[test]
+fn base_path_is_the_api_version_prefix_a_service_serves_under() {
+    let document = |paths: &str| {
+        format!("openapi: 3.1.0\npaths:\n{paths}")
+            .as_bytes()
+            .to_vec()
+    };
+
+    let prefix =
+        |paths: &str| manifest::openapi_base_path(&document(paths)).expect("a single /vN prefix");
+
+    assert_eq!(
+        prefix("  /v1/users:\n    get: {}\n  /v1/me:\n    get: {}\n"),
+        "/v1"
+    );
+    assert_eq!(
+        prefix("  /v1/route:\n    get: {}\n"),
+        "/v1",
+        "one resource under /v1 is still /v1, and its path is not the base"
+    );
+    assert_eq!(
+        prefix("  /v2/plans:\n    get: {}\n  /healthz:\n    get: {}\n  /readyz:\n    get: {}\n"),
+        "/v2",
+        "the probes are infrastructure and never take part in the derivation"
+    );
+
+    for broken in [
+        // Two prefixes at once: a transition core permits, a basePath cannot
+        // express.
+        "  /v1/users:\n    get: {}\n  /v2/users:\n    get: {}\n",
+        // No version prefix at all.
+        "  /users:\n    get: {}\n",
+        // An empty surface is not a prefix.
+        "",
+    ] {
+        let error = manifest::openapi_base_path(&document(broken))
+            .expect_err("a document with no single /vN prefix has no base path");
+        assert!(
+            !error.to_string().is_empty(),
+            "the rejection has to say which rule was broken"
+        );
+    }
+}
+
+#[test]
+fn a_document_that_is_not_openapi_is_rejected_rather_than_guessed_at() {
+    let error = manifest::openapi_base_path(b"openapi: 3.1.0\ninfo:\n  title: x\n")
+        .expect_err("no paths, no base path");
+
+    assert!(error.to_string().contains("paths"), "{error}");
+}
+
 #[test]
 fn every_official_registry_manifest_parses() {
     let dir = pantry::registry::registry_dir();
@@ -235,8 +310,8 @@ fn every_official_registry_manifest_parses() {
     assert!(!paths.is_empty(), "the registry has no entries to parse");
 
     for path in paths {
-        let parsed = manifest::read(&path)
-            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let parsed =
+            manifest::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
         let stem = path
             .file_stem()
             .expect("a file name")
@@ -244,7 +319,8 @@ fn every_official_registry_manifest_parses() {
             .trim_end_matches(".cafaye")
             .to_string();
         assert_eq!(
-            parsed.name, stem,
+            parsed.name,
+            stem,
             "{} declares name {:?}, which does not match its file name",
             path.display(),
             parsed.name

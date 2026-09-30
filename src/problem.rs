@@ -89,7 +89,14 @@ impl Problem {
     /// 500 — a bug in pantry. Reached only by a path the tests do not cover,
     /// which is why it says so in the detail rather than pretending to know.
     pub fn internal(instance: &str, detail: String, trace_id: &str) -> Problem {
-        Problem::new("internal", "Internal error", 500, instance, detail, trace_id)
+        Problem::new(
+            "internal",
+            "Internal error",
+            500,
+            instance,
+            detail,
+            trace_id,
+        )
     }
 
     fn new(

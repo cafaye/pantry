@@ -36,7 +36,7 @@ pub mod view;
 pub use contract::{Constraint, Operator, Version};
 pub use filter::{Filter, Page};
 pub use http::{AppState, ROUTES, router};
-pub use manifest::{Language, Manifest, MANIFEST_SCHEMA};
+pub use manifest::{Language, MANIFEST_SCHEMA, Manifest};
 pub use problem::Problem;
 pub use registry::{Registry, ServiceEntry, ServiceKind, registry_dir};
 pub use view::{ServiceList, ServiceView};

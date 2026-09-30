@@ -34,7 +34,10 @@ impl std::fmt::Display for Response {
 const TRACEPARENT: HeaderName = HeaderName::from_static("traceparent");
 
 async fn call(app: axum::Router, uri: &str) -> Response {
-    let request = Request::builder().uri(uri).body(Body::empty()).expect("request");
+    let request = Request::builder()
+        .uri(uri)
+        .body(Body::empty())
+        .expect("request");
     let response = app.oneshot(request).await.expect("responds");
     let status = response.status();
     let content_type = response
@@ -54,7 +57,10 @@ async fn call(app: axum::Router, uri: &str) -> Response {
         content_type,
         trace_id,
         body: serde_json::from_slice(&bytes).unwrap_or_else(|error| {
-            panic!("{uri} returned a body that is not JSON ({error}): {:?}", &bytes[..bytes.len().min(200)])
+            panic!(
+                "{uri} returned a body that is not JSON ({error}): {:?}",
+                &bytes[..bytes.len().min(200)]
+            )
         }),
     }
 }
@@ -70,7 +76,9 @@ fn app() -> axum::Router {
 /// directory that does not exist rather than by synthesising an error, so the
 /// test exercises the same path a deployment takes.
 fn broken_app() -> axum::Router {
-    http::router(AppState::from_dir(Path::new("/nonexistent/pantry/registry")))
+    http::router(AppState::from_dir(Path::new(
+        "/nonexistent/pantry/registry",
+    )))
 }
 
 fn names(response: &Response) -> Vec<String> {
@@ -89,7 +97,12 @@ async fn the_registry_is_the_whole_official_set_sorted_by_name() {
     let response = call(app(), "/v1/services").await;
 
     assert_eq!(response.status, StatusCode::OK);
-    assert_eq!(names(&response), ["billing", "guard", "identity", "muse"]);
+    assert_eq!(
+        names(&response),
+        ["billing", "darkroom", "guard", "identity", "muse", "pantry"],
+        "every official service, including pantry itself: a registry that cannot \
+         describe the registry is one `caf dev` has to special-case"
+    );
 
     let page = &response.body["page"];
     assert_eq!(page["has_more"], json!(false));
@@ -105,7 +118,12 @@ async fn a_service_object_carries_exactly_the_documented_keys() {
 
     assert_eq!(response.status, StatusCode::OK);
     let entry = &response.body;
-    let mut keys: Vec<&str> = entry.as_object().expect("an object").keys().map(String::as_str).collect();
+    let mut keys: Vec<&str> = entry
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
     keys.sort_unstable();
     assert_eq!(
         keys,
@@ -131,7 +149,10 @@ async fn a_service_object_carries_exactly_the_documented_keys() {
     assert_eq!(entry["core"], json!("^0.1.0"));
     assert_eq!(entry["basePath"], json!("/v1"));
     assert_eq!(entry["exposes"]["api"], json!("openapi/v1.yaml"));
-    assert_eq!(entry["repository"]["url"], json!("git@github.com:cafaye/identity.git"));
+    assert_eq!(
+        entry["repository"]["url"],
+        json!("git@github.com:cafaye/identity.git")
+    );
     assert_eq!(entry["repository"]["defaultBranch"], json!("master"));
     assert_eq!(entry["owner"]["team"], json!("identity"));
 }
@@ -164,8 +185,14 @@ async fn one_service_is_a_bare_object_not_a_wrapped_one() {
 
     assert_eq!(single.status, StatusCode::OK);
     assert_eq!(single.body["name"], json!("billing"));
-    assert!(single.body.get("data").is_none(), "not a collection envelope");
-    assert_eq!(single.body, list.body["data"][0], "the same object either way");
+    assert!(
+        single.body.get("data").is_none(),
+        "not a collection envelope"
+    );
+    assert_eq!(
+        single.body, list.body["data"][0],
+        "the same object either way"
+    );
 }
 
 // -------------------------------------------------------------- filtering
@@ -173,10 +200,19 @@ async fn one_service_is_a_bare_object_not_a_wrapped_one() {
 #[tokio::test]
 async fn every_filter_narrows_the_list() {
     let cases: &[(&str, &[&str])] = &[
-        ("?kind=api", &["billing", "guard", "identity", "muse"]),
+        (
+            "?kind=api",
+            &["billing", "darkroom", "guard", "identity", "muse", "pantry"],
+        ),
         ("?language=go", &["identity"]),
         ("?language=ruby", &["billing"]),
-        ("?contract=%5E0.2.0", &["billing", "muse"]),
+        ("?language=rust", &["darkroom", "pantry"]),
+        (
+            "?contract=%5E0.2.0",
+            &["billing", "darkroom", "muse", "pantry"],
+        ),
+        // identity and guard are on ^0.1.0, which pre-1.0 does not contain ^0.2.0.
+        ("?contract=%5E0.1.0", &["guard", "identity"]),
         ("?kind=api&language=python&contract=%5E0.2.0", &["muse"]),
     ];
 
@@ -189,10 +225,19 @@ async fn every_filter_narrows_the_list() {
 
 #[tokio::test]
 async fn a_filter_that_matches_nothing_is_an_empty_list() {
-    for query in ["?kind=worker", "?language=elixir", "?contract=%5E9.0.0", "?language=go&contract=%5E0.2.0"] {
+    for query in [
+        "?kind=worker",
+        "?language=elixir",
+        "?contract=%5E9.0.0",
+        "?language=go&contract=%5E0.2.0",
+    ] {
         let response = call(app(), &format!("/v1/services{query}")).await;
 
-        assert_eq!(response.status, StatusCode::OK, "{query} is a question, not a mistake");
+        assert_eq!(
+            response.status,
+            StatusCode::OK,
+            "{query} is a question, not a mistake"
+        );
         assert_eq!(response.body["data"], json!([]), "{query}");
         assert_eq!(response.body["page"]["has_more"], json!(false), "{query}");
     }
@@ -220,7 +265,10 @@ async fn a_bad_filter_value_is_a_400_naming_the_vocabulary() {
         let problem = &response.body;
         assert_eq!(problem["code"], json!("validation_failed"), "{query}");
         assert_eq!(problem["status"], json!(400), "{query}");
-        assert_eq!(problem["type"], json!("https://errors.cafaye.com/validation_failed"));
+        assert_eq!(
+            problem["type"],
+            json!("https://errors.cafaye.com/validation_failed")
+        );
         assert_eq!(problem["instance"], json!("/v1/services"));
         assert!(
             problem["detail"].as_str().unwrap().contains(parameter),
@@ -234,7 +282,7 @@ async fn a_bad_filter_value_is_a_400_naming_the_vocabulary() {
 #[tokio::test]
 async fn a_page_limit_slices_the_list_and_the_cursor_finishes_it() {
     let first = call(app(), "/v1/services?limit=2").await;
-    assert_eq!(names(&first), ["billing", "guard"]);
+    assert_eq!(names(&first), ["billing", "darkroom"]);
     assert_eq!(first.body["page"]["has_more"], json!(true));
 
     let cursor = first.body["page"]["next_cursor"]
@@ -243,9 +291,22 @@ async fn a_page_limit_slices_the_list_and_the_cursor_finishes_it() {
         .to_string();
     let second = call(app(), &format!("/v1/services?limit=2&cursor={cursor}")).await;
 
-    assert_eq!(names(&second), ["identity", "muse"]);
-    assert_eq!(second.body["page"]["has_more"], json!(false));
-    assert_eq!(second.body["page"]["next_cursor"], Value::Null);
+    assert_eq!(names(&second), ["guard", "identity"]);
+    assert_eq!(
+        second.body["page"]["has_more"],
+        json!(true),
+        "four of six returned means two are left"
+    );
+
+    let cursor = second.body["page"]["next_cursor"]
+        .as_str()
+        .expect("a next cursor")
+        .to_string();
+    let third = call(app(), &format!("/v1/services?limit=2&cursor={cursor}")).await;
+
+    assert_eq!(names(&third), ["muse", "pantry"]);
+    assert_eq!(third.body["page"]["has_more"], json!(false));
+    assert_eq!(third.body["page"]["next_cursor"], Value::Null);
 }
 
 #[tokio::test]
@@ -278,7 +339,10 @@ async fn an_unknown_service_is_a_404_in_the_core_error_envelope() {
     );
 
     let problem = &response.body;
-    assert_eq!(problem["type"], json!("https://errors.cafaye.com/not_found"));
+    assert_eq!(
+        problem["type"],
+        json!("https://errors.cafaye.com/not_found")
+    );
     assert_eq!(problem["title"], json!("Not found"));
     assert_eq!(problem["status"], json!(404));
     assert_eq!(problem["instance"], json!("/v1/services/nope"));
@@ -305,7 +369,10 @@ async fn an_unknown_route_is_also_a_problem_json_404() {
     let response = call(app(), "/v1/nope").await;
 
     assert_eq!(response.status, StatusCode::NOT_FOUND);
-    assert_eq!(response.content_type.as_deref(), Some("application/problem+json"));
+    assert_eq!(
+        response.content_type.as_deref(),
+        Some("application/problem+json")
+    );
     assert_eq!(response.body["code"], json!("not_found"));
 }
 
@@ -353,7 +420,11 @@ async fn readyz_reports_a_loaded_registry_and_refuses_an_unloaded_one() {
     let ready = call(app(), "/readyz").await;
     assert_eq!(ready.status, StatusCode::OK);
     assert_eq!(ready.body["status"], json!("ok"));
-    assert_eq!(ready.body["services"], json!(4), "readiness counts what it loaded");
+    assert_eq!(
+        ready.body["services"],
+        json!(6),
+        "readiness counts what it loaded"
+    );
 
     let broken = call(broken_app(), "/readyz").await;
     assert_eq!(
@@ -361,11 +432,17 @@ async fn readyz_reports_a_loaded_registry_and_refuses_an_unloaded_one() {
         StatusCode::SERVICE_UNAVAILABLE,
         "a 200 here would be a lie: there is nothing to serve"
     );
-    assert_eq!(broken.content_type.as_deref(), Some("application/problem+json"));
+    assert_eq!(
+        broken.content_type.as_deref(),
+        Some("application/problem+json")
+    );
     assert_eq!(broken.body["code"], json!("unavailable"));
     assert_eq!(broken.body["status"], json!(503));
     assert!(
-        broken.body["detail"].as_str().unwrap().contains("/nonexistent"),
+        broken.body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("/nonexistent"),
         "the detail names the directory that could not be read: {broken}"
     );
 }
@@ -374,17 +451,42 @@ async fn readyz_reports_a_loaded_registry_and_refuses_an_unloaded_one() {
 
 #[tokio::test]
 async fn every_response_carries_a_trace_id() {
-    for uri in ["/v1/services", "/v1/services/identity", "/v1/services/nope", "/healthz", "/readyz", "/v1/nope"] {
+    for uri in [
+        "/v1/services",
+        "/v1/services/identity",
+        "/v1/services/nope",
+        "/healthz",
+        "/readyz",
+        "/v1/nope",
+    ] {
         let response = call(app(), uri).await;
-        let trace_id = response.trace_id.expect("X-Trace-Id on every response");
+        let trace_id = response
+            .trace_id
+            .clone()
+            .expect("X-Trace-Id on every response");
 
         assert_eq!(trace_id.len(), 32, "{uri}: {trace_id}");
-        assert!(trace_id.chars().all(|c| c.is_ascii_hexdigit()), "{uri}: {trace_id}");
-        assert_eq!(
-            response.body["trace_id"].as_str(),
-            Some(trace_id.as_str()),
-            "{uri}: body and header agree"
+        assert!(
+            trace_id.chars().all(|c| c.is_ascii_hexdigit()),
+            "{uri}: {trace_id}"
         );
+
+        // Only a problem body repeats the id. A 200 has no `trace_id` field —
+        // core requires the id on the problem body because that is the body a
+        // support conversation starts from, and putting it on every success
+        // response would be a second place to keep it correct.
+        if response.status.is_client_error() {
+            assert_eq!(
+                response.body["trace_id"].as_str(),
+                Some(trace_id.as_str()),
+                "{uri}: a problem body repeats the header"
+            );
+        } else {
+            assert!(
+                response.body.get("trace_id").is_none(),
+                "{uri}: a success body has no trace_id field: {response}"
+            );
+        }
     }
 }
 
@@ -395,7 +497,10 @@ async fn every_response_carries_a_trace_id() {
 async fn an_inbound_traceparent_is_propagated() {
     let request = Request::builder()
         .uri("/v1/services")
-        .header(TRACEPARENT, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+        .header(
+            TRACEPARENT,
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        )
         .body(Body::empty())
         .expect("request");
     let response = app().oneshot(request).await.expect("responds");
@@ -410,17 +515,30 @@ async fn an_inbound_traceparent_is_propagated() {
 async fn a_malformed_traceparent_is_ignored_rather_than_echoed() {
     // A caller with a broken header still gets an answer, and still gets a fresh
     // id. Echoing the garbage would put it in every downstream log line.
-    for header_value in ["", "nonsense", "00-short-00f067aa0ba902b7-01", "00-4bf92f3577b34da6a3ce929d0e0e4736"] {
+    for header_value in [
+        "",
+        "nonsense",
+        "00-short-00f067aa0ba902b7-01",
+        "00-4bf92f3577b34da6a3ce929d0e0e4736",
+    ] {
         let request = Request::builder()
             .uri("/healthz")
             .header(TRACEPARENT, header_value)
             .body(Body::empty())
             .expect("request");
         let response = app().oneshot(request).await.expect("responds");
-        let trace_id = response.headers().get("x-trace-id").expect("X-Trace-Id").to_str().unwrap();
+        let trace_id = response
+            .headers()
+            .get("x-trace-id")
+            .expect("X-Trace-Id")
+            .to_str()
+            .unwrap();
 
         assert_eq!(trace_id.len(), 32, "{header_value:?}");
-        assert!(trace_id.chars().all(|c| c.is_ascii_hexdigit()), "{header_value:?}: {trace_id}");
+        assert!(
+            trace_id.chars().all(|c| c.is_ascii_hexdigit()),
+            "{header_value:?}: {trace_id}"
+        );
     }
 }
 
@@ -471,7 +589,10 @@ async fn every_documented_path_follows_core_s_prefix_rule() {
         if is_probe {
             continue;
         }
-        assert!(path.starts_with("/v1/"), "{path} is not under the /v1 prefix");
+        assert!(
+            path.starts_with("/v1/"),
+            "{path} is not under the /v1 prefix"
+        );
     }
 
     assert!(

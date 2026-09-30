@@ -91,7 +91,12 @@ fn satisfies_is_ported_from_caf() {
         let constraint = Constraint::parse(constraint).expect("grammar");
         let version = Version::parse(version).expect("version");
         let got = constraint.satisfies(&version);
-        assert_eq!(got, want, "{constraint} against {version}: {}", constraint.rationale(&version));
+        assert_eq!(
+            got,
+            want,
+            "{constraint} against {version}: {}",
+            constraint.rationale(&version)
+        );
     }
 }
 
@@ -111,7 +116,11 @@ fn versions_compare_numerically() {
     for (left, right) in cases {
         let left = Version::parse(left).expect("version");
         let right = Version::parse(right).expect("version");
-        assert_eq!(left.cmp(&right), right.cmp(&left).reverse(), "{left} vs {right}");
+        assert_eq!(
+            left.compare(&right),
+            right.compare(&left).reverse(),
+            "{left} vs {right}"
+        );
     }
 }
 
@@ -165,7 +174,10 @@ fn a_parse_error_names_the_grammar() {
 
     let message = error.to_string();
     for fragment in ["^1.2", "MAJOR.MINOR.PATCH", "^", "~", ">="] {
-        assert!(message.contains(fragment), "error {message:?} omits {fragment:?}");
+        assert!(
+            message.contains(fragment),
+            "error {message:?} omits {fragment:?}"
+        );
     }
 }
 
@@ -247,10 +259,10 @@ fn intersection_agrees_with_satisfies_on_a_neighbourhood() {
         for entry_text in ranges {
             let entry = Constraint::parse(entry_text).expect("grammar");
 
-            let exists = interesting
-                .iter()
-                .any(|v| filter.satisfies(&Version::parse(v).expect("version"))
-                    && entry.satisfies(&Version::parse(v).expect("version")));
+            let exists = interesting.iter().any(|v| {
+                filter.satisfies(&Version::parse(v).expect("version"))
+                    && entry.satisfies(&Version::parse(v).expect("version"))
+            });
 
             assert_eq!(
                 filter.intersects(&entry),

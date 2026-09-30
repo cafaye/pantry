@@ -24,7 +24,7 @@
 schemaVersion: 1
 
 services:
-  # --- the four facts a cafaye client cannot read off a manifest ---
+  # --- the two facts a cafaye client cannot read off a manifest ---
 
   # identity serves HTTP and declares `exposes.api: openapi/v1.yaml`.
   # kind: api — the manifest declares an api document and consumes nothing.
@@ -43,6 +43,24 @@ services:
 
   # muse serves HTTP; `consumes: []`, so `kind: api`.
   muse:
+    kind: api
+    basePath: /v1
+
+  # darkroom serves HTTP; its manifest declares no `consumes`, so `kind: api`.
+  # basePath: /v1, from the same derivation as the three above — every path in
+  # darkroom/openapi/v1.yaml is under /v1 apart from the two probes, which
+  # core's conventions keep out of the /v1 prefix and out of the derivation.
+  darkroom:
+    kind: api
+    basePath: /v1
+
+  # pantry is in its own registry, which is the point: a service registry that
+  # cannot describe the registry is a registry `caf dev` has to special-case.
+  # The drift test resolves this one name to this repository's own cafaye.yml
+  # rather than to a sibling checkout, because for pantry the registry copy and
+  # the real service are the same file in the same tree — and that is checked on
+  # every run like every other entry.
+  pantry:
     kind: api
     basePath: /v1
 
@@ -92,15 +110,6 @@ excluded:
     lint: >-
       INVALID ../courier/cafaye.yml: exposes/events/0: "email.queued" does not
       match "^[a-z][a-z0-9]*(-[a-z0-9]+)*\.[a-z][a-z0-9]*(_[a-z0-9]+)*\.[a-z][a-z0-9]*(_[a-z0-9]+)*$"
-
-  - name: darkroom
-    blockedBy: no-manifest
-    reason: >-
-      The manifest exists and lints clean, but only on the unmerged
-      `worker/darkroom-01` branch; `moon/cafaye/darkroom` on master carries no
-      `cafaye.yml` at all. A registry entry has to be verifiable against a real
-      service, and the real service is the one on master.
-    verify: "ls ../darkroom/cafaye.yml"
 
   - name: parlor
     blockedBy: schema
