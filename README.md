@@ -233,18 +233,48 @@ service is a commit and a reviewed pull request — that is the entire trust mod
 
 **Why a copy at all.** A container has no sibling checkouts, so the registry has
 to be self-contained; but a copy nobody checks is a copy that rots. So
-`tests/drift.rs` verifies every copy against the real service on every run, field
-by field, and also verifies the two registry-side facts against the real service's
-OpenAPI document and git remote. That test is the mechanism. Discipline is not.
+`tests/drift.rs` verifies every copy against the real service on every run —
+**byte for byte**, and also field by field, plus the two registry-side facts
+against the real service's OpenAPI document and git remote. That test is the
+mechanism. Discipline is not.
+
+### A copy is verbatim, comments included
+
+`registry/services/<name>/cafaye.yml` is a byte-for-byte copy of the service's
+own file, and `every_registered_entry_is_a_verbatim_copy_of_the_services_own_bytes`
+is what keeps it that way. It fails with the `cp` that fixes it, names the first
+line that differs, and says whether the YAML fields moved as well or only the
+comments did.
+
+The reason is worth stating, because it is not tidiness. **These files carry
+their services' `DECISION NEEDED` blocks**, and a copy that has silently lost one
+is not a stale comment — it is the registry answering a reviewer's question
+wrongly. A reviewer asking "what does pantry think guard is" would have been told
+a gateway with three open questions has none, because the copy predated guard-04's
+`REDIS_URL` block. The same was true of billing and nobody had reported it. A
+comment-only edit upstream is therefore drift here, and the fix for it is
+mechanical rather than a judgement call.
+
+This settles a contradiction that was live until this packet: `AGENTS.md` said
+copies are kept "verbatim, including its comments" while the drift test's own doc
+comment said "a comment-only edit upstream is not drift". Both were in this
+repository and they cannot both have been true. The field comparison is kept as
+well as the byte comparison — it is the one that names *which field* moved — but
+byte-equality is the check that catches a copy nobody has refreshed.
 
 ### Registering a service
 
 1. The service's `cafaye.yml` must validate:
    `cd ../caf && go run ./cmd/caf contract lint ../<service>/cafaye.yml`
-2. Copy it to `registry/services/<name>/cafaye.yml`.
-3. Add a row to `registry/index.yml` with `kind` and `basePath`.
+2. Copy it to `registry/services/<name>/cafaye.yml` — **byte for byte,
+   comments included.** A drifted copy is a failed test, not a nit.
+3. Add a row to `registry/index.yml` with `kind` and `basePath`, and a comment
+   saying why those two values are what they are. They are the only facts
+   pantry states that a manifest cannot state for itself, so they are the only
+   facts a reader cannot get from the service's own file.
 4. `cargo test --test drift`. If `basePath` is wrong the test says what the real
-   document says instead.
+   document says instead; if the copy is stale it says which service, which
+   line, whether fields moved too, and the `cp` to run.
 
 `Registry::load` refuses, with a message saying what to do: a file misnamed for
 its service, a manifest with no index row, an index row with no manifest, a
