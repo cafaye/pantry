@@ -222,6 +222,25 @@ pub struct IndexEntry {
     pub kind: ServiceKind,
     #[serde(default)]
     pub base_path: Option<String>,
+    /// The commit of *this service's own repository* that
+    /// `registry/services/<name>/cafaye.yml` was copied from.
+    ///
+    /// Added by `core-11` and it is the load-bearing field in this file now.
+    /// Without it, `registry/services/` is nine copies with no recorded origin,
+    /// the drift check can only compare them against whatever the sibling
+    /// checkout is sitting on, and a merge in another repository can only ever
+    /// be reported as a failure here — which is how the gate said "pantry is
+    /// broken" three times about copies that were merely out of date.
+    ///
+    /// `Option` rather than required, and that is a choice with a cost worth
+    /// naming: a row without one still loads, so the service still serves. The
+    /// alternative — refusing to start a registry because a row lacks a comment
+    /// — would make a metadata gap into an outage. The gap is not silent:
+    /// `tests/recorded_copy.rs` fails with the command that records it, and
+    /// `every_registered_service_records_a_ref_that_resolves` asks the question
+    /// on every run.
+    #[serde(default)]
+    pub recorded_at: Option<String>,
 }
 
 /// A known cafaye repository that is deliberately not registered, and the check

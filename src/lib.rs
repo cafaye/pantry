@@ -29,6 +29,7 @@ pub mod contract;
 pub mod filter;
 pub mod http;
 pub mod manifest;
+pub mod pin;
 pub mod problem;
 pub mod registry;
 pub mod view;

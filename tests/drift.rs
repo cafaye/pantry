@@ -75,216 +75,38 @@ macro_rules! require_workspace {
     };
 }
 
-/// The drift test proper: every field pantry publishes about a service is the
-/// field the service itself publishes.
+/// **Moved to `tests/recorded_copy.rs`.** Both copy-comparison tests that used
+/// to live here compared `registry/services/<name>/cafaye.yml` against
+/// `<service>/cafaye.yml` **in the working tree**, and both are now there —
+/// reading the service's `cafaye.yml` at the `recordedAt` commit this registry
+/// records instead.
 ///
-/// Compared as parsed values, because a struct comparison names the field that
-/// moved and a reader should not have to work out which one from a diff. That
-/// is the whole of what this test claims — and it used to claim it was the
-/// whole of what the drift test claimed, which was not true:
-/// `registry/services/guard/cafaye.yml` was missing guard's entire `guard-04`
-/// `DECISION NEEDED (REDIS_URL)` block, and billing's copy was stale the same
-/// way, and this test passed on both. Byte-equality is
-/// `every_registered_entry_is_a_verbatim_copy_of_the_services_own_bytes` in this
-/// same file, and it is the one that catches a copy nobody has refreshed.
-#[test]
-fn every_registered_entry_matches_the_real_service_on_disk() {
-    let root = require_workspace!("registry drift");
-
-    let registry = Registry::load(&registry_dir()).expect("the official registry loads");
-    assert!(
-        !registry.entries().is_empty(),
-        "the registry is empty, so nothing was checked"
-    );
-
-    for entry in registry.entries() {
-        let name = entry.name();
-        let real = service_root(&root, name).join("cafaye.yml");
-
-        assert!(
-            real.is_file(),
-            "{} is registered but {} does not exist. Either the repository moved \
-             or the entry is fiction; both are drift.",
-            name,
-            real.display()
-        );
-
-        let upstream = manifest::read(&real)
-            .unwrap_or_else(|error| panic!("{}/cafaye.yml: {error}", root.join(name).display()));
-
-        // identity is the worked example: if someone adds a field to
-        // registry/services/identity/cafaye.yml that upstream does not have,
-        // this is the line that says so.
-        assert_eq!(
-            entry.manifest,
-            upstream,
-            "{} does not match {}",
-            name,
-            real.display()
-        );
-
-        // The identity fields, named out loud, because a struct comparison
-        // fails with a diff and a reader should not have to know which field
-        // the diff refers to.
-        assert_eq!(
-            entry.manifest.repository.url, upstream.repository.url,
-            "{} repository.url",
-            name
-        );
-        assert_eq!(
-            entry.manifest.core, upstream.core,
-            "{} core constraint",
-            name
-        );
-        assert_eq!(
-            entry.manifest.language, upstream.language,
-            "{} language",
-            name
-        );
-    }
-}
-
-/// A registry copy is **verbatim, comments included**, and this is the test that
-/// says so.
+/// The reason is MD15 applied one repository over. A working-tree comparison
+/// asserts "this copy is what the service says *right now*", which is a claim
+/// about somebody else's repository: `identity-09` and `muse-06` landed, the
+/// copies were not refreshed, and the gate said **pantry is broken**. It was
+/// not. Pantry's copy of muse's manifest was publishing `required: false` for a
+/// dependency muse had made required, and a reader had no way to tell that apart
+/// from a defect in pantry's own code.
 ///
-/// This is not a style preference and it is not belt-and-braces. It settles a
-/// contradiction that was live in this repository until this packet:
+/// At a recorded ref the same comparison is "this copy is what the service said
+/// at ref R" — true or false for a reason inside this repository. How far behind
+/// R is becomes a *report* with a name and a fix
+/// (`the_registry_says_how_far_behind_each_copy_is_and_names_the_fix`), not a
+/// failure here. See `tests/recorded_copy.rs` and `DECISIONS.md` D4.
 ///
-/// - `AGENTS.md` said copies are kept "verbatim, including its comments: the
-///   copy is what a reviewer reads when asking 'what does pantry think this
-///   service is'".
-/// - the doc comment on `every_registered_entry_matches_the_real_service_on_disk`
-///   said "a comment-only edit upstream is not drift".
+/// Kept as a tombstone rather than deleted silently, because a reader who greps
+/// for `every_registered_entry_is_a_verbatim_copy` should find out where it went
+/// and why rather than find nothing.
 ///
-/// Both were in this file's own test suite and they cannot both be true. The
-/// proof that the second was wrong is that the first was being violated in
-/// silence: guard's copy had lost its whole `guard-04` `DECISION NEEDED
-/// (REDIS_URL)` block, and billing's had lost the entire rewritten `billing-04`
-/// section — a service with two open decisions in the registry and three in the
-/// repository. A reviewer asking "what does pantry think billing is" would have
-/// been told billing has no open questions, and the field comparison had
-/// nothing to say about it.
-///
-/// These copies carry their services' `DECISION NEEDED` blocks on purpose. A
-/// stale comment in a registry copy is not cosmetic; it is the registry
-/// answering a question wrongly. The failure was silent, which is the worst
-/// kind of failure, so this check exists to make it loud.
-///
-/// The cost is that a comment-only edit upstream turns the suite red, and the
-/// fix is mechanical rather than a judgement call:
-///
-/// ```sh
-/// cp ../<service>/cafaye.yml registry/services/<service>/cafaye.yml
-/// ```
-///
-/// That is the trade, and the failure message below says it out loud so nobody
-/// has to infer it.
-#[test]
-fn every_registered_entry_is_a_verbatim_copy_of_the_services_own_bytes() {
-    let root = require_workspace!("registry copy is verbatim");
-
-    let registry = Registry::load(&registry_dir()).expect("the official registry loads");
-    assert!(
-        !registry.entries().is_empty(),
-        "the registry is empty, so nothing was checked"
-    );
-
-    let mut stale: Vec<String> = Vec::new();
-
-    for entry in registry.entries() {
-        let name = entry.name();
-        let copy = registry_dir()
-            .join("services")
-            .join(name)
-            .join("cafaye.yml");
-        let service = service_root(&root, name);
-        let real = service.join("cafaye.yml");
-
-        let copied = std::fs::read(&copy)
-            .unwrap_or_else(|error| panic!("{} could not be read: {error}", copy.display()));
-        let upstream = std::fs::read(&real)
-            .unwrap_or_else(|error| panic!("{} could not be read: {error}", real.display()));
-
-        if copied == upstream {
-            continue;
-        }
-
-        // Say which kind of drift this is, because the two need different
-        // attention and "they differ" sends a reader to a diff to find out
-        // which one they have. The field comparison is the other test in this
-        // file; reporting it here too means one failure answers the question
-        // instead of sending the reader to the next one.
-        let fields_match = manifest::read(&copy)
-            .ok()
-            .zip(manifest::read(&real).ok())
-            .is_some_and(|(left, right)| left == right);
-
-        // The first differing line, so the reader does not have to run diff to
-        // find out where to look. Both files are UTF-8 YAML by construction —
-        // `manifest::read` above would have said otherwise — so this cannot
-        // panic on a byte boundary it did not expect.
-        let copied_text = String::from_utf8_lossy(&copied);
-        let upstream_text = String::from_utf8_lossy(&upstream);
-        let at = copied_text
-            .lines()
-            .zip(upstream_text.lines())
-            .position(|(left, right)| left != right)
-            .map(|index| index + 1)
-            .unwrap_or_else(|| {
-                copied_text
-                    .lines()
-                    .count()
-                    .min(upstream_text.lines().count())
-                    + 1
-            });
-
-        // Every stale copy is reported in one failure, not the first one. A
-        // packet that refreshes copies should see the whole list from a single
-        // run: reporting one at a time turns "run the test, fix, run it again"
-        // into a loop whose length nobody can see in advance, and this is
-        // exactly the failure that reached master in the first place — one
-        // service noticed, the next one never looked.
-        stale.push(format!(
-            "  {name}\n    \
-             copy   registry/services/{name}/cafaye.yml ({} bytes)\n    \
-             real    {name}/cafaye.yml ({} bytes) — first differs at line {at}\n    \
-             {fields}\n    \
-             fix     cp {}/cafaye.yml registry/services/{name}/cafaye.yml",
-            copied.len(),
-            upstream.len(),
-            service.display(),
-            fields = if fields_match {
-                "every YAML field already matches — a COMMENT-ONLY drift. The copy is out \
-                 of date, not wrong: it is missing the decisions the service has recorded \
-                 since it was taken."
-            } else {
-                "a YAML field moved too — this entry is not merely stale, it is WRONG. \
-                 every_registered_entry_matches_the_real_service_on_disk fails as well and \
-                 names the field."
-            },
-        ));
-    }
-
-    assert!(
-        stale.is_empty(),
-        "{} registry cop{} not byte-identical to the service they were copied from.\n\
-         \n\
-         {}\n\
-         \n\
-         A registry copy is VERBATIM, comments included (AGENTS.md, \"Registering or changing \
-         a service\"): the copy is what a reviewer reads when asking what pantry thinks a \
-         service is, and a service's DECISION NEEDED blocks live in its comments. A stale \
-         comment is not cosmetic — it is the registry answering a question wrongly, and it \
-         is a service with open decisions that looks settled.\n\
-         \n\
-         Fix each one with the `cp` above, in the same commit as whatever changed upstream. \
-         Do NOT \"fix\" this by loosening the check: a copy nobody checks is a copy that \
-         rots, and an exemption here is a weakened check, which PLAN.md §1 forbids.",
-        stale.len(),
-        if stale.len() == 1 { "y is" } else { "ies are" },
-        stale.join("\n"),
-    );
-}
+/// What stays in this file is the drift that is genuinely *about this
+/// repository*: that every curated `kind` and `basePath` is what the service's
+/// own manifest and OpenAPI document imply. Those have no recorded ref — a
+/// `basePath` is derived from a document the service publishes today — and they
+/// are checked below against the workspace, loudly, because that is the shape of
+/// the claim they make.
+#[allow(dead_code)]
+fn moved_to_recorded_copy_rs() {}
 
 /// A remote is one repository written several ways, and which way it is
 /// written is not a fact about the repository.

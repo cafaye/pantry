@@ -14,7 +14,7 @@
 - **Contains:** a Rust service, its committed OpenAPI document, and the registry
   as data.
 
-## The three rules that matter more than the rest
+## The four rules that matter more than the rest
 
 1. **A rule that is not in `core/schemas/` is not a cafaye rule.** Field names,
    patterns and the constraint grammar come from
@@ -25,12 +25,18 @@
    `kind` and `basePath` work.
 2. **A copy nobody checks is a copy that rots.** `registry/services/*/cafaye.yml`
    are copies of other repositories' files, kept **verbatim, comments
-   included** — see "Registering or changing a service" for why, and
-   `tests/drift.rs` for the byte-equality check that enforces it. A stale comment
-   in one of these files is not cosmetic: it is usually a missing
-   `DECISION NEEDED`, and a registry copy missing one is a service with open
-   questions that looks settled.
-3. **Tests first.** Per PLAN.md §3. Add the test, run it, watch it fail, then make
+   included**, and each row in `registry/index.yml` records the commit the copy
+   was taken from — see "The registry is a copy" and `tests/recorded_copy.rs` for
+   the byte-equality check that enforces it. A stale comment in one of these
+   files is not cosmetic: it is usually a missing `DECISION NEEDED`, and a
+   registry copy missing one is a service with open questions that looks settled.
+3. **A merge in another repository is not a failure in this one.** Any check that
+   reads a sibling checkout must read it at a *recorded ref*, and any distance
+   from that ref must be reported by name rather than asserted. This is MD15
+   applied twice — to `core` (via `vendir.lock.yml`) and to every registered
+   service (via `recordedAt`) — and it is the rule that stops this repository
+   being reported as broken because `identity` merged.
+4. **Tests first.** Per PLAN.md §3. Add the test, run it, watch it fail, then make
    it green by changing the implementation — not by loosening the assertion.
 
 ## Order of work
@@ -54,7 +60,7 @@ Adding or removing an entry is the change most likely to be wrong, so:
    must be `OK`.
 2. Copy it to `registry/services/<name>/cafaye.yml`. **Verbatim, byte for byte,
    comments included** — and this is enforced, not merely intended:
-   `tests/drift.rs::every_registered_entry_is_a_verbatim_copy_of_the_services_own_bytes`
+   `tests/recorded_copy.rs::every_registered_copy_is_verbatim_at_the_ref_this_registry_records`
    compares bytes and fails with the `cp` that fixes it. The reason is not
    tidiness: the copy is what a reviewer reads when asking "what does pantry
    think this service is", and a service's `DECISION NEEDED` blocks live in its
@@ -70,9 +76,10 @@ Adding or removing an entry is the change most likely to be wrong, so:
    ```
 3. Add or edit the row in `registry/index.yml`, with a comment saying *why* that
    `kind` and that `basePath` are what they are.
-4. `cargo test --test drift`. If `basePath` is wrong the test prints what the real
-   OpenAPI document says; if the copy is stale it prints which service, which
-   line, whether the fields also moved, and the `cp` to run.
+4. `cargo test --test recorded_copy`. If `basePath` is wrong the test in
+   `tests/drift.rs` prints what the real OpenAPI document says; if the copy is
+   stale it prints which service, which line, whether the fields also moved, and
+   the `cp` to run.
 5. If you are *removing* a service, add an `excluded` row with a `blockedBy`, a
    reason and a `verify` command. `tests/schema.rs` asserts the reason still
    holds, so a row cannot rot into a fiction. It asserts a row that has gone
@@ -107,19 +114,74 @@ Field-naming rules, and they are not negotiable:
   `page.has_more`, and a problem's `type` / `title` / `status` / `detail` /
   `instance` / `code` / `trace_id`. Do not rename them.
 
-## The vendored schema
+## The vendored schema, and the ref it came from
 
 `schemas/cafaye.manifest.schema.json` is a byte copy of core's, and
-`tests/schema.rs` asserts it while a workspace is reachable:
+`tests/schema.rs` asserts it **at the commit `vendir.lock.yml` records**:
 
 ```sh
 cp ../core/schemas/cafaye.manifest.schema.json schemas/
+git -C ../core rev-parse HEAD     # into vendir.lock.yml, same commit
 ```
 
 `/readyz` validates every entry against it at startup, so a stale copy makes the
 readiness probe a decoration. When core adds a field, copy the new schema in the
 same commit that reads it — a manifest field pantry does not know is a field
 pantry silently drops.
+
+**The pin is not bookkeeping — it is what makes the check possible.** The
+alternative was to compare the vendored copy against `core/schemas/…` in the
+working tree, which is what this repository used to do, and which meant a commit
+in *core's* repository decided whether *this* repository's gate passed. It did,
+three times. `core-09` added two valid gate declarations to
+`core/examples/valid/`, and a test that validated every `*.yml` in that directory
+against the **manifest** schema went red here with `"owner" is a required
+property` — a manifest rule quoting a document that was never a manifest. Read at
+the recorded ref instead, the check is "this copy is what core published at R",
+which is true or false for a reason in this repository.
+
+**A stale pin is legal.** The gate stays green; `this_repository_says_how_far_
+behind_core_it_is` prints the distance, and a pin more than 9 commits behind fails
+with the one-command fix. Bumping the pin is a decision, and the report is how you
+notice a decision is due. See `DECISIONS.md` D4.
+
+## The registry is a copy, and the copy records where it came from
+
+`registry/services/<name>/cafaye.yml` is a copy of another repository's file. It
+has to be: pantry has no database, no plugin loader, and `Registry::load` runs at
+startup inside a container with no sibling checkouts and no network, so serving the
+registry requires the bytes. What changed is *what the copy is a copy of*: every
+row in `registry/index.yml` carries a `recordedAt` — the commit of that service's
+own repository the copy was taken from — and
+`tests/recorded_copy.rs` verifies the copy against **that commit**, not against the
+working tree.
+
+The difference is who a red belongs to. Comparing to the working tree asserts
+"this copy is what the service says right now", so `identity-09` and `muse-06`
+landing turned pantry's gate red and were reported as *pantry* being broken —
+which is how a comment-only staleness and a registry publishing `required: false`
+for a dependency muse had made **required** (a muse without identity is 503 on
+every request) both arrived as the same story. At a recorded ref, those become: a
+copy edited here, or a `recordedAt` bumped without re-copying. Both are defects in
+this repository.
+
+**So, when you copy a manifest, bump `recordedAt` in the same commit.** Every gate
+run prints how far behind each copy is; a copy more than 9 commits behind fails
+with the `cp` that fixes it. See `DECISIONS.md` D4.
+
+## Two document kinds in core's examples
+
+`core/examples/valid/` holds **service manifests** (`*.cafaye.yml`, governed by
+`cafaye.manifest.schema.json`) and **gate declarations** (`gate.*.yml`, governed
+by `gate.schema.json`). A consumer that validates every `*.yml` there against the
+manifest schema breaks the moment core adds a second kind — which it did.
+
+`tests/core_pin.rs` keeps a table naming every non-manifest example **and the
+schema that governs it**, and asserts the classification is *total* in both
+directions: a file nobody classified fails with its name, and a table row whose
+file no longer exists fails too. pantry deliberately does **not** vendor
+`gate.schema.json` and does not validate gate declarations; the recommendation to
+core is to split the directory by kind, and the reasoning is `DECISIONS.md` D3.
 
 ## Out of scope, deliberately
 

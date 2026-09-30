@@ -186,3 +186,143 @@ variant in `src/registry.rs`, one arm in `every_exclusion_reason_is_still_true`,
 the `blockedBy` table in `registry/index.yml`, the README section that explains
 it, and the value's meaning in `openapi/v1.yaml` if it is ever published — which
 it is not today, because `blockedBy` is pantry-internal.
+
+---
+
+## D3 — core's `examples/valid/` holds two document kinds, and pantry must classify rather than conflate — OPEN (core's to rule)
+
+**The finding, measured.** `core/examples/valid/` today:
+
+| file | kind | governing schema |
+|---|---|---|
+| `go-api.cafaye.yml`, `muse.cafaye.yml`, `ruby-api.cafaye.yml`, `worker.cafaye.yml`, `worker-only.cafaye.yml` | service manifest | `cafaye.manifest.schema.json` |
+| `gate.external.yml`, `gate.self-contained.yml` | **gate declaration** — `version`, `name`, `gate.command`, `gate.proof`, `external`, `ci` | `gate.schema.json` |
+
+`pantry`'s `the_schema_accepts_core_s_own_valid_examples` validated every `*.yml`
+in that directory against the **manifest** schema. So when `core-09` added the two
+gate declarations, the gate went red in another repository with:
+
+```text
+"owner" is a required property
+unknown field "ci"; a cafaye.yml may declare only name, description, language, core, …
+```
+
+— a manifest rule quoting a document that was never a manifest. Reported as
+**pantry broken**, three times.
+
+**The judgement this packet made, and what it is not.** MD15 ruled the *ref*
+question (consumers resolve at their recorded pin, never the working tree). It did
+not rule this one, and the brief was right to flag it as the sharpest judgement in
+the packet: **a consumer validating "core's valid examples" against the manifest
+schema was always going to break the moment a second kind of document appeared in
+that directory.** No pinning fixes that. Pinning makes the break happen at a
+chosen moment instead of an arbitrary one; it does not stop it.
+
+So pantry now **classifies, and requires the classification to be total**:
+`tests/core_pin.rs` holds a table naming every non-manifest example and the
+schema that governs it, and two tests hold it in both directions — a file nobody
+classified is a FAIL naming the file, and a table row whose file no longer exists
+is a FAIL naming the row. Pantry does **not** vendor `gate.schema.json`, and does
+not validate gate declarations; it says which schema governs them and leaves that
+to core.
+
+**The three options, and what each costs.**
+
+1. **Split the directory by kind** — `examples/valid/manifests/` and
+   `examples/valid/gates/`. Then "core's valid examples" has one answer, every
+   consumer's `*.yml` walk keeps working, and no consumer needs a table at all.
+   Cost: a directory move in core, and every consumer that reads that path
+   (pantry, and anything modeled on pantry's test). It is the shape the directory
+   should have.
+2. **Each example declares which schema validates it** — a `schema:` key, or a
+   sidecar, or a subdirectory as a kind marker. Cost: a *cafaye* key in
+   non-manifest documents, which is the vocabulary question `AGENTS.md` rule 1
+   says not to answer privately — and it makes every consumer parse a declaration
+   to do the obvious thing. It also does not compose: the third kind needs a third
+   answer, and the declaration is per-file rather than per-kind.
+3. **Consumers classify by convention** — pantry's filename rule, `*.cafaye.yml` is
+   a manifest. Cost: the convention is implicit, so a third kind is a silent skip
+   unless every consumer independently invents the same rule. This is what pantry
+   does today *as a stopgap*, and it is why pantry keeps a table and asserts it is
+   total: the table is what turns an implicit convention into a checked one.
+
+**Recommended: (1), in core.** It is the only option where the answer does not have
+to be re-derived per consumer, and this packet is evidence of why: the same
+directory has now broken a gate in another repository once. Pantry cannot make
+this change — it is core's tree, and `AGENTS.md` says this repository reads core
+and does not own it — so it is recorded here as a request, with (3) held in pantry
+as the interim so the fleet is not broken while core decides.
+
+**Cost of flipping pantry to (1) or (2):** one table and two tests in
+`tests/core_pin.rs`. There is deliberately **no `ci:` key added to the vendored
+manifest schema**, and adding one would be wrong: `cafaye.schema.json` describes
+a *service manifest* and a `gate.yml` is a different document with its own schema
+(`gate.schema.json`). Widening the manifest schema to accept gate keys would make
+every consumer accept a document it has no business accepting.
+
+---
+
+## D4 — a registry copy is a copy *of a recorded commit*, and staleness is a report — OPEN
+
+**What changed.** `registry/services/<name>/cafaye.yml` are nine copies of other
+repositories' files. The check that kept them honest compared them to the sibling
+**working tree**, so the claim was "this copy is what the service says *right
+now*" — a claim about somebody else's repository. `pantry-07` found the
+consequence:
+
+```text
+identity  copy 11591 bytes, real 13302 bytes — COMMENT-ONLY drift
+muse      copy  2930 bytes, real  6280 bytes — a YAML FIELD MOVED — WRONG
+          muse: dependencies[0].required — copy says false, real says true
+```
+
+`muse-06` made `identity` a **required** dependency (every token is verified
+against identity's JWKS, so muse without identity is 503 on every request), and
+the registry was publishing `required: false`. All of it reported as *pantry*
+being broken. Pantry was not broken; two other repositories had merged.
+
+**The decision.** Every index row now carries `recordedAt`, the commit of *that
+service's own repository* the copy was taken from, and
+`tests/recorded_copy.rs` compares against that commit. So:
+
+- a merge in `identity` no longer turns **this** gate red;
+- a copy edited here, or a `recordedAt` bumped without re-copying, still does, and
+  both are defects in this repository;
+- how far behind `recordedAt` is has become a **report** —
+  `the_registry_says_how_far_behind_each_copy_is_and_names_the_fix`, printed on
+  every run, with a stated 9-commit budget above which it fails.
+
+**Why a report and not a gate.** `kit/tests/staleness.py` says the same thing in
+its own docstring: *"a stale copy is LEGAL — it is a copy that has not been bumped
+yet — and a scheduled report that is red every week is a report that gets muted."*
+And MD15's rule 3: making the frequent case a coordinated wave is a rule that gets
+skipped the third time it is inconvenient. Nine commits is roughly a working day
+of this fleet's merge rate — a person refreshes from the report; a copy past the
+budget says the refresh has been missed long enough to stop for.
+
+**The alternative that was considered and rejected: resolve at a ref, no copy.**
+Preferred in principle — a registry with no copies could resolve each service at a
+ref and there would be nothing to go stale. It does not survive contact with
+`AGENTS.md`: pantry has **no database**, nothing persistent, no plugin loader, and
+`Registry::load` runs at startup inside a container with no sibling checkouts and
+no network. Serving the registry requires the bytes. So the copy stays, and the
+decision is to make its origin explicit rather than to pretend it does not exist.
+
+**Who refreshes, and when.** A developer or whoever merges the packet that
+changes a service's manifest, in the same commit, with the `recordedAt` bump beside
+the `cp`. The report on every gate run is the reminder; the budget is the backstop.
+`AGENTS.md` "Registering or changing a service" carries the procedure.
+
+**Open, and honestly so:** `recordedAt` is `Option<String>`, not required, so a
+row without one still loads. A metadata gap should not be an outage — a registry
+that refuses to start because a comment field is missing is worse than one that
+serves. The gap is not silent: three tests fail with the command that records it.
+If the fleet would rather a missing `recordedAt` be a load failure, that is a
+one-line change to `src/registry.rs` and it should be ruled rather than assumed.
+
+**Cost of flipping:** one field's type in `src/registry.rs`, and one `unwrap_or_else`
+in each of three tests. The CI clone must stay non-shallow either way — asserted by
+`the_drift_job_clones_deep_enough_to_reach_a_recorded_ref`, which is why `--depth 1`
+was removed from `workspace-drift`: a shallow clone would make every recorded-ref
+check SKIP, naming the ref it could not read, which is honest but would mean CI
+verified nothing about any registry copy while looking green.
