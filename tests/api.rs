@@ -235,20 +235,25 @@ async fn the_two_curated_kinds_are_distinguishable_from_outside() {
     );
 }
 
+/// The one entry whose OpenAPI document is not shaped like the others, and the
+/// part of that which is observable from outside: `exposes.api` is served
+/// **verbatim**. `openapi.yaml`, at the repository root, is what the manifest
+/// says and that is what a client reads and fetches. pantry does not normalise it
+/// to `openapi/v1.yaml` for symmetry, because a client that reads this field has
+/// to be right.
+///
+/// This test was named for courier's document being PARTIAL, and it was:
+/// courier-03 shipped it covering `/v1/webhook_endpoints` only, with the
+/// notification preferences routes in the router and not in the file. courier-05
+/// completed it to every route the router serves except the two probes. The rule
+/// that made it registrable then — a partial document still yields a base path
+/// from the paths it publishes — is unchanged and still pinned, by a synthetic
+/// document in `a_partial_openapi_document_still_yields_a_base_path_from_the_\
+/// paths_it_publishes` in `tests/manifest.rs`, because the next service to
+/// publish an incomplete document has to meet it too. What is pinned *here* is
+/// the path, which has not changed and is the part a client can get wrong.
 #[tokio::test]
-async fn a_service_whose_openapi_document_is_partial_still_serves_a_derived_base_path() {
-    // courier-03 shipped `openapi.yaml` at the repository root — not under
-    // `openapi/` like every other entry — covering `/v1/webhook_endpoints` only,
-    // and says so in the document's own header. Two things follow for a client
-    // and both are pinned here.
-    //
-    // 1. `basePath` is still a derivation and not a guess: every path the
-    //    document *does* publish is under `/v1`, which is core's rule, and
-    //    `tests/drift.rs` re-derives it from courier's file on every run. What
-    //    the document omits is courier's gap to close, not pantry's to invent.
-    // 2. `exposes.api` is the path the manifest states, verbatim. pantry does
-    //    not normalise it to `openapi/v1.yaml` for symmetry, because a client
-    //    that reads this field and fetches it has to be right.
+async fn a_document_at_the_repository_root_is_served_verbatim() {
     let response = call(app(), "/v1/services/courier").await;
 
     assert_eq!(response.status, StatusCode::OK, "{response}");

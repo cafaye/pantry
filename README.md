@@ -136,17 +136,20 @@ The `/vN` prefix every contract path in the service's OpenAPI document sits
 under — `/v1` for six of the eight entries, `null` for **guard** and **caf**,
 which publish no document for the rule to read.
 
-**A partial document is still a document.** courier's OpenAPI document covers
-`/v1/webhook_endpoints` only and says in its own header that the notification
-preferences routes are in the router and not in the file. That does not make
-`/v1` a guess: every path courier *publishes* is under `/v1`, and every
-non-probe route in courier's router is under `/v1` too, so the routes it has not
-documented yet cannot move the prefix. What pantry refuses to do is invent a
-prefix for a document that publishes none, or average two prefixes into one —
-both are refused, with the rule named, by
+**A partial document is still a document — and the next one will be too.**
+courier's OpenAPI document *was* partial: it covered `/v1/webhook_endpoints`
+only and said in its own header that the notification preferences routes were in
+the router and not in the file. `courier-05` closed that, and the document now
+covers every route the router serves except the two probes — but the rule it was
+registered under is unchanged, because the next service to publish an incomplete
+document has to meet it too. A partial document does not make the base path a
+guess: every path it *publishes* is under `/v1`, which is core's rule, and a
+document that is partial is one pantry can still derive from. What pantry refuses
+to do is invent a prefix for a document that publishes none, or average two
+prefixes into one — both are refused, with the rule named, by
 `a_partial_openapi_document_still_yields_a_base_path_from_the_paths_it_publishes`
 in `tests/manifest.rs`. `basePath` is re-derived from the service's own file on
-every run, so the day courier documents a path under a second prefix this row
+every run, so the day any service documents a path under a second prefix its row
 fails rather than drifting.
 
 It is core's rule and not a pantry invention: `docs/openapi-conventions.md` says

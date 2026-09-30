@@ -77,20 +77,24 @@ services:
   #      not under `openapi/` as every other entry's does. It is read from
   #      wherever the manifest says it is, and the path is served verbatim — a
   #      client that reads `exposes.api` and fetches it has to be right.
-  #   2. The document is PARTIAL, and says so in its own header: it covers
+  #   2. It WAS partial, and this row recorded that at length because a partial
+  #      document is a derivation with a hole in it: it covered
   #      `/v1/webhook_endpoints` only, while `GET`/`PUT
-  #      /v1/notification_preferences/:user_id` are in courier's router and not
-  #      in the file. That does not make the derivation a guess. Every path the
-  #      document DOES publish is under `/v1`, which is core's rule, and every
-  #      non-probe route in courier's router is under `/v1` too — so the omitted
-  #      routes cannot move the prefix. What partial coverage means is that
-  #      pantry derives from what courier has published, and the day courier adds
-  #      a documented path under a second prefix, tests/drift.rs fails on this
-  #      row rather than guessing an average. A route courier documents later
-  #      under /v1 changes nothing here; a route it documents under /v2 is a
-  #      decision this file would then need.
-  #      (`a_partial_openapi_document_still_yields_a_base_path_from_the_paths_it_
-  #      publishes` in tests/manifest.rs pins the rule behind the decision.)
+  #      /v1/notification_preferences/:user_id` were in courier's router and not
+  #      in the file. courier-05 closed that — the document now covers every route
+  #      the router serves except `/healthz` and `/readyz`, and says so in its own
+  #      header, and a test in courier reads the document and the router and fails
+  #      if they disagree, in both directions. The value did not move (`/v1` is
+  #      `/v1`) and the derivation did not stop being one: it is still read from
+  #      courier's file, still re-derived on every run by tests/drift.rs, and the
+  #      rule behind a partial document is still pinned by
+  #      `a_partial_openapi_document_still_yields_a_base_path_from_the_paths_it_
+  #      publishes` in tests/manifest.rs, because the next service to publish an
+  #      incomplete document will hit it. What changed is that this file no longer
+  #      has to reason about the hole.
+  #      The residual risk is unchanged and is not courier's document: the day
+  #      courier documents a path under a SECOND prefix, tests/drift.rs fails on
+  #      this row rather than guessing an average.
   courier:
     kind: api
     basePath: /v1
