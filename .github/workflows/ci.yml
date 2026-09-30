@@ -31,80 +31,146 @@ jobs:
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      # THIS JOB DOES NOT VERIFY THE REGISTRY. It is a clone of pantry alone, so
-      # every test in tests/drift.rs and two in tests/schema.rs find no cafaye
-      # workspace, print `SKIP …` on stderr and return. That is deliberate — a
-      # gate that needs a whole workspace to produce a red is a gate nobody runs
-      # — but it has a consequence that has to be said out loud rather than left
-      # to be inferred from a green badge:
+      # This job alone is a pantry-only clone, so the drift tests in
+      # tests/drift.rs and three in tests/schema.rs find no cafaye workspace,
+      # print `SKIP …` on stderr and return. That is not a defect in them and
+      # it is not hidden: a skip is reported, never swallowed. But the
+      # consequence has to stay written down rather than left to be inferred
+      # from a green badge, so:
       #
-      #   A GREEN RUN HERE HAS VERIFIED PANTRY AGAINST ITSELF, NOT AGAINST
-      #   REALITY. It has checked that the registry is internally consistent and
-      #   that every entry satisfies core's vendored schema. It has NOT checked
-      #   that any entry still says what its service says.
+      #   A GREEN RUN OF THIS JOB HAS VERIFIED PANTRY AGAINST ITSELF, NOT
+      #   AGAINST REALITY. It has checked that the registry is internally
+      #   consistent, that every entry satisfies core's vendored schema, and
+      #   that the filter and paging contracts hold. It has NOT checked that
+      #   any entry still says what its service says.
       #
-      # `registry/` is a set of copies of other repositories' files, and this
-      # job has none of those files. The drift tests are the only thing in this
-      # repository that makes the registry true, and they cannot run here. Read
-      # this job as "pantry is well-formed", never as "the registry is correct".
+      # The job below is what answers that, and it is the one that makes the
+      # badge mean something. This job is a fast inner loop; it is not the gate
+      # on the registry.
       - name: test
         run: cargo test --no-fail-fast
 
   # ---------------------------------------------------------------------
-  # THE JOB THAT ACTUALLY CHECKS THE REGISTRY — and it is NOT RUNNING.
+  # THE JOB THAT ACTUALLY CHECKS THE REGISTRY. It runs.
   #
-  # pantry's tests verify the registry against the LIVE filesystem, so the only
-  # run that means anything is one with the other cafaye checkouts beside it.
-  # This workflow cannot be that run, for reasons that are properties of the
-  # platform rather than of this file:
+  # pantry's tests verify the registry against the LIVE filesystem: for every
+  # registered name they open the sibling checkout and compare bytes, fields
+  # and OpenAPI documents. On a clone of pantry alone there is nothing to open,
+  # so `workspace-drift` exists to build the workspace first and then run the
+  # ordinary gate against it. Nothing here is pantry-specific: it fetches the
+  # fleet and calls ./bin/prime, which is the same command a developer runs.
   #
-  #   1. The cafaye repositories are private, so a runner cannot clone them
-  #      without a deploy key this repository has no business holding.
-  #   2. kit's reusable workflow states that nothing in it "reaches a cafaye
-  #      service, so this workflow needs no secrets" — a deliberate property of
-  #      kit's shared CI, not an oversight to route around.
+  # WHY NO CREDENTIAL. Every cafaye repository is public, so a hosted runner
+  # clones all of them over anonymous HTTPS and no secret of any kind is
+  # involved. An earlier version of this job cloned over SSH with a deploy key
+  # passed in from this repository's settings, on the assumption that the
+  # repositories were private. They are not, and that key was a long-lived
+  # private key created to work around a problem that did not exist.
+  # `tests/ci.rs::the_drift_job_clones_anonymously_and_needs_no_credential`
+  # fails this file — on a pantry-only clone, in a minute — if a secret
+  # reference, an SSH-form remote, an install of a key or a credential-bearing
+  # URL reappears anywhere in it, so the next person who reaches for one finds
+  # out in CI rather than in a merge review. That test is why this comment does
+  # not name the old secret: naming it would trip the check that exists to keep
+  # it gone.
   #
-  # So the job below is written out in full and disabled. It is here so the shape
-  # of the missing coverage is a concrete diff to enable rather than a paragraph
-  # to re-derive, and so nobody reads a green `build` above and concludes the
-  # registry was checked. It is disabled, not absent, and the difference matters:
-  # an absent job is easy to forget, a disabled one says on its face that the
-  # coverage does not exist yet.
+  # WHAT A GREEN RUN OF THIS JOB PROVES. That, as of this run, every registered
+  # entry is a verbatim byte copy of the service's own `cafaye.yml`, that every
+  # field pantry publishes about a service is a field the service publishes,
+  # that each curated `kind` and `basePath` agrees with the service's own
+  # manifest and OpenAPI document, that the vendored schema is core's, and that
+  # every exclusion row's stated reason is still true. That is the fleet-facing
+  # check, and it is the only one in this repository that reads the fleet.
   #
-  # WHAT THE MANAGER HAS TO DECIDE before this can run (not a worker's call):
-  #   - how a CI runner authenticates to the private cafaye repositories, or
-  #   - whether a self-hosted runner with the workspace already on disk is
-  #     acceptable, which is what the moon/cafaye workspace is.
+  # WHAT IT STILL DOES NOT PROVE, said out loud rather than left to a green
+  # badge:
   #
-  # Until then, the honest statement about this repository's CI is: it proves
-  # pantry is internally consistent, and the fleet-facing check is done by hand
-  # in the workspace by `./bin/prime`, which is where the three times the
-  # exclusion tripwire fired were all found.
+  #   1. It reads each sibling's DEFAULT BRANCH as of this run. A change in
+  #      `identity` that has not reached `identity`'s master is invisible here,
+  #      so a red in this job is a finding about what has already landed, and
+  #      the absence of a red is not evidence about a pending pull request.
+  #   2. It proves the registry is TRUE, not that it is COMPLETE. Completeness is
+  #      the curation tests' claim, and they are bounded by CAFAYE_REPOS below:
+  #      a cafaye repository nobody has added to that list is not cloned, not
+  #      registered and not noticed. The list is the honest limit of this job
+  #      and the next one is a DECISION NEEDED, not something to paper over.
+  #   3. A red in this job is almost always a finding about ANOTHER repository.
+  #      `registry/` here is a copy of somebody else's file, and this repository
+  #      does not own it — so the fix is to report the finding and open the
+  #      change where the file lives, never to edit the copy to make the badge
+  #      green. A copy quietly edited to match the thing it is supposed to
+  #      check is a registry that cannot be audited.
+  #
+  # WHAT A PANTRY-ONLY CLONE WOULD HAVE PROVEN, which is the failure mode this
+  # job was disabled for and the one to reintroduce by accident: nothing about
+  # the fleet at all. Without a workspace, `cafaye_root()` misses, every drift
+  # test prints `SKIP …` and returns green, and the run looks identical to a
+  # pass. The guard below exists because of exactly that — it is the difference
+  # between a workspace that is present and one that only looks present.
   workspace-drift:
-    name: registry drift (needs the cafaye workspace — NOT RUNNING)
-    if: false
+    name: registry drift (the fleet, cloned anonymously)
     runs-on: ubuntu-latest
+    # The repositories to fetch, as one value rather than a shell array so that
+    # tests/ci.rs and this job read the same list instead of two spellings of
+    # it that can drift apart.
+    #
+    # THIS LIST IS DELIBERATE AND IT IS THE ONE THING TO UPDATE BY HAND. It is
+    # the whole cafaye organisation, not the subset the registry happens to
+    # name: the optimisation of cloning only what the registry registers is a
+    # trap, because it makes coverage a function of the registry, so the moment
+    # a ninth service is registered this job is silently wrong in the direction
+    # that matters — the repository nobody remembered is the one nobody checks.
+    #
+    # What breaks when you forget to add a repository here: no drift test ever
+    # compares the registry against it, no coverage test ever asks whether it
+    # should be registered, and nothing goes red — for a repository that has
+    # never been written down anywhere, that is the whole failure. The reverse
+    # direction is enforced: `tests/ci.rs` fails the `build` job when
+    # registry/index.yml curates a repository this list does not name, so adding
+    # a service to the registry and forgetting this list is a red within a
+    # minute. `docs` is here because the coverage test in tests/drift.rs asks
+    # about it by name. `cafaye-rb` is deliberately absent: it has no repository
+    # in the cafaye organisation yet, and a clone of a repository that does not
+    # exist is a permanent red. `pantry` is absent because it is the checkout
+    # above.
+    env:
+      CAFAYE_REPOS: core caf identity billing courier darkroom muse guard parlor kit docs
     steps:
       - uses: actions/checkout@v4
         with:
           path: pantry
           fetch-depth: 0
 
-      # One clone per service, plus core — core is the one repository every
-      # cafaye repository depends on and its presence is what
-      # `cafaye_root()` looks for, so a workspace without it is not a workspace
-      # and every drift test would SKIP.
       - name: check out the fleet
-        env:
-          CAFAYE_SSH_KEY: ${{ secrets.CAFAYE_CI_SSH_KEY }}
         run: |
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$CAFAYE_SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          for repo in core identity billing muse darkroom courier guard caf; do
-            git clone --depth 1 "git@github.com:cafaye/${repo}.git" "${repo}"
+          set -euo pipefail
+          for repo in $CAFAYE_REPOS; do
+            git clone --depth 1 "https://github.com/cafaye/${repo}.git" "$repo"
           done
-          test -f core/schemas/cafaye.manifest.schema.json
+
+      # A clone that quietly did not happen is the failure this job cannot
+      # report, because its symptom is a workspace that is present and
+      # unreadable: `cafaye_root()` looks for exactly one file to decide a
+      # workspace exists, and every drift test SKIPs — green — when it is
+      # absent. So every checkout is checked for the two things the drift tests
+      # actually read: git metadata, and core's schema as the workspace marker.
+      # A guard that only covered core would let the other ten fail silently,
+      # and one that demanded a `cafaye.yml` would be wrong — `kit` is
+      # configuration and carries none, which is why it is in the exclusion
+      # record in the first place.
+      - name: prove the workspace is real
+        run: |
+          set -euo pipefail
+          for repo in $CAFAYE_REPOS; do
+            if [ ! -d "$repo/.git" ]; then
+              echo "::error::$repo cloned to a directory with no git metadata — the drift tests would skip it"
+              exit 1
+            fi
+          done
+          test -f core/schemas/cafaye.manifest.schema.json || {
+            echo "::error::core/schemas/cafaye.manifest.schema.json is missing, so cafaye_root() will not find this workspace and every drift test will SKIP"
+            exit 1
+          }
 
       # The whole gate, with the workspace reachable, so the drift tests run
       # instead of skipping. The exit code is the last command's and nothing is
