@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+# bin/fleet-telemetry — measure what the cafaye fleet emits TODAY, and what the
+# observability stack it already ships costs.
+#
+#   bash bin/fleet-telemetry                 # inventory only, no docker needed
+#   bash bin/fleet-telemetry --footprint     # also pull and measure the images
+#
+# WHY THIS EXISTS. The observability packet asked for a measured fleet inventory
+# and a measured footprint. Both were obtained by running things and reading
+# numbers back, and both are worthless if the next reader cannot repeat them. So
+# this is the measurement, not the conclusion, and it prints what it did NOT
+# measure as loudly as what it did.
+#
+# WHAT IT DOES NOT DO. It does not start a stack, it does not send telemetry, and
+# it does not touch any repository other than the ones it reads. It reads sibling
+# checkouts under $CAFAYE_ROOT and the Docker daemon; that is the whole of its
+# authority.
+#
+# IT IS NOT A GATE. Nothing here fails the build. `bin/prime` is the gate. A
+# measurement that can go red is a test, and a test that is not asserting is a
+# test nobody runs.
+set -euo pipefail
+
+CAFAYE_ROOT="${CAFAYE_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+FOOTPRINT=0
+[ "${1:-}" = "--footprint" ] && FOOTPRINT=1
+
+# The fleet, as `registry/index.yml` says it is. Read from the registry rather
+# than hardcoded, so a service added there is measured here without an edit —
+# and so a service that is registered but not checked out shows up as MISSING
+# rather than silently vanishing from the count.
+REGISTERED="$CAFAYE_ROOT/pantry/registry/services"
+
+say()  { printf '\n\033[1m%s\033[0m\n' "$1"; }
+row()  { printf '  %-14s %s\n' "$1" "$2"; }
+
+# ---------------------------------------------------------------------------
+say "1. The registered fleet, and whether it is checked out"
+# ---------------------------------------------------------------------------
+if [ ! -d "$REGISTERED" ]; then
+  echo "  ERROR: no registry at $REGISTERED" >&2
+  echo "  Set CAFAYE_ROOT to the directory holding the cafaye checkouts." >&2
+  exit 2
+fi
+
+total=0; present=0
+for d in "$REGISTERED"/*/; do
+  name=$(basename "$d")
+  [ -f "$d/cafaye.yml" ] || continue
+  total=$((total + 1))
+  if [ -d "$CAFAYE_ROOT/$name" ]; then
+    present=$((present + 1))
+    row "$name" "checked out"
+  else
+    row "$name" "MISSING from $CAFAYE_ROOT"
+  fi
+done
+printf '\n  %d registered, %d checked out, %d missing\n' "$total" "$present" "$((total - present))"
+
+# ---------------------------------------------------------------------------
+say "2. Telemetry emission, per service"
+# ---------------------------------------------------------------------------
+# Four questions per service, because "does it emit telemetry" is not one
+# question. A service can have the SDK as a dependency and never open a span,
+# which is the case that is easiest to mistake for coverage.
+#
+#   dep    the OTel SDK is a declared dependency
+#   emit   production code constructs a tracer/logger/meter
+#   epoint a *_OTEL_ENDPOINT contract is read (core D16's only contract)
+#   stack  the repo ships a compose file naming the collector
+#
+# `grep -l` over a source tree, excluding tests and vendored trees. The
+# exclusions matter: muse's tests import the SDK, and counting a test as
+# emission would report the one working service as working for the wrong reason.
+printf '\n  %-12s %-5s %-6s %-8s %s\n' service dep emit endpoint stack
+for d in "$REGISTERED"/*/; do
+  name=$(basename "$d")
+  [ -d "$CAFAYE_ROOT/$name" ] || continue
+  root="$CAFAYE_ROOT/$name"
+
+  # 2a. the SDK, in whatever file that language declares dependencies in
+  dep=NO
+  for mf in go.mod pyproject.toml Cargo.toml mix.exs package.json composer.json; do
+    [ -f "$root/$mf" ] || continue
+    if grep -qiE 'opentelemetry|opentelemetry-sdk|@opentelemetry' "$root/$mf" 2>/dev/null; then
+      dep=YES; break
+    fi
+  done
+
+  # 2b. production code that actually opens a span, logger or meter.
+  #
+  #     One `grep -l` pass, then filter the file list. The filter matters: muse's
+  #     tests import the SDK and build a real TracerProvider, and counting a test
+  #     as emission would report the one working service as working for the wrong
+  #     reason. An earlier version of this line piped `grep -q` into `grep -qv`;
+  #     `grep -q` prints nothing, so the pipeline never matched and this reported
+  #     muse as emitting nothing. The test was wrong, not the fleet.
+  emit=NO
+  hits=$(grep -rliE 'TracerProvider|start_as_current_span|get_tracer\(|basicConfig\(|LoggerProvider|telemetry\.meter|set_attribute' \
+    "$root" \
+    --include='*.rs' --include='*.go' --include='*.rb' --include='*.py' \
+    --include='*.ex' --include='*.exs' --include='*.ts' 2>/dev/null \
+    | grep -vE '/(target|node_modules|\.venv|deps|dist|__pycache__)/' \
+    | grep -vE '(^|/)(tests?|specs?)/' || true)
+  [ -n "$hits" ] && emit=YES
+
+  # 2c. the endpoint contract
+  epoint=NO
+  grep -rqE 'OTEL_ENDPOINT' "$root" \
+    --include='*.rs' --include='*.go' --include='*.rb' --include='*.py' \
+    --include='*.ex' --include='*.exs' --include='*.ts' --include='*.yml' \
+    --include='*.yaml' --include='*.toml' --include='*.sh' 2>/dev/null && epoint=YES
+
+  # 2d. a stack of its own that names the collector
+  stack=NO
+  grep -rq 'otel/opentelemetry-collector' "$root" 2>/dev/null && stack=YES
+
+  printf '  %-12s %-5s %-6s %-8s %s\n' "$name" "$dep" "$emit" "$epoint" "$stack"
+done
+
+cat <<'NOTE'
+
+  READ THIS TABLE HONESTLY.
+    dep=YES, emit=NO   the SDK is linked and nothing uses it. This is the
+                       failure mode that reads as coverage in a dependency
+                       audit and is not coverage at all.
+    epoint=NO          the service has no way to be told where to send
+                       telemetry, so core D16's "one contract" does not
+                       exist for it yet and bring-your-own cannot work.
+    stack=NO           the service ships a compose file that does not join
+                       the fleet's observability network.
+
+NOTE
+
+# ---------------------------------------------------------------------------
+say "3. The stack kit already ships"
+# ---------------------------------------------------------------------------
+COMPOSE="$CAFAYE_ROOT/kit/templates/compose/docker-compose.yml"
+if [ ! -f "$COMPOSE" ]; then
+  row "kit compose" "NOT FOUND at $COMPOSE"
+  echo "  The image list in section 4 is then the measurement that could not be made."
+else
+  # Read the images and the memory ceilings out of the compose file rather than
+  # restating them. A measurement that keeps its own copy of the thing it
+  # measures is a measurement that will be right until kit changes.
+  #
+  # `set -o pipefail` plus a `grep` that matches nothing is an exit, and this
+  # script died silently on its first run for exactly that reason. Every count
+  # below is written to not fail the script, because a section that cannot print
+  # "none" cannot report a fleet that emits nothing.
+  images=$(
+    grep -oE 'image: [^ ]+' "$COMPOSE" \
+      | sed 's/^image: //' \
+      | sed -E 's/\$\{[A-Z_]+:-([^}]*)\}/\1/g' \
+      | sort -u || true
+  )
+  # NOTE, and it cost this script a debugging pass: do NOT reach for
+  # `grep -oE '...$'`. macOS ships BSD grep, where `-o` together with a `$`
+  # anchor matches NOTHING and says so with no diagnostic — the pipeline comes
+  # back empty rather than loud. The anchor here is a trailing character class,
+  # which behaves the same on BSD and GNU.
+  mems=$(grep -oE 'mem_limit: \$\{[A-Z_]+:-[0-9]+m\}' "$COMPOSE" \
+    | grep -oE '[0-9]+m[^a-zA-Z0-9]' \
+    | sed 's/[^0-9m]//g' || true)
+  behind=$(grep -cE 'profiles: \[observability\]' "$COMPOSE" || echo 0)
+
+  n_images=$(printf '%s' "$images" | grep -c . || true)
+  printf '\n  images declared: %s   behind the observability profile: %s\n' "$n_images" "$behind"
+  if [ -n "$images" ]; then printf '%s\n' "$images" | sed 's/^/    /'; fi
+
+  total_mib=0
+  for m in $mems; do total_mib=$((total_mib + ${m%m})); done
+  printf '\n  mem_limit ceilings: %s\n' "$(printf '%s ' $mems)"
+  printf '  sum of ceilings: %s MiB\n' "$total_mib"
+  printf '  (a ceiling, not a measurement — see --footprint for what it really costs)\n'
+fi
+
+# ---------------------------------------------------------------------------
+if [ "$FOOTPRINT" -eq 0 ]; then
+  say "4. Footprint — SKIPPED"
+  echo "  Re-run with --footprint to pull the images and read their real size."
+  echo "  This pulls ~1 GB and needs a Docker daemon."
+  exit 0
+fi
+
+say "4. Footprint — measured (requires a Docker daemon)"
+if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+  echo "  SKIP: no reachable Docker daemon. This number was NOT measured." >&2
+  exit 0
+fi
+
+# The image list is read from the compose file rather than restated here, so it
+# cannot drift from what kit actually ships.
+total=0; obs_total=0
+printf '\n  %-52s %10s\n' image on-disk
+images=$(grep -oE 'image: [^ ]+' "$COMPOSE" \
+  | sed 's/^image: //' \
+  | sed -E 's/\$\{[A-Z_]+:-([^}]*)\}/\1/g' \
+  | sort -u || true)
+while read -r img; do
+  [ -n "$img" ] || continue
+  if docker image inspect "$img" >/dev/null 2>&1; then
+    sz=$(docker image inspect --format '{{.Size}}' "$img")
+    mb=$((sz / 1048576))
+    total=$((total + mb))
+    # The collector and the four stores are the half this packet is about. The
+    # three data services are what a service needs whether or not it is
+    # observable, and folding them into "the footprint" would answer a question
+    # nobody asked — and would flatter the observability answer by counting
+    # postgres, which a non-observable deployment pays for too.
+    case "$img" in
+      otel/*|grafana/*) obs_total=$((obs_total + mb)); label='observability' ;;
+      *)                 label='data' ;;
+    esac
+    printf '  %-52s %6s MB  %s\n' "$img" "$mb" "$label"
+  else
+    printf '  %-52s %10s\n' "$img" "not pulled"
+  fi
+done <<< "$images"
+
+printf '\n  observability images (collector + 4 stores): %s MB\n' "$obs_total"
+printf '  whole stack incl. postgres/nats/redis:        %s MB\n' "$total"
+cat <<'NOTE'
+
+  WHAT THIS NUMBER IS AND IS NOT.
+    It is the size of the images on this machine, on this architecture, after a
+    real `docker pull`, as reported by `docker image inspect .Size`. That is the
+    UNCOMPRESSED on-disk size, which for these images is roughly twice the
+    compressed transfer size — so it is the floor for a first `compose pull`, not
+    the download.
+
+    It EXCLUDES: the unpacked writable layers above, and everything a populated
+    volume adds, which grows with traffic and is not bounded by this
+    measurement at all.
+
+    RAM is NOT printed here, and that is deliberate. An idle RSS reading is a
+    property of an idle machine, and reporting one as "the footprint" is a
+    confident wrong number. Measure RAM by starting the stack, applying a stated
+    load, and sampling `docker stats` — and then say what load you applied.
+NOTE
