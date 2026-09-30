@@ -231,6 +231,29 @@ pub fn parse(text: &str) -> Result<Manifest, ManifestError> {
 /// `/readyz` mean something — a registry that loaded has been validated, not
 /// merely read.
 pub fn validate_schema(bytes: &[u8], path: &Path) -> Result<Manifest, ManifestError> {
+    validate_against(MANIFEST_SCHEMA.as_bytes(), bytes, path)
+}
+
+/// The same check, against a schema the caller supplies.
+///
+/// Exists for one reason: **the schema is not always the vendored one.** MD15
+/// ruled that a consumer validates core's examples at the ref it has actually
+/// vendored — which means the schema those examples are checked against is read
+/// out of core at that ref, not out of this binary. Keeping the compiled-in
+/// [`MANIFEST_SCHEMA`] as the default is deliberate: `/readyz` must keep
+/// validating offline against bytes shipped inside the container, and a call
+/// that resolved a ref at startup would make the readiness probe depend on a
+/// sibling checkout this deployment does not have.
+///
+/// The two callers therefore make two different claims, and both are true:
+/// `validate_schema` says "validates against the schema this binary was built
+/// with"; `validate_against` says "validates against this schema", and it is the
+/// test suite that knows which ref it means.
+pub fn validate_against(
+    schema_bytes: &[u8],
+    bytes: &[u8],
+    path: &Path,
+) -> Result<Manifest, ManifestError> {
     let text = std::str::from_utf8(bytes).map_err(|error| ManifestError::Read {
         path: path.to_path_buf(),
         message: format!("is not UTF-8: {error}"),
@@ -254,9 +277,14 @@ pub fn validate_schema(bytes: &[u8], path: &Path) -> Result<Manifest, ManifestEr
     })?;
 
     let schema: serde_json::Value =
-        serde_json::from_str(MANIFEST_SCHEMA).expect("the vendored schema is valid JSON");
-    let validator = jsonschema::validator_for(&schema)
-        .expect("the vendored schema is a schema this validator understands");
+        serde_json::from_slice(schema_bytes).map_err(|error| ManifestError::Schema {
+            path: path.to_path_buf(),
+            message: format!("the schema being validated against is not JSON: {error}"),
+        })?;
+    let validator = jsonschema::validator_for(&schema).map_err(|error| ManifestError::Schema {
+        path: path.to_path_buf(),
+        message: format!("the schema being validated against is not a schema: {error}"),
+    })?;
 
     let errors: Vec<String> = validator
         .iter_errors(&document)

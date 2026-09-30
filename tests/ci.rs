@@ -155,6 +155,26 @@ fn every_script() -> String {
         .join("\n")
 }
 
+/// The clone lines only, with comments stripped.
+///
+/// `every_script` includes the explanatory comments above each command, and the
+/// comments necessarily NAME the flags they argue against (`--depth 1`, by
+/// sentence). A substring check over text that quotes the thing it forbids is a
+/// check that can never pass, so both this and any future one has to read the
+/// commands rather than the prose. `#` is the only comment syntax in a bash `run`
+/// block, and stripping the rest of the line cannot change a command — a `#`
+/// inside a quoted string would, and there is none in this job.
+fn every_command() -> String {
+    every_script()
+        .lines()
+        .map(|line| match line.find('#') {
+            Some(at) => &line[..at],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// **The trap this file is mostly about.** Cloning only the repositories the
 /// registry happens to name today is the obvious optimisation and the wrong
 /// one: it makes the job's coverage a function of the registry, so the moment a
@@ -307,6 +327,7 @@ fn the_drift_job_clones_more_than_the_registered_services() {
 fn the_drift_job_clones_anonymously_and_needs_no_credential() {
     let raw = std::fs::read_to_string(workflow_path()).expect("the workflow is readable");
     let script = every_script();
+    let commands = every_command();
 
     for (what, needle) in [
         ("a secret reference", "secrets."),
@@ -318,7 +339,7 @@ fn the_drift_job_clones_anonymously_and_needs_no_credential() {
         assert!(
             !raw.contains(needle),
             "{WORKFLOW} mentions {what} (`{needle}`). Every repository the drift job clones is \
-             public, so it needs no credential: `git clone --depth 1 \
+             public, so it needs no credential: `git clone \
              https://github.com/cafaye/<repo>.git <repo>` is the whole mechanism. If a future \
              cafaye repository is private, that is a fact to raise as a DECISION NEEDED, not a \
              long-lived key to add back here."
@@ -332,10 +353,78 @@ fn the_drift_job_clones_anonymously_and_needs_no_credential() {
          credential is involved."
     );
     assert!(
-        script.contains("--depth 1"),
-        "the clone step lost `--depth 1`. These are checked out to be read, not built, and a \
-         full clone of eight repositories on every run is minutes of transfer for no history \
-         anything here reads."
+        !commands.contains("--depth"),
+        "the clone step is shallow again (`--depth`). That was right until `core-11`, and it is \
+         wrong now: `tests/recorded_copy.rs` verifies each registry copy against the `recordedAt` \
+         commit in `registry/index.yml`, and `tests/schema.rs` verifies `schemas/` against the \
+         sha in `vendir.lock.yml`. `git show <sha>:<path>` cannot reach a commit a shallow clone \
+         does not have, so a shallow clone turns every one of those checks into a SKIP — an \
+         honest one, naming the ref it could not read, but a CI run that verified nothing about \
+         any registry copy while looking green. Full histories of public repositories are a few \
+         MB each and anonymous."
+    );
+}
+
+/// The clone must be able to REACH a recorded ref, not merely contain a `.git`.
+///
+/// This exists because the fix to the above is invisible from the outside: a
+/// workflow that clones shallowly still has a `.git` directory in every checkout,
+/// so `prove the workspace is real` passes and `cafaye_root()` resolves and every
+/// test runs — and the recorded-ref checks skip inside those runs. Nothing about
+/// the badge would say so. So the assertion is about the recorded refs
+/// themselves: this repository's own `vendir.lock.yml`, and one `recordedAt` from
+/// `registry/index.yml`, are both non-tip commits relative to a `--depth 1` clone
+/// of the fleet, and the workflow must therefore fetch history.
+#[test]
+fn the_drift_job_clones_deep_enough_to_reach_a_recorded_ref() {
+    let commands = every_command();
+
+    assert!(
+        !commands.contains("--depth"),
+        "the drift job clones shallowly, so a recorded ref that is not the tip is unreachable \
+         and every recorded-ref check skips. See \
+         `the_drift_job_clones_anonymously_and_needs_no_credential` for the same line."
+    );
+
+    // And the thing that would make a shallow clone sufficient is not present:
+    // if some future change adds an explicit `git fetch origin <recorded-sha>`
+    // per repository, `--depth 1` becomes correct again and this assertion would
+    // be refusing a good change. Say so here rather than leaving the next reader
+    // to work it out.
+    assert!(
+        !commands.contains("git fetch"),
+        "the drift job now fetches specific refs, which would make `--depth 1` viable again. \
+         Remove this test and the `--depth` assertion above in the same commit, and say why the \
+         fetch is sufficient."
+    );
+
+    // The refs that must be reachable are real, so this test fails loudly if a
+    // future packet edits `vendir.lock.yml` into a shape this reasoning does not
+    // cover.
+    let pin = pantry::pin::resolve(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
+    let recorded = pin
+        .pin()
+        .unwrap_or_else(|| panic!("this repository records no core pin, so `the_drift_job_clones_deep_enough_to_reach_a_recorded_ref` has nothing to check: {pin:?}"));
+    assert_eq!(
+        recorded.sha.len(),
+        40,
+        "the recorded core pin is not a full sha, so `git show` reachability is not the question \
+         it was"
+    );
+
+    let index =
+        pantry::registry::read_index(&pantry::registry::registry_dir()).expect("the index parses");
+    let recorded_services: Vec<&str> = index
+        .services
+        .values()
+        .filter_map(|entry| entry.recorded_at.as_deref())
+        .collect();
+    assert!(
+        recorded_services.len() == index.services.len(),
+        "{} of {} registered services record a `recordedAt`, so this test's claim that every \
+         registered copy has a ref to reach is not true",
+        recorded_services.len(),
+        index.services.len()
     );
 }
 

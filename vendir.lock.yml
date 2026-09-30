@@ -1,0 +1,54 @@
+# vendir.lock.yml — which commit of `cafaye/core` this repository vendored.
+#
+# WHAT THIS FILE IS FOR. pantry copies two things out of `core`:
+#
+#   schemas/cafaye.manifest.schema.json   compiled into the binary, and the only
+#                                         thing `/readyz` validates against
+#   (and, read at test time) examples/valid/*.yml, core's own worked examples
+#
+# A copy with no recorded origin is a copy nobody can check. It cannot be said to
+# be current, and it cannot be said to be stale either — there is no "to" to be
+# stale against. Before this file existed, `tests/schema.rs` asserted the vendored
+# copy was byte-identical to `core/schemas/…` **in the working tree**, which meant
+# a commit in core's repository decided whether *this* repository's gate passed.
+# `core-09` added two valid gate declarations to `core/examples/valid/` and
+# pantry's gate went red in a repository nobody had touched. That is MD15.
+#
+# So the rule is now: **resolve core at the ref below, never at the working
+# tree.** Every check that reads core says so in its failure message.
+#
+# WHY A `vendir.lock.yml` AND NOT A `CORE_REF`. Both spellings are real in this
+# fleet and `pantry::pin` reads both, in that order — a lockfile is what `vendir`
+# and Renovate maintain, and a `CORE_REF` in a workflow env block is the
+# hand-bumped form three repositories still use. This repository vendors a
+# directory and hand-runs `cp`, so the lockfile is the honest name for the
+# record even though no `vendir` process maintains it yet; `pantry::pin` does not
+# care which tool wrote it, only that it carries a commit.
+#
+# WHEN YOU RE-VENDOR, bump this sha in the same commit as the `cp`:
+#
+#   cp ../core/schemas/cafaye.manifest.schema.json schemas/
+#   git -C ../core rev-parse HEAD          # into apiVersion/… below
+#
+# A stale pin is LEGAL. It is a copy that has not been bumped yet, and the gate
+# stays green on purpose — the distance is reported, by name, with the fix, by
+# `this_repository_says_how_far_behind_core_it_is` in `tests/schema.rs`. What
+# fails is a copy that does not match the ref it claims: that is a defect in this
+# repository, and it is the only thing about core that should be able to turn this
+# gate red.
+#
+# The sha below is core's `71d01fd`, and `schemas/cafaye.manifest.schema.json` is
+# byte-identical to core's copy at that commit — which
+# `the_vendored_schema_is_core_s_schema_at_the_ref_this_repository_records`
+# asserts on every run, rather than this comment asking to be believed.
+apiVersion: vendir.k14s.io/v1alpha1
+kind: Config
+directories:
+  - path: schemas
+    contents:
+      - path: .
+        git:
+          url: git@github.com:cafaye/core.git
+          # core's master at the moment these bytes were taken.
+          ref: master
+          sha: 71d01fd90eae42d452db4431b999e4835949a548

@@ -268,18 +268,41 @@ service is a commit and a reviewed pull request — that is the entire trust mod
 
 **Why a copy at all.** A container has no sibling checkouts, so the registry has
 to be self-contained; but a copy nobody checks is a copy that rots. So
-`tests/drift.rs` verifies every copy against the real service on every run —
-**byte for byte**, and also field by field, plus the two registry-side facts
-against the real service's OpenAPI document and git remote. That test is the
-mechanism. Discipline is not.
+`tests/recorded_copy.rs` verifies every copy against the service **at the commit
+this registry records** on every run — **byte for byte**, and also field by field
+— and `tests/drift.rs` checks the two registry-side facts against the service's
+own OpenAPI document and git remote. That test is the mechanism. Discipline is
+not.
+
+**And the copy records where it came from.** Every row in `registry/index.yml`
+carries a `recordedAt`: the commit of that service's own repository the copy was
+taken from. The copy is therefore a copy *of a named commit*, and the check is
+"this copy is what service S said at ref R" — a claim that is true or false for a
+reason inside this repository.
+
+That is a real change, and the reason is attribution. When the comparison was
+made against the sibling checkout's **working tree**, the claim was "this copy is
+what the service says right now", so a merge in `identity` or `muse` turned
+*pantry's* gate red and was reported as *pantry* being broken. It happened three
+times; once, muse's copy was publishing `required: false` for a dependency muse
+had since made **required** — a muse without identity is 503 on every request —
+and nothing in the failure said whose repository had moved.
+
+How far behind a copy is has therefore become a **report**, not an assertion:
+`the_registry_says_how_far_behind_each_copy_is_and_names_the_fix` prints every
+service's distance on every run and fails only past a 9-commit budget. A stale
+copy is legal — it is a copy that has not been bumped yet — and a scheduled
+report that is red every week is a report that gets muted. See `DECISIONS.md`
+D4.
 
 ### A copy is verbatim, comments included
 
 `registry/services/<name>/cafaye.yml` is a byte-for-byte copy of the service's
-own file, and `every_registered_entry_is_a_verbatim_copy_of_the_services_own_bytes`
-is what keeps it that way. It fails with the `cp` that fixes it, names the first
-line that differs, and says whether the YAML fields moved as well or only the
-comments did.
+own file, and `every_registered_copy_is_verbatim_at_the_ref_this_registry_records`
+is what keeps it that way — checked at the `recordedAt` commit in
+`registry/index.yml`, not at the sibling checkout's working tree. It fails with
+the `cp` that fixes it, names the first line that differs, and says whether the
+YAML fields moved as well or only the comments did.
 
 The reason is worth stating, because it is not tidiness. **These files carry
 their services' `DECISION NEEDED` blocks**, and a copy that has silently lost one
@@ -494,28 +517,47 @@ drives the axum router in-process, and `jsonschema` is built with
 
 **Read this before reading a green badge on this repository.**
 
-`registry/` is a set of copies of other repositories' files. `tests/drift.rs` is
-the only thing in this repository that makes those copies true, and it works by
-reading the **live filesystem**: it looks for a cafaye workspace — a directory
-holding `core/`, `identity/` and the rest — next to this checkout, or at
-`PANTRY_CAFAYE_ROOT`. Those are sibling checkouts under `moon/cafaye/`.
+`registry/` is a set of copies of other repositories' files, and it is
+`tests/recorded_copy.rs` that makes those copies true. It reads a cafaye
+workspace — a directory holding `core/`, `identity/` and the rest — next to this
+checkout, or at `PANTRY_CAFAYE_ROOT`. Those are sibling checkouts under
+`moon/cafaye/`. `tests/drift.rs` does the same for the curated `kind` and
+`basePath` facts.
 
-With a workspace, the drift tests run and compare. Without one, eight of the
-eleven print `SKIP …` on stderr naming the directory that would make them run,
-and return; three in `tests/schema.rs` skip for the same reason. A skip is
-reported, never hidden. The full gate, run by hand:
+The clones must be **non-shallow**, and CI's is: `git show <sha>:<path>` cannot
+reach a commit a `--depth 1` clone does not have, so a shallow clone would turn
+every recorded-ref check into a skip. `tests/ci.rs` fails if `--depth` comes
+back.
+
+With a workspace, these tests run and compare. Without one, **21 of them print
+`SKIP …` on stderr naming the directory that would make them run**, and return. A
+skip is reported, never hidden. The full gate, run by hand:
 
 ```console
 $ PANTRY_CAFAYE_ROOT=/Users/kaka/Code/any/moon/cafaye ./bin/prime
 ```
 
 The shape of the problem is that a pantry-only clone and a real workspace print
-**the same 89 passing tests and the same exit code**. The only difference
-between them is eleven `SKIP` lines — and, since pantry-05, one more for the
+**the same 114 passing tests and the same exit code 0**. The only difference
+between them is those 21 `SKIP` lines — and, since pantry-05, one more for the
 private repository this job cannot clone (see "Not registered, and why" below).
 Nothing in a green run distinguishes
 "verified the fleet" from "verified itself" — which is why the job that has the
 fleet has to be a separate job with a name that says so.
+
+**Count them, do not eyeball them.** Both numbers above were measured by running
+the suite in a clone with no siblings beside it and comparing:
+
+```console
+$ git clone --no-hardlinks ../cafaye/pantry-worker-core-11-pin /tmp/lonely && cd /tmp/lonely
+$ cargo test --no-fail-fast -- --nocapture 2>&1 | grep -c '^SKIP'
+21
+```
+
+`cargo test` prints skips on stderr, which a terminal shows but a captured
+pipeline does not. A gate that reports "114 passed" without also reporting how
+many of those 114 verified nothing is the defect this repository has been
+reporting against itself three times, so the count is part of the claim.
 
 **A green badge on the `build` job has verified pantry against itself, not
 against reality.** That job is a clone of pantry alone. It proves the registry
@@ -530,11 +572,18 @@ cafaye organisation beside the `pantry` checkout and runs the same
 tests compare instead of skipping. Every cafaye repository is public, so the
 clones are anonymous HTTPS and the job uses no secret of any kind. A green run
 of that job means, as of that run: every registered entry is a verbatim byte
-copy of the service's own `cafaye.yml`, every field pantry publishes about a
-service is a field the service publishes, each curated `kind` and `basePath`
-agrees with the service's own manifest and OpenAPI document, the vendored
-schema is core's, every exclusion row's reason is still true, and the platform
-CLI's own `contract lint` passes over all of it.
+copy of the service's `cafaye.yml` **at the commit that row records**, every field
+pantry publishes about a service is a field the service publishes, each curated
+`kind` and `basePath` agrees with the service's own manifest and OpenAPI
+document, the vendored schema is core's **at the ref `vendir.lock.yml` records**,
+every exclusion row's reason is still true, and the platform CLI's own
+`contract lint` passes over all of it.
+
+It also prints, on every run, how far each recorded ref is from what it was taken
+against. A copy that has fallen behind is reported by name with the fix and does
+**not** turn this gate red until it passes the budget — a merge in another
+repository is a fact about that repository, and this gate is not where it should
+be reported.
 
 It is still worth reading what that does not cover, and the job says the same
 three things on its own face:

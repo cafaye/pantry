@@ -7,7 +7,7 @@
 //! because a validator that accepts everything would make the readiness probe
 //! a decoration.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use pantry::manifest;
 use pantry::registry::BlockedBy;
@@ -39,22 +39,148 @@ fn skip_without_workspace(what: &str) {
     );
 }
 
+/// The vendored schema is core's schema **at the ref this repository records**.
+///
+/// Was: byte-comparison against `core/schemas/cafaye.manifest.schema.json` in the
+/// sibling working tree. Same defect as the copy tests in `tests/drift.rs` and
+/// the same ruling — a vendored byte copy of somebody else's file has to be
+/// checked against the commit it was taken from, or the check can only ever fail
+/// for a reason outside this repository.
+///
+/// Reading at the recorded ref makes the claim "this vendored copy is what core
+/// published at R", which is true or false for a reason here. When core moves,
+/// this test stays green and `the_registry_says_how_far_behind_each_copy_is…`
+/// in `tests/recorded_copy.rs` reports the distance — except that this file's
+/// staleness is a *different* question from the registry's, because `core` is a
+/// repository this one depends on rather than a service this one registers. So
+/// the distance is reported here too, by name, and a schema that has moved so
+/// far that the vendored copy no longer describes anything current is worth
+/// seeing. Re-vendoring is one `cp`; the pin is what makes it a decision.
 #[test]
-fn the_vendored_schema_is_byte_identical_to_cores() {
+fn the_vendored_schema_is_core_s_schema_at_the_ref_this_repository_records() {
     let Some(root) = cafaye_root() else {
         return skip_without_workspace("vendored schema drift");
     };
 
-    let upstream = std::fs::read(root.join("core/schemas/cafaye.manifest.schema.json"))
-        .expect("core's schema is readable");
+    let core = root.join("core");
+    let resolution = pantry::pin::resolve(Path::new(env!("CARGO_MANIFEST_DIR")));
+    let recorded = match &resolution {
+        pantry::pin::PinResolution::Found(pin) => pin.clone(),
+        other => {
+            eprintln!(
+                "SKIP vendored schema at a recorded ref: this repository records no core pin \
+                 ({other:?}). The bytes under schemas/ have no recorded origin, so \"this is \
+                 core's schema\" is not a checkable claim — only \"this is the schema this \
+                 binary was built with\", which `every_official_entry_validates_against_the_\
+                 manifest_schema` already covers. Record the pin in vendir.lock.yml. This is a \
+                 skip, not a pass."
+            );
+            return;
+        }
+    };
+
+    let upstream = pantry::pin::show(&core, &recorded.sha, "schemas/cafaye.manifest.schema.json")
+        .unwrap_or_else(|error| {
+            panic!(
+                "the recorded core pin {} ({}) is not readable in {}. Cause: {error}",
+                recorded.sha,
+                recorded.source,
+                core.display()
+            )
+        });
     let vendored = std::fs::read(manifest::schema_path()).expect("the vendored schema is readable");
 
-    assert_eq!(
-        String::from_utf8_lossy(&upstream),
-        String::from_utf8_lossy(&vendored),
-        "schemas/cafaye.manifest.schema.json has drifted from core's copy. Copy it \
-         again: cp ../core/schemas/cafaye.manifest.schema.json schemas/"
-    );
+    if upstream != vendored {
+        // Say which way it differs, because "drifted" sends a reader to diff to
+        // find out whether the vendored copy is behind, ahead, or edited.
+        let behind = pantry::pin::commits_behind(
+            &core,
+            &recorded.sha,
+            &pantry::pin::published_head(&core).unwrap_or_else(|| recorded.sha.clone()),
+        );
+        panic!(
+            "schemas/cafaye.manifest.schema.json is not core's schema at {} (from {}).\n  \
+             vendored {} bytes, core's at that ref {} bytes{}\n\n\
+             Re-vendor and re-record, in one commit:\n  \
+             cp {}/schemas/cafaye.manifest.schema.json schemas/\n  \
+             git -C {} rev-parse HEAD   # into vendir.lock.yml",
+            recorded.sha,
+            recorded.source,
+            vendored.len(),
+            upstream.len(),
+            match behind {
+                Some(n) => format!("\n  the recorded ref is {n} commit(s) behind core master"),
+                None => String::new(),
+            },
+            core.display(),
+            core.display(),
+        );
+    }
+}
+
+/// The distance between this repository's recorded core ref and core's published
+/// head, reported by name.
+///
+/// A vendored copy with no staleness signal is "quiet and still wrong", which is
+/// where `pantry-07` and this packet both started. Nine commits is roughly a
+/// working day of this fleet's merge rate — the same budget the registry copies
+/// use, and deliberately the same number, because they are the same question
+/// asked of two different dependencies.
+#[test]
+fn this_repository_says_how_far_behind_core_it_is() {
+    const STALENESS_BUDGET_COMMITS: u64 = 9;
+
+    let Some(root) = cafaye_root() else {
+        return skip_without_workspace("core staleness");
+    };
+    let core = root.join("core");
+
+    let resolution = pantry::pin::resolve(Path::new(env!("CARGO_MANIFEST_DIR")));
+    let recorded = match &resolution {
+        pantry::pin::PinResolution::Found(pin) => pin,
+        other => {
+            eprintln!(
+                "SKIP core staleness: no recorded pin ({other:?}), so there is no distance to \
+                 measure. Nothing was measured; this is a skip, not a pass."
+            );
+            return;
+        }
+    };
+
+    let Some(head) = pantry::pin::published_head(&core) else {
+        eprintln!(
+            "SKIP core staleness: {core:?} resolves no published head, so `now` is unknown and \
+             no distance can be measured. This is a skip, not a pass."
+        );
+        return;
+    };
+
+    match pantry::pin::commits_behind(&core, &recorded.sha, &head) {
+        None => eprintln!(
+            "SKIP core staleness: {} is not in core's local history (a shallow clone?). \
+             Unmeasurable is not `current`. This is a skip, not a pass.",
+            recorded.sha
+        ),
+        Some(0) => eprintln!("    core staleness: current at {}", recorded.sha),
+        Some(distance) => {
+            eprintln!(
+                "    core staleness: {distance} commit(s) behind ({} @ {})",
+                recorded.sha, recorded.source
+            );
+            assert!(
+                distance <= STALENESS_BUDGET_COMMITS,
+                "this repository's recorded core ref is {distance} commit(s) behind core master — \
+                 over the {STALENESS_BUDGET_COMMITS}-commit budget.\n\n\
+                 Nothing about that is necessarily a defect: core adding a valid example is the \
+                 most frequent change made to it, and a rule that made every schema edit a \
+                 fleet-wide breaking change would be skipped the third time it was inconvenient \
+                 (MD15, reason 3). But a schema this repository validates against that is months \
+                 old is not describing anything current, and the fix is one commit:\n\n  \
+                 cp ../core/schemas/cafaye.manifest.schema.json schemas/\n  \
+                 git -C ../core rev-parse HEAD   # into vendir.lock.yml"
+            );
+        }
+    }
 }
 
 #[test]
@@ -151,31 +277,29 @@ fn the_schema_rejects_what_core_rejects() {
     }
 }
 
-/// The same, from the accepting side. A validator that rejects everything is a
-/// validator that makes `/readyz` red and teaches everyone to ignore it.
-#[test]
-fn the_schema_accepts_core_s_own_valid_examples() {
-    let Some(root) = cafaye_root() else {
-        return skip_without_workspace("core examples");
-    };
-
-    let examples: Vec<PathBuf> = std::fs::read_dir(root.join("core/examples/valid"))
-        .expect("core's examples directory exists")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "yml"))
-        .collect();
-    assert!(
-        !examples.is_empty(),
-        "core has no valid examples to check against"
-    );
-
-    for path in examples {
-        manifest::validate_schema(&std::fs::read(&path).expect("readable"), &path)
-            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-    }
-}
-
+/// **This used to be here.** `the_schema_accepts_core_s_own_valid_examples` read
+/// `core/examples/valid/*.yml` out of the WORKING TREE and validated every one
+/// against `schemas/cafaye.manifest.schema.json` — a schema this repository
+/// copied at some past moment. Two claims in one test, and they were not the
+/// same claim:
+///
+/// * "my vendored schema accepts core's valid examples" — true, and checked
+///   below by `every_manifest_this_repository_ships_validates_at_the_ref_it_vendored`
+///   in `tests/core_pin.rs`, at a **pinned ref** rather than at whatever is on
+///   disk right now.
+/// * "every `*.yml` in that directory is a service manifest" — false, and false
+///   since `core-09` added `gate.external.yml` and `gate.self-contained.yml`,
+///   which are gate declarations governed by `gate.schema.json`. Validating them
+///   against the *manifest* schema produced
+///   `"owner" is a required property` — a manifest rule quoting a document that
+///   was never a manifest.
+///
+/// The failure was reported against this repository, by name, three times. The
+/// replacement and the reasoning are in `tests/core_pin.rs`, and the
+/// two-document-kinds decision is `DECISIONS.md` D3. What is left here is the
+/// half that was always true and is still: the vendored schema rejects what core
+/// rejects, below.
+///
 /// The service an entry is for: the directory `cafaye.yml` sits in. The layout
 /// is `services/<name>/cafaye.yml` because `caf contract lint` only lints files
 /// carrying that exact name.

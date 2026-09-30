@@ -9,6 +9,67 @@ bottom.
 
 ### Added
 
+- **`recordedAt`: every registry copy now records the commit it was taken from,
+  and the copy is verified against that commit rather than the sibling checkout's
+  working tree.** `registry/index.yml` gains `recordedAt` per service, and
+  `tests/recorded_copy.rs` (new) checks each `registry/services/<name>/cafaye.yml`
+  — byte for byte, and field by field — against `<service>` **at that ref**.
+
+  This is MD15 applied one repository over, and it is the change of *whose
+  failure it is*. The old check asserted "this copy is what the service says
+  right now", so a merge in `identity` or `muse` turned **this** gate red and was
+  reported as *pantry* being broken. It happened three times. Once, muse's copy
+  was publishing `required: false` for a dependency `muse-06` had since made
+  **required** — a muse without identity is 503 on every request — and nothing in
+  the failure named the repository that had moved.
+
+  Now a merge elsewhere does not turn this gate red; how far behind a copy is
+  has become a **report** —
+  `the_registry_says_how_far_behind_each_copy_is_and_names_the_fix` prints every
+  service's distance on every run and fails only past a 9-commit budget, with the
+  `cp` that fixes it. A stale copy is legal; a scheduled report that is red every
+  week is a report that gets muted. See `DECISIONS.md` D4.
+
+  All nine `recordedAt` values are current at time of writing: **9 current, 0
+  behind, 0 unmeasured**. Two copies were refreshed (`identity`, `muse` — the two
+  `pantry-07` found) and three `recordedAt` values were bumped to a newer head
+  whose `cafaye.yml` bytes are identical to the recorded ones.
+
+- **`vendir.lock.yml`: this repository records which commit of `core` it
+  vendored**, and `schemas/cafaye.manifest.schema.json` is verified against
+  **that** commit rather than core's working tree.
+  `the_vendored_schema_is_core_s_schema_at_the_ref_this_repository_records`
+  replaces `the_vendored_schema_is_byte_identical_to_cores`, and
+  `this_repository_says_how_far_behind_core_it_is` reports the distance on the
+  same 9-commit budget. Same reasoning as above, one repository over.
+
+- **`pantry::pin` (new module): the resolver both of the above use.** It reads
+  the two shapes a core pin really takes in this fleet — a `vendir.lock.yml`
+  sha, or a `CORE_REF: <sha>` in a workflow — preferring the lockfile, in the
+  same order and for the same reason as `kit/tests/staleness.py`. Three
+  outcomes, all of them named:
+
+  - a full 40-hex commit resolves, and says which file it came from;
+  - two pins that disagree is a reported state, not a silent winner;
+  - **no pin is a skip that names what was searched** — and `muse`'s
+    `CORE_REF: 'master'` is refused as a pin, because a branch is a question that
+    changes answer over time.
+
+  A fallback to the working tree is deliberately not implemented, in either
+  direction: it is the defect, and reintroducing it as a "degraded mode" would
+  make the green mean nothing while appearing to fix it.
+
+- **The two-document-kinds classification, and the test that holds it in both
+  directions.** `core/examples/valid/` holds service manifests
+  (`*.cafaye.yml`, `cafaye.manifest.schema.json`) *and* gate declarations
+  (`gate.*.yml`, `gate.schema.json`). `tests/core_pin.rs` (new) keeps a table
+  naming every non-manifest example **and the schema that governs it**, and
+  asserts the classification is total: a file nobody classified fails with its
+  name, and a table row whose file no longer exists fails too. pantry does not
+  vendor `gate.schema.json` and does not validate gate declarations. The
+  recommendation to core is to split the directory by kind — `DECISIONS.md` D3.
+
+
 - **`cafaye-ts` is registered — `kind: cli`, `basePath: null`.** The TypeScript
   client, which has declared itself in the platform's own contract language
   (`caf contract lint: OK`) and which the workspace walk found carrying a
@@ -279,6 +340,41 @@ bottom.
   with two prefixes needs a decision rather than an average.
 
 ### Changed
+
+- **`workspace-drift` clones the fleet non-shallow.** `--depth 1` was right until
+  recorded-ref checking; it is wrong now, because `git show <sha>:<path>` cannot
+  reach a commit a shallow clone does not have, so every recorded-ref check would
+  become a skip — an honest one naming the ref it could not read, but a CI run
+  that verified nothing about any registry copy while looking green.
+  `tests/ci.rs::the_drift_job_clones_deep_enough_to_reach_a_recorded_ref` fails
+  if `--depth` comes back. The credentials test was updated in the same commit:
+  it previously *required* `--depth 1`, and it now forbids it.
+- **`manifest::validate_schema` keeps its signature and gains
+  `manifest::validate_against`.** The first validates against the schema compiled
+  into the binary, which is what `/readyz` must keep doing offline; the second
+  takes the schema as an argument, which is what a test resolving core at a ref
+  needs. No behavioural change to the first.
+- **The two copy-comparison tests moved out of `tests/drift.rs`**, leaving a
+  tombstone naming where they went and why. What stayed in that file is the drift
+  that is genuinely about this repository — the curated `kind` and `basePath` —
+  which has no recorded ref, because a `basePath` is derived from a document the
+  service publishes today.
+- **README's skip count corrected from 11 to 21, measured rather than estimated.**
+  The old number was stale and the test count beside it (89) was stale too. Both
+  are now 114 passing in either environment, with 21 skips in a pantry-only clone
+  — so the counts in that section were checked against a real run instead of
+  carried forward.
+
+### Removed
+
+- **`the_schema_accepts_core_s_own_valid_examples`**, which read
+  `core/examples/valid/*.yml` from the working tree and validated every one
+  against the manifest schema. It is replaced by
+  `every_manifest_this_repository_ships_validates_at_the_ref_it_vendored`, which
+  makes the claim the old one was trying to make: *the manifests this repository
+  ships validate against the schema at the ref this repository has actually
+  vendored.* A tombstone in `tests/schema.rs` records why, because a reader who
+  greps for the old name should find out where it went.
 
 - **`?kind=cli` returns two entries, and `?language=typescript` returns two.**
   `[caf, cafaye-ts]` and `[cafaye-ts, guard]` — a command, an imported package,
