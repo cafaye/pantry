@@ -386,7 +386,7 @@ $ PANTRY_CAFAYE_ROOT=/Users/kaka/Code/any/moon/cafaye ./bin/prime
 drives the axum router in-process, and `jsonschema` is built with
 `default-features = false` so it has no HTTP fetcher to reach out with.
 
-### The drift test needs a workspace, and CI does not have one
+### The drift test needs a workspace, and CI builds one
 
 **Read this before reading a green badge on this repository.**
 
@@ -396,49 +396,64 @@ reading the **live filesystem**: it looks for a cafaye workspace — a directory
 holding `core/`, `identity/` and the rest — next to this checkout, or at
 `PANTRY_CAFAYE_ROOT`. Those are sibling checkouts under `moon/cafaye/`.
 
-With a workspace, the eight drift tests run and compare. Without one, each prints
-`SKIP …` on stderr naming the directory that would make it run, and returns.
-A skip is reported, never hidden. The full gate:
+With a workspace, the drift tests run and compare. Without one, eight of the
+eleven print `SKIP …` on stderr naming the directory that would make them run,
+and return; three in `tests/schema.rs` skip for the same reason. A skip is
+reported, never hidden. The full gate, run by hand:
 
 ```console
 $ PANTRY_CAFAYE_ROOT=/Users/kaka/Code/any/moon/cafaye ./bin/prime
 ```
 
-**What this repository's CI actually verifies.** `.github/workflows/ci.yml` runs
-on a clone of pantry alone. There is no cafaye workspace there, so the drift
-tests and two schema tests skip, and the consequence is this:
+The shape of the problem is that a pantry-only clone and a real workspace print
+**the same 79 passing tests and the same exit code**. The only difference
+between them is eleven `SKIP` lines. Nothing in a green run distinguishes
+"verified the fleet" from "verified itself" — which is why the job that has the
+fleet has to be a separate job with a name that says so.
 
-> A green CI run on pantry has verified **pantry against itself, not against
-> reality.** It proves the registry is internally consistent, that every entry
-> satisfies core's vendored schema, and that the filter and paging contracts
-> hold. It proves **nothing** about whether any entry still says what its
-> service says.
+**A green badge on the `build` job has verified pantry against itself, not
+against reality.** That job is a clone of pantry alone. It proves the registry
+is internally consistent, that every entry satisfies core's vendored schema,
+and that the filter and paging contracts hold. It proves **nothing** about
+whether any entry still says what its service says. It is a fast inner loop,
+not the gate on the registry.
 
-That is not a gap being minimised. It is a consequence of the design — the
-registry is verified against the real fleet, so the verification needs the real
-fleet — and it is the same property that made the exclusion tripwire fire three
-times correctly (darkroom, caf, courier). Every one of those three was found by
-running the gate **in the workspace**, not by CI.
+**The `workspace-drift` job is the gate, and it runs.** It clones the whole
+cafaye organisation beside the `pantry` checkout and runs the same
+`./bin/prime` with `PANTRY_CAFAYE_ROOT` pointed at what it cloned, so the drift
+tests compare instead of skipping. Every cafaye repository is public, so the
+clones are anonymous HTTPS and the job uses no secret of any kind. A green run
+of that job means, as of that run: every registered entry is a verbatim byte
+copy of the service's own `cafaye.yml`, every field pantry publishes about a
+service is a field the service publishes, each curated `kind` and `basePath`
+agrees with the service's own manifest and OpenAPI document, the vendored
+schema is core's, every exclusion row's reason is still true, and the platform
+CLI's own `contract lint` passes over all of it.
 
-**The job that would fix it exists and is disabled.** `ci.yml` carries a
-`workspace-drift` job written out in full, `if: false`, which clones the eight
-service repositories beside a `pantry` checkout and runs the whole gate with
-`PANTRY_CAFAYE_ROOT` set. It is disabled rather than absent on purpose: an
-absent job is forgotten, a disabled one says on its face that the coverage does
-not exist yet. It cannot be enabled from this repository, for two reasons that
-are properties of the platform —
+It is still worth reading what that does not cover, and the job says the same
+three things on its own face:
 
-- the cafaye repositories are private, so a hosted runner cannot clone them
-  without a deploy key pantry should not hold; and
-- kit's reusable workflow states that nothing in it reaches a cafaye service, so
-  it needs no secrets. That is a deliberate property of kit's shared CI.
+- it reads each sibling's **default branch as of the run**, so a change in
+  `identity` that has not reached `identity`'s master is invisible here;
+- it proves the registry is **true, not complete** — a cafaye repository nobody
+  has added to the job's clone list is not cloned, not registered and not
+  noticed, and the list has to be updated by hand. `tests/ci.rs` is what makes
+  that hand-maintained list mean something: it fails the `build` job when
+  `registry/index.yml` curates a repository the job does not clone;
+- a red there is almost always a finding about **another** repository, and the
+  fix is to report it and open the change where the file lives. `registry/`
+  here is a copy of somebody else's file and this repository does not own it.
 
-**What the manager has to decide:** how a CI runner authenticates to the private
-cafaye repositories, or whether a self-hosted runner with the workspace already
-on disk is acceptable. Either unblocks the job as written.
+The job also guards its own workspace, because a clone that quietly did not
+happen is the one failure whose symptom is a green run: without core's schema
+at the expected path, `cafaye_root()` misses and every drift test skips, so a
+`prove the workspace is real` step checks every checkout for git metadata and
+core's schema before the gate runs.
 
-Until then, the honest summary is one line: **CI proves pantry is well-formed;
-the fleet-facing check is `./bin/prime` in the workspace, run by hand.**
+A pantry-only clone still proves only that pantry is well-formed, and the way
+to get that wrong is to delete the clones rather than the job — so `tests/ci.rs`
+also fails if the drift job is disabled, if a secret reference reappears, or if
+`PANTRY_CAFAYE_ROOT` stops pointing at the checkouts.
 
 ---
 
@@ -459,7 +474,7 @@ pantry/
 │   ├── problem.rs             # RFC 9457 with core's extensions
 │   ├── registry.rs            # load, validate, index, exclusions
 │   └── view.rs                # the response shape, and its provenance
-└── tests/                     # manifest, schema, contract, filters, api, drift
+└── tests/                     # manifest, schema, contract, filters, api, drift, ci
 ```
 
 Read `AGENTS.md` before changing anything here.

@@ -9,6 +9,25 @@ bottom.
 
 ### Added
 
+- **CI now checks the registry against the fleet, and the badge means it.** The
+  `workspace-drift` job is enabled. It was `if: false` because it cloned the
+  cafaye repositories over SSH with a deploy key from this repository's
+  settings, on the assumption that the repositories are private — and they are
+  public, all of them. So the key was a long-lived private key created to work
+  around a problem that does not exist; it is gone, and the clones are
+  anonymous HTTPS with no secret anywhere in the workflow. The clone list is the
+  whole organisation rather than the subset the registry registers, because
+  deriving it from the registry makes coverage a function of the registry and a
+  ninth service is then the one nobody checks. The `test -f core/schemas/…`
+  guard is kept and widened to every checkout, since a missing file there does
+  not fail anything — it makes every drift test skip and the run go green.
+  `tests/ci.rs` is new and asserts the four things a person could break by
+  accident: the clone list covers everything `registry/index.yml` curates, the
+  clones carry no credential, the job is enabled, and the suite is pointed at
+  the checkouts. It needs no workspace, so it runs in the `build` job too.
+  **The job has never executed on a runner** — it is verified against a
+  workspace of eleven anonymous HTTPS clones of the real fleet, which is the
+  honest local equivalent and not the same thing.
 - **`caf` is registered.** `registry/services/caf/cafaye.yml` is a byte-identical
   copy of the platform CLI's own manifest, and `registry/index.yml` carries its
   row. `caf-03` rewrote that manifest into core's frozen shape, which made the
@@ -83,6 +102,19 @@ bottom.
 
 ### Changed
 
+- **A checkout's remote is compared by repository, not by spelling.**
+  `every_registered_repository_url_is_the_real_services_remote` compared the
+  registry's declared URL to `remote.origin.url` as strings, and the two are
+  written in different transports by construction: a developer's checkout is
+  SSH, and a hosted runner cloning a public repository anonymously is HTTPS. So
+  the moment the drift job was enabled against a real workspace, the suite was
+  red on the first registered entry for a checkout that was correct in every
+  respect a registry can observe. The comparison is now `owner/name`; the SSH
+  requirement is unchanged and still enforced, by core's schema pattern, which
+  every entry is validated against in `tests/schema.rs`. An origin naming a
+  different repository on the same host, or one that names no GitHub repository
+  at all, is still a failure — the second now with a message naming the value
+  rather than a string mismatch.
 - **`?language=go` and the `^0.2.0` filter each gained a member.** caf is the
   second `go` repository in the registry, so those filters no longer return a
   single service.
