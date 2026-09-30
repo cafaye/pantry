@@ -63,13 +63,24 @@ services:
 # queue: an entry here means the repository is known, checked, and held back
 # for a stated reason.
 #
-# tests/drift.rs asserts every one of these still fails `caf contract lint` (or
-# has no manifest at all). That assertion is a tripwire, not bureaucracy: the
-# moment courier's events gain the three-segment prefix core requires, its test
-# fails with "courier now validates — register it" instead of the registry
-# quietly going stale. Deleting a row is the fix.
+# `blockedBy` is machine-checked and is the whole reason this list is not just
+# prose. tests/schema.rs asserts the stated reason still holds, which makes the
+# list a tripwire in both directions: an entry that starts validating fails the
+# suite with "register it", and a reason that stops being true fails too. The
+# three values:
+#
+#   schema       — the repository's cafaye.yml does not validate against core's
+#                  schema. Registering it would put a service in the registry
+#                  whose own contract file is invalid.
+#   no-manifest  — the repository carries no cafaye.yml on master yet.
+#   not-a-service— the manifest validates, but the repository is not a service:
+#                  `language: spec`, which core's schema defines as
+#                  "specification-only repositories". Nothing routes to a spec
+#                  repo and no manifest declares a dependency on one.
+#
 excluded:
   - name: courier
+    blockedBy: schema
     reason: >-
       Its manifest publishes `email.queued`, `email.delivered`, `email.bounced`,
       `email.complained` and `notification.suppressed` — two-segment types.
@@ -83,6 +94,7 @@ excluded:
       match "^[a-z][a-z0-9]*(-[a-z0-9]+)*\.[a-z][a-z0-9]*(_[a-z0-9]+)*\.[a-z][a-z0-9]*(_[a-z0-9]+)*$"
 
   - name: darkroom
+    blockedBy: no-manifest
     reason: >-
       The manifest exists and lints clean, but only on the unmerged
       `worker/darkroom-01` branch; `moon/cafaye/darkroom` on master carries no
@@ -91,6 +103,7 @@ excluded:
     verify: "ls ../darkroom/cafaye.yml"
 
   - name: parlor
+    blockedBy: schema
     reason: >-
       Still the pre-core draft shape — `apiVersion: cafaye/v0-draft` with
       `metadata`/`spec` instead of `name`/`language`/`core`/`repository`/
@@ -100,6 +113,7 @@ excluded:
     lint: 'INVALID ../parlor/cafaye.yml: is missing required fields ["name", "language", "core", "repository", "owner"]'
 
   - name: caf
+    blockedBy: schema
     reason: >-
       The platform CLI, and also still the pre-core draft shape (`version`,
       `languages`, `contracts`, `dev` — every one of them a violation of
@@ -109,6 +123,7 @@ excluded:
     lint: 'INVALID caf/cafaye.yml: is missing required fields ["language", "core", "repository", "owner"]'
 
   - name: kit
+    blockedBy: no-manifest
     reason: >-
       Configuration only — CI workflows, lint configs, Docker bases. kit's own
       AGENTS.md says it is "not a CLI, a package, or a service". It carries no
@@ -117,6 +132,7 @@ excluded:
     verify: "ls ../kit/cafaye.yml"
 
   - name: core
+    blockedBy: not-a-service
     reason: >-
       `language: spec`. core's schema says that value is "for
       specification-only repositories (core itself, contract-test fixtures)", so
@@ -126,3 +142,4 @@ excluded:
       copies a manifest into registry/services/.
     verify: "cd ../caf && go run ./cmd/caf contract lint ../core/cafaye.yml"
     lint: "OK ../core/cafaye.yml — valid, and deliberately not a service"
+
