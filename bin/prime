@@ -131,8 +131,24 @@ set -e
 suite_passed="$(awk '/^test result: ok\./ { for (i = 1; i <= NF; i++) if ($i == "passed;") total += $(i - 1) } END { print total + 0 }' "$test_log")"
 suite_skipped="$(grep -c '^SKIP ' "$test_log" || true)"
 
+# The number of test binaries, COUNTED rather than written down, because the
+# literal it replaced said 11 while `tests/` held thirteen files.
+#
+# It drifted silently for several packets — `scoping.rs` and
+# `entry_point_isolation.rs` were added and the summary line was never updated —
+# and nothing noticed, because `gate.yml`'s `total` proof matches this line's
+# SHAPE (`^suite: (\d+) passed across \d+ test binaries$`) rather than its
+# numbers. A floor on the test-file count is not expressible in that proof at
+# all, which `gate.yml` already records at length; this is the other half of the
+# same hole, and counting here closes it for the one number this line prints.
+#
+# Counted by file rather than by counting `Running tests/` lines, because a
+# build that reuses a target directory can print a stale binary's path and the
+# two must not be able to disagree.
+test_binaries="$(find tests -maxdepth 1 -name '*.rs' | wc -l | tr -d ' ')"
+
 echo
-echo "suite: ${suite_passed} passed across 11 test binaries"
+echo "suite: ${suite_passed} passed across ${test_binaries} test binaries"
 if [[ "$suite_skipped" -eq 0 ]]; then
   echo "skips: 0 — every tier ran"
 else

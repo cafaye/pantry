@@ -46,8 +46,20 @@
 #   * the pass counts, per binary, on that run: 0 (lib) + 0 (bin) + 24 api +
 #     7 ci + 9 contract + 7 core_pin + 12 drift + 13 filters + 7 kind +
 #     13 manifest + 11 pin + 4 recorded_copy + 7 schema + 0 doc-tests = **114**.
-#   * 14 test binaries total. The `targets` floor below is that number, and it
-#     is a different kind of floor from the `suite` one — see its comment.
+#
+#     **THAT TALLY WAS STALE AND WAS RE-MEASURED, not incremented.** Adding
+#     `scoping.rs` (14) and `entry_point_isolation.rs` (11) and 3 drift tests
+#     took the real total to **146**, measured on a run with the cafaye
+#     workspace reachable. The `total` floor below stayed at 112 and needed no
+#     change, because it is a DECREASE-detector and the suite grew — which is
+#     the reason that floor's margin argument still holds. `bin/prime`'s
+#     `across N test binaries` was the number that was actually WRONG: it said
+#     11 while `tests/` held 13 files, and nothing could catch it because the
+#     `total` proof matches that line's shape rather than its numbers. It is
+#     counted from `tests/*.rs` now.
+#   * 16 test binaries total — 13 integration-test files, plus the lib and bin
+#     unittest blocks and the `Doc-tests pantry` block. The `targets` proof below
+#     is a different kind of check again — see its comment.
 #   * the step banners are all `==> …`, ANSI-wrapped by `step()`. core strips
 #     terminal escapes before matching, so the patterns are written against the
 #     line a terminal SHOWS and carry no escape tolerance. See the `no-escapes`
@@ -199,6 +211,16 @@ gate:
       # the margin is two rather than the five the `suite` floor above uses for a
       # MEASURED reason that the first draft of this file got wrong.
       #
+      # **Still 112, against a measured 146, and NOT raised — deliberately.** The
+      # argument below is a margin, and a margin is a statement about how far the
+      # count may FALL before it means something. Raising the floor to keep pace
+      # with the count would convert a deletion-detector into a growth-assertion,
+      # and a growth-assertion is a check that goes red every time somebody adds
+      # a test — which is a red that gets edited rather than investigated, and
+      # editing it is how 112 became wrong in the first place. The re-measured
+      # numbers are in the header block above; the floor stays put and the gap
+      # is 34, which is headroom in the only direction that is safe.
+      #
       # This floor is what catches a deleted test FILE, since the format cannot
       # express a floor on the file count itself (see `targets` for the two
       # attempts and what the checker said to each). For that job the floor has
@@ -258,12 +280,24 @@ gate:
       # headroom on `suite` is pure loss here — and that headroom is precisely
       # what let a deletion through the other floor in guard's declaration.
       #
-      # 11 is the number of integration-test binaries in `tests/`: api, ci,
+      # **THIS PROOF HAS NO `minimum` AND SO THAT NUMBER IS NOW HISTORICAL, not
+      # a threshold.** It counted 11 integration-test binaries when this file
+      # was written; `tests/` holds 13, and `scoping.rs` and
+      # `entry_point_isolation.rs` arrived without updating the sentence below.
+      # That is harmless *here* — a presence proof with no floor cannot be
+      # falsified by a stale count, which is the same accident that makes it
+      # useless — and it is exactly the accident `bin/prime`'s `across N test
+      # binaries` line had, where the number WAS printed and WAS wrong. That
+      # line is counted from `tests/*.rs` now; this sentence is kept because the
+      # reasoning below about the lib/bin/doc-test blocks is still the reason
+      # this proof is a presence proof.
+      #
+      # 11 WAS the number of integration-test binaries in `tests/`: api, ci,
       # contract, core_pin, drift, filters, kind, manifest, pin, recorded_copy,
-      # schema. It is deliberately NOT 14: the lib and bin unittests blocks and
-      # the `Doc-tests pantry` block are three more `test result:` lines, and
-      # counting them would make this floor move when nothing about the test
-      # files moved.
+      # schema. It is deliberately NOT the lib and bin unittests blocks and the
+      # `Doc-tests pantry` block — three more `test result:` lines — because
+      # counting them would make this move when nothing about the test files
+      # moved.
       #
       # NO `minimum`, and the reason is the long comment above: a floor on this
       # line is not expressible, because the line carries no count and the
