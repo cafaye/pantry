@@ -102,90 +102,128 @@ checkout and the `repository.url` origin comparison. It also means the
 
 ---
 
-## D2 — what `blockedBy` says about a directory that is not a repository yet — OPEN
+## D2 — what `blockedBy` says about a directory that is not a repository yet — RULED by the repository landing (pantry-23, 2026-10-02)
 
-**Found** 2026-09-30, the same packet.
+**Found** 2026-09-30, the same packet. **Ruled** 2026-10-02, and not by a choice
+among the three alternatives below — by the fact the question was about
+changing. Both halves of the cost came due in the same direction, and neither
+needed a fifth value.
 
-**The question.** `moon/cafaye/cafaye-py/` exists, is empty, and is not a git
-repository. MD6 (`DECISIONS.md`, the fleet file) ruled that the Python client is
-**hand-written and not generated** — hey-api's Python generator is v0.0.24 and
-emits parameterless methods with unsubstituted path templates — so the directory
-is a placeholder for planned work with a decided shape.
+### What changed
+
+`cafaye-py` is a repository. `git@github.com:cafaye/cafaye-py.git`, a
+`pyproject.toml`, a CHANGELOG, its own `gate.yml`, 948 tests, `master` at
+`5c9c15d`. It is public. It still carries **no `cafaye.yml`**, which is the only
+thing `blockedBy: no-manifest` has ever claimed.
+
+So all three costs evaporated, and each for a different reason worth keeping:
+
+| the cost as written | what happened |
+| --- | --- |
+| "`no-manifest` is a slight overstatement — the vocabulary was built for repositories, and the workspace now contains things that are not repositories yet" | The overstatement was **temporary and the thing was going to be built**. On the day the repository landed, `no-manifest` became an exact statement of its documented meaning, with no change to the row. |
+| "in CI the directory is absent, so the `no-manifest` arm is satisfied by a directory that does not exist — a **vacuous pass**" | The repository is public, so the drift job clones it. `cafaye-py` moved from `CAFAYE_UNREADABLE` to `CAFAYE_REPOS`, and the arm now asserts against real bytes on **every CI run** rather than on a developer's machine. |
+| "`CAFAYE_UNREADABLE` is carrying two different claims under one name, and its own comment has to explain which is which" | One of the two names left, and **the two that remain carry the same claim**: `cafaye-rb` and `site` are both private, both anonymous 404s. The disambiguation paragraph is gone because there is nothing left to disambiguate. |
+
+### The recommendation was (1), and (1) was right — which is the part worth having
+
+The recommendation was "(1) now, (3) when a second planned repository appears",
+with the argument for (3) being **the count**: `planned` is a vocabulary gap
+MD6's own decisions will keep opening, "Go and Rust clients are also unstarted,
+and a third empty directory is a matter of time", and the CI correction had
+shown the gap costs something outside the registry too.
+
+Two things answered that, and neither was a ruling this repository made:
+
+1. **The single instance resolved itself.** The one directory that was not a
+   repository became one, so the thing (3) existed for stopped existing.
+2. **The predicted second instance never arrived.** Measured across the whole
+   workspace for this decision: there is no `cafaye-go/`, no `cafaye-rs/`, and no
+   third empty directory. `cafaye-py` was the only one, ever — the "matter of
+   time" premise was a prediction about work that has not been scheduled.
+
+So the fifth value was never needed, and the reason is worth stating as a
+general shape rather than a coincidence: **a vocabulary gap created by a
+temporary fact closes when the fact does, and adding a value for it would have
+made the gap permanent.** A fifth `blockedBy` would have been a permanent
+addition to a vocabulary, a permanent arm in `every_exclusion_reason_is_still_true`,
+a permanent row in the `blockedBy` table, and a permanent paragraph in the
+README — all of it encoding "this repository does not exist yet" as a state the
+registry can represent, at the cost of never being able to delete it. The
+alternative — the existing value, held with a reason that said the temporary
+part was temporary — cost one row and now describes the fact exactly.
+
+The general lesson, and it is the reason the entry is kept rather than deleted:
+**prefer the value whose meaning does not depend on the thing being temporary.**
+`no-manifest` means "no `cafaye.yml` on master", which was true before the
+repository existed and is true after it. `planned` would have meant "no
+repository exists", which was true once and is now false forever.
+
+### The reasoning, kept
+
+**The question, as found.** `moon/cafaye/cafaye-py/` existed, was empty, and was
+not a git repository. MD6 (`DECISIONS.md`, the fleet file) ruled that the Python
+client is **hand-written and not generated** — hey-api's Python generator is
+v0.0.24 and emits parameterless methods with unsubstituted path templates — so
+the directory was a placeholder for planned work with a decided shape.
 
 pantry-06's brief offered three answers: remove it, leave it with an explained
 exclusion, or something else justifiable. **What it did: left it, and gave it an
 `excluded` row with `blockedBy: no-manifest`**, and strengthened the workspace
-walk so the directory cannot be invisible again.
+walk so the directory could not be invisible again.
 
-**The cost, stated plainly.** `no-manifest` is documented as *"the repository
-carries no `cafaye.yml` on master yet"* — and there is no repository. The row's
-own value is therefore a slight overstatement of the fact, in the same way
-`cafaye-ts`'s `cli` is a slight overstatement of its fact in D1, and for the same
-underlying reason: **the vocabulary was built for repositories, and the workspace
-now contains things that are not repositories yet.**
+**pantry-06 got the CI half wrong first, and the tripwire corrected it.** The row
+was written with `cafaye-py` deliberately absent from `CAFAYE_UNREADABLE`, on the
+reasoning that the list is a claim about what the runner cannot *read* and a
+repository nobody has written cannot be read by anyone. Then
+`the_drift_job_clones_every_repository_pantry_curates` refused the whole
+registration: a curated name the job neither clones nor declares unreadable is a
+claim no drift test can check, and cloning it would have failed the job's clone
+step on a 404 — the same 404 as `cafaye-rb`'s, for the opposite reason. So it was
+declared, with the difference spelled out beside the list. That correction is
+what made the list mean two things, and the list meaning two things is what
+would have been the argument for (3).
 
-There is a second cost, and it is a real coverage gap that a green badge would
-hide. In CI the `workspace-drift` job clones repositories; `cafaye-py` is not one,
-so the directory is absent and `every_exclusion_reason_is_still_true`'s
-`no-manifest` arm — "the file is not there" — is satisfied by a directory that
-does not exist. That is a **vacuous pass**, and it is named as one in the row and
-in `README.md` rather than being left to be inferred.
+**The three alternatives, and what each would have cost.**
 
-**This packet got the second half wrong first, and the tripwire corrected it.**
-The row was written with `cafaye-py` deliberately absent from
-`CAFAYE_UNREADABLE`, on the reasoning that the list is a claim about what the
-runner cannot *read* and a repository nobody has written cannot be read by
-anyone. Then `the_drift_job_clones_every_repository_pantry_curates` refused the
-whole registration: a curated name the job neither clones nor declares unreadable
-is a claim no drift test can check, and cloning it would fail the job's clone step
-on a 404 — the same 404 as `cafaye-rb`'s, for the opposite reason. So it is now
-declared, with the difference spelled out beside the list.
-
-That correction is the **second half of the argument for a `planned` value**, and
-it is stronger than the first half. `CAFAYE_UNREADABLE` is now carrying two
-different claims — *the runner has no credential for this* and *there is nothing
-here to clone* — under one name, and its own comment has to explain which is
-which for each entry. A list whose entries mean different things is a list whose
-entries eventually mean neither. `blockedBy` already has the same problem one
-level up: `no-manifest` on a directory that is not yet a repository.
-
-**Alternatives.**
-
-1. **What pantry-06 did:** `blockedBy: no-manifest` on a directory that is not
-   yet a repository, plus a workspace walk that sees every non-hidden,
-   non-worktree directory. The row is a live tripwire — the day a
-   `cafaye.yml` appears there, `tests/schema.rs` fails with *"now carries a
-   cafaye.yml — register it or change this row's blockedBy and say why it is
-   still held back"* — and the walk means no future version of the test can
-   step over it.
-2. **Remove the directory.** It is empty, so nothing is lost — and nothing is
-   *recorded*, which is the problem. An empty directory is not tracked by git, so
+1. **What pantry-06 did:** `blockedBy: no-manifest` plus a workspace walk that
+   sees every non-hidden, non-worktree directory. The row was a live tripwire
+   throughout — the day a `cafaye.yml` appears in a written repository,
+   `tests/schema.rs` fails with *"now carries a cafaye.yml — register it or change
+   this row's blockedBy and say why it is still held back"* — and it is still
+   live, now against a real checkout. **This is what shipped.**
+2. **Remove the directory.** It was empty, so nothing is lost — and nothing is
+   *recorded*, which was the problem. An empty directory is not tracked by git, so
    the deletion is unreviewable: a reviewer sees a commit whose entire content is
-   a CHANGELOG sentence about something git cannot show them. It also removes
-   MD6's Python decision from the filesystem, and `AGENTS.md` says not to touch
-   anything outside the worktree besides reading it.
-3. **A fifth `blockedBy` value** — `planned`, say: a known cafaye repository that
-   does not exist yet, with the decision that shapes it named in the reason. This
-   is the honest vocabulary, and it is the same move MD2 made with `library`
-   rather than teaching the drift test that documentation sites are exempt. It
-   costs a fifth value for one row, and a fifth value is a precedent — but it
-   would also give `CAFAYE_UNREADABLE` its honest name back, because a `planned`
-   row would not be a coverage claim the runner has to answer for.
+   a CHANGELOG sentence about something git cannot show them. It would also have
+   removed MD6's Python decision from the filesystem, and `AGENTS.md` says not to
+   touch anything outside the worktree besides reading it. **Moot**: the directory
+   is a repository now and removing it is not this repository's call.
+3. **A fifth `blockedBy` value** — `planned`: a known cafaye repository that does
+   not exist yet, with the decision that shapes it named in the reason. The same
+   move MD2 made with `library` rather than teaching the drift test that
+   documentation sites are exempt. **Rejected, and the cost is quoted here so the
+   next reader does not re-derive it:** one variant in `src/registry.rs`, one arm
+   in `every_exclusion_reason_is_still_true`, the `blockedBy` table in
+   `registry/index.yml`, the README section that explains it, and the value's
+   meaning in `openapi/v1.yaml` if it is ever published — which it is not today,
+   because `blockedBy` is pantry-internal.
 
-**Recommended: (1) now, (3) when a second planned repository appears.** (1) is
-correct for a single row and its tripwire is real. The argument for (3) is the
-count: `planned` is a vocabulary gap that MD6's own decisions will keep opening —
-Go and Rust clients are also unstarted, and a third empty directory is a matter
-of time — and the CI correction above has now shown the gap costs something
-outside the registry as well. One value per decision, and the first value to
-arrive is not this row.
+### What a reader should check, and what would reopen this
 
-**Cost of flipping to (2):** one `rmdir` outside this worktree, one CHANGELOG
-line, and a tripwire that no longer exists. **Cost of flipping to (3):** one
-variant in `src/registry.rs`, one arm in `every_exclusion_reason_is_still_true`,
-the `blockedBy` table in `registry/index.yml`, the README section that explains
-it, and the value's meaning in `openapi/v1.yaml` if it is ever published — which
-it is not today, because `blockedBy` is pantry-internal.
+Nothing here needs re-deciding, and the two things that would make this entry
+wrong again are both specific:
+
+* **A second empty directory appears in the workspace.** Then (3)'s count
+  argument is live for the first time and the question is real rather than
+  hypothetical. The test to run is the workspace walk: it names any
+  non-hidden, non-worktree directory the registry curates in neither direction,
+  and that failure is the signal. As of 2026-10-02 there is no such directory and
+  no `cafaye-go/` or `cafaye-rs/`.
+* **A `cafaye.yml` appears in `cafaye-py/`.** Then this row's tripwire fires
+  with "register it", and the real question becomes D1's: a Python client
+  declares no contract surface, so it is the same shape as `cafaye-ts` and
+  `cafaye-rb`, and `?kind=cli` currently answers for one of the three and
+  `blockedBy: library` for another. Read D1 before answering it.
 
 ---
 

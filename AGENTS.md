@@ -277,10 +277,34 @@ One coverage gap came with it and is named in three files rather than papered
 over: `cafaye-rb` is a **private** repository, so the CI job cannot clone it and
 that row's reason is verified by a developer's run of `tests/schema.rs` rather
 than on every CI run. See `CAFAYE_UNREADABLE` in `.github/workflows/ci.yml` and
-`an_unreadable_repository_is_neither_cloned_nor_registered` in `tests/ci.rs`.
-`cafaye-py's` row (pantry-06) has the same shape of gap for a different reason —
-there is no repository to clone, so CI satisfies "the manifest is absent" with a
-directory that does not exist. That one is `DECISIONS.md` D2.
+`an_unreadable_repository_is_neither_cloned_nor_registered` in `tests/ci.rs`. It
+has company — `site` is private too — and the two entries now carry **one**
+claim between them, which is what pantry-23 fixed and what D2 needed.
+
+The third gap, `cafaye-py`, is the one that closed, and it closed the other way:
+its row was `no-manifest` on a directory that was not a repository, so CI
+satisfied "the manifest is absent" with a directory that did not exist — the
+vacuous pass `DECISIONS.md` D2 was about. That repository has since been
+written, it is public, and the row is now checked on every CI run. D2 is
+**RULED** on 2026-10-02, by the repository landing rather than by a decision.
+
+**A manifest is the record of its own visibility, and a rename is not a
+publication.** `site` is `parlor` renamed, `parlor` is public, and `site` is
+private — so "a fork of a public template is public" is a reasonable inference
+and a wrong one. pantry-23 made it, put `site` in `CAFAYE_REPOS`, and would have
+taken the drift job's clone step down under `set -euo pipefail`. The check that
+would have caught it is one `git ls-remote`, and the record that answers it is
+the manifest's own `repository:` block.
+
+The lesson D2's ruling leaves behind is the one worth carrying, and it is a
+general shape rather than a coincidence: **prefer the `blockedBy` value whose
+meaning does not depend on the thing being temporary.** `no-manifest` means "no
+`cafaye.yml` on master", which was true before the repository existed and is
+true after it. The fifth value D2 considered — `planned`, meaning "no repository
+exists" — would have been true once, false forever, and would have cost a
+variant in `src/registry.rs`, an arm in `every_exclusion_reason_is_still_true`,
+a row in the table, a README section and a published meaning in `openapi/v1.yaml`,
+none of which could ever be deleted.
 
 **D29 — the fixture pin's schema clause checks validity, not byte-identity.**
 A pantry decision rather than an MD one (its reasoning is `DECISIONS.md` D29,
