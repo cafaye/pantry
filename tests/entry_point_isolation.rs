@@ -28,12 +28,16 @@
 //! why at length. The boundary that *is* real is **the registry, and nothing
 //! outside it**, and the names below are chosen to attack exactly that:
 //!
-//! * **The six excluded repositories** — `core`, `docs`, `cafaye-rb`, `cafaye-py`,
-//!   `parlor`, `kit`. These are real cafaye repositories, four of which carry a
-//!   valid `cafaye.yml`, and they are held back with a stated reason. A registry
-//!   that answered for one of them would be publishing a service the platform
-//!   cannot start. This is the closest thing to "account B's data" that exists
-//!   in this repository, and it is the set most worth pinning.
+//! * **The seven excluded repositories** — `core`, `docs`, `cafaye-rb`,
+//!   `cafaye-py`, `parlor`, `site`, `kit`. These are real cafaye repositories,
+//!   three of which carry a valid `cafaye.yml` (`core`, `docs`, `cafaye-rb`) and
+//!   two more of which carry one that does not parse (`parlor`, `site`), and they
+//!   are held back with a stated reason. A registry that answered for one of
+//!   them would be publishing a service the platform cannot start. This is the
+//!   closest thing to "account B's data" that exists in this repository, and it
+//!   is the set most worth pinning. `site` is `parlor` renamed, so the two rows
+//!   describe one repository under two names — which is why this list is read
+//!   from the index rather than written here.
 //! * **Path shapes** — `..`, `../courier`, `%2e%2e%2fetc%2fpasswd`. The `{name}`
 //!   segment is the only free text a caller controls, and these are the values
 //!   that would read a file if it reached a `Path::join`.
@@ -46,7 +50,7 @@
 //! | entry point                              | op      | negative cases |
 //! | ---------------------------------------- | ------- | -------------- |
 //! | `GET /v1/services`                       | list    | 19            |
-//! | `GET /v1/services/{name}`                | read    | 45            |
+//! | `GET /v1/services/{name}`                | read    | 46            |
 //! | `GET /healthz`                           | probe   | 6             |
 //! | `GET /readyz`                            | probe   | 6             |
 //! | fallback (`not_found`)                   | —       | 8             |
@@ -59,13 +63,23 @@
 //! write verbs against all four registered paths, 16 requests, and requires every
 //! one to be 405 in the core envelope.
 //!
-//! **The one count here that is deliberately not pinned** is the size of the
-//! on-disk probe set in `the_only_names_that_answer_two_hundred_are_the_registered_ones`.
-//! It is floored instead, and the reason is worth recording: an exact count there
-//! went red when this packet added its own report file, which turned a **reach**
-//! guard into a tripwire on the repository's file count. Adding a file is not a
-//! defect, and a number that goes red for that reason teaches people to bump it
-//! rather than read it.
+//! **The counts here that are deliberately not pinned** are the sizes of the two
+//! sets this file *derives* — the on-disk probe set in
+//! `the_only_names_that_answer_two_hundred_are_the_registered_ones` and the
+//! exclusion record in `excluded_names`. Both are floored or checked for
+//! contradictions instead, and the reason is worth recording: an exact count on
+//! the first went red when this packet added its own report file, which turned a
+//! **reach** guard into a tripwire on the repository's file count, and the second
+//! went red in pantry-23 when `site` became a seventh excluded repository.
+//! Neither was a defect — a new file is not a defect and a new curation row is
+//! not a defect — and a number that goes red for that reason teaches people to
+//! bump it rather than read it. Both sets are read from the index or the
+//! filesystem, so growing correctly needs no edit here at all.
+//!
+//! The one count that IS pinned is the number of negative **names** each entry
+//! point is probed with, and it is pinned for the opposite reason: it is a
+//! number a reader checks against the table above, so a class added without
+//! updating the table should go red.
 
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderName, Request, StatusCode, header};
@@ -78,26 +92,63 @@ use tower::ServiceExt as _;
 /// one by a request. Every negative is measured against the shape of this.
 const NEVER_EXISTED: &str = "zz-no-such-service-9f3a";
 
-/// The six repositories `registry/index.yml` holds back, with a stated reason.
+/// The repositories `registry/index.yml` holds back, with a stated reason.
 ///
 /// Read from the index rather than written here, so a row added to the
 /// exclusion record is a new name this file immediately probes. A curation list
 /// that grows is a curation list whose held-back entries need a test.
+///
+/// # The count that was here, and why it is gone
+///
+/// This function used to end `assert_eq!(names.len(), 6, …)`, and pantry-23
+/// removed it. The trigger was ordinary: `site` became a seventh excluded
+/// repository and the number went red. What is worth recording is that the
+/// number could only ever go red for that reason.
+///
+/// `names` is read out of the index three lines above the assertion, so "a new
+/// row is a new probe" — the thing the failure message said it was protecting —
+/// is true by construction and needs no number to defend it. What the number
+/// actually watched was the size of a data file, and this file's module header
+/// had already ruled that shape of assertion out on the sibling count, for
+/// exactly the reason it applies here: *"a number that goes red because a file
+/// grew teaches people to bump it rather than read it."* A curation row is not
+/// a defect.
+///
+/// The two invariants a reader might expect to find in its place are NOT
+/// reimplemented here, because both are already checked and reimplementing them
+/// would be a duplicate that reads like coverage:
+///   * no excluded name is also a registered one —
+///     `tests/schema.rs::a_registered_service_is_never_also_excluded`;
+///   * the record is not empty — `tests/schema.rs::every_exclusion_reason_is_
+///     still_true`, and the `!index.excluded.is_empty()` assert at its head.
+///
+/// What is left is the one vacuity risk that is LOCAL to this file and that
+/// neither of those covers: the `excluded` arm of the probe loop below
+/// contributes zero cases if this returns nothing, and the `probed` count it
+/// feeds is a written-down number somebody can bump to match. A hardcoded total
+/// plus an empty source is a suite that verifies nothing and reports 46.
 fn excluded_names() -> Vec<String> {
     let dir = registry_dir();
     let text = std::fs::read_to_string(dir.join("index.yml")).expect("registry/index.yml reads");
     let index: pantry::registry::RegistryIndex =
         serde_yaml::from_str(&text).expect("registry/index.yml parses");
     let names: Vec<String> = index.excluded.iter().map(|row| row.name.clone()).collect();
-    assert_eq!(
-        names.len(),
-        6,
-        "the exclusion record holds {} names ({names:?}), not 6. Every one of them is a name this \
-         file probes for absence, and a new row is a new probe.",
-        names.len()
+
+    assert!(
+        !names.is_empty(),
+        "registry/index.yml held back no repositories, so the `excluded` arm of the probe loop \
+         below contributed zero cases and the {PROBED} negative names this file claims to send \
+         were all near-misses and path shapes. Every probe in this file still passed, which is the \
+         point: this suite reports on shape, and a missing CLASS is invisible to a shape check."
     );
+
     names
 }
+
+/// The number of negative names `read_a_name_that_is_not_a_registry_entry…`
+/// sends. Named so the vacuity assertion above can say what the total would have
+/// been, rather than leaving a reader to count.
+const PROBED: usize = 46;
 
 struct Response {
     status: StatusCode,
@@ -210,7 +261,7 @@ async fn baseline_for_a_missing_name() -> (String, String) {
 
 // ================================================================ read: 1 entry point
 
-/// `GET /v1/services/{name}` — 45 negative names, one shape.
+/// `GET /v1/services/{name}` — 46 negative names, one shape.
 #[tokio::test]
 async fn read_a_name_that_is_not_a_registry_entry_answers_exactly_as_one_that_never_existed() {
     let (baseline, _) = baseline_for_a_missing_name().await;
@@ -310,9 +361,9 @@ async fn read_a_name_that_is_not_a_registry_entry_answers_exactly_as_one_that_ne
     }
 
     assert_eq!(
-        probed, 45,
-        "this test probes {probed} negative names, not 45. Update the count in the module header \
-         when a class is added or removed — it is the number a reader checks."
+        probed, PROBED,
+        "this test probes {probed} negative names, not {PROBED}. Update the count in the module \
+         header when a class is added or removed — it is the number a reader checks."
     );
 }
 
@@ -386,7 +437,7 @@ async fn the_only_names_that_answer_two_hundred_are_the_registered_ones() {
     // What is still asserted is that the set is real work: a walk that returned
     // nothing, or stopped finding the held-back repositories, would make every
     // assertion above vacuous. So the floor is on the root's own entries and the
-    // six held-back names must be *in* the set, not merely counted.
+    // held-back names must be *in* the set, not merely counted.
     let excluded = excluded_names();
     let from_root = present.len()
         - excluded
