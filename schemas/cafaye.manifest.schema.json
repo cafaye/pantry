@@ -2,11 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cafaye.com/schemas/cafaye.manifest.schema.json",
   "title": "cafaye service manifest",
-  "description": "Schema for cafaye.yml, the per-service manifest every cafaye repository carries. A manifest is the one place that declares a service's identity, its core spec constraint, the contract surface it exposes and consumes, and who owns it. Cross-field rules that JSON Schema cannot express (a published event type must be prefixed by the publishing service; a service never consumes its own events; a consumed type must exist in the core catalog; exposes.api is required for any service that serves traffic) are documented in docs/manifest-conventions.md and enforced by tests/test_specs.py.",
+  "description": "Schema for cafaye.yml, the per-service manifest every cafaye repository carries. A manifest is the one place that declares what a thing IS (service or template), its identity, its core spec constraint, the contract surface it exposes and consumes, where each dependency runs per environment, and who owns it. Cross-field rules that JSON Schema cannot express (a published event type must be prefixed by the publishing service; a service never consumes its own events; a consumed type must exist in the core catalog; exposes.api is required for any service that serves traffic; a template declares no events and names a generator instead) are documented in docs/manifest-conventions.md and enforced by tests/test_specs.py.",
   "type": "object",
   "additionalProperties": false,
   "required": ["name", "language", "core", "repository", "owner"],
   "properties": {
+    "kind": {
+      "description": "What this entry IS. `service` is a running thing that is resolved, deployed and called. `template` is a thing consumed at GENERATE time: `caf init` renders it and the caller owns the output, so it is versioned and pinned in a registry exactly like a service but is never a running process. Defaults to `service`, so an existing manifest that omits it means what it always meant. A template declares no events and no api, because it has no runtime contract to break.",
+      "enum": ["service", "template"],
+      "default": "service"
+    },
     "name": {
       "$ref": "#/$defs/serviceName",
       "description": "The cafaye namespace name. Also the repository name and the value used as the event envelope `source`."
@@ -25,9 +30,17 @@
       "$ref": "#/$defs/semverRange",
       "description": "Constraint on the core spec version this service was written against, e.g. ^0.1.0. Service CI pins core to a release inside this range."
     },
+    "environments": {
+      "type": "object",
+      "description": "Where each dependency runs, per environment. This is the ONLY place self-host-vs-hosted is expressed, and it is a declaration of intent rather than a runtime flag: one manifest says it once, and `caf dev`, `caf deploy` and CI all read the same answer. The `default` environment applies wherever no named environment matches, so a single-environment project needs no block at all. An absent dependency is self-hosted, because the default posture of the platform is that you own what you declare.",
+      "additionalProperties": { "$ref": "#/$defs/environmentResolution" },
+      "properties": {
+        "default": { "$ref": "#/$defs/environmentResolution" }
+      }
+    },
     "exposes": {
       "type": "object",
-      "description": "The contract surface this service publishes. Omit entirely for libraries and specification-only repositories; a service that serves or receives traffic must declare at least one of api/events.",
+      "description": "The contract surface this service publishes. Omit entirely for libraries, specification-only repositories and templates; a service that serves or receives traffic must declare at least one of api/events.",
       "additionalProperties": false,
       "minProperties": 1,
       "properties": {
@@ -65,6 +78,15 @@
       "minLength": 2,
       "maxLength": 40,
       "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+    },
+    "provisioning": {
+      "description": "WHERE a dependency runs. `self-hosted` means the caller runs it, in their own compose, on their own machines, with no cafaye account involved. `hosted` means cafaye runs it and the caller consumes it over the network. This is the switch your ethos names — build once, deploy once, use everywhere — and it is declared once, per environment, rather than being discovered at runtime.",
+      "enum": ["self-hosted", "hosted"]
+    },
+    "environmentResolution": {
+      "type": "object",
+      "description": "Where each of this service's dependencies runs in one environment. Every key is a dependency from `dependencies`; an omitted dependency is self-hosted.",
+      "additionalProperties": { "$ref": "#/$defs/provisioning" }
     },
     "eventType": {
       "type": "string",
