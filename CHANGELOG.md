@@ -9,6 +9,87 @@ bottom.
 
 ### Added
 
+- **Tenant isolation: the enumeration of every entry point that reaches
+  registered data, and a negative case for each.** `tests/scoping.rs` (new, 14
+  tests) and `tests/entry_point_isolation.rs` (new, 11 tests), from the
+  cross-tenant negative-test packet. No behaviour changes; nothing in `src/`
+  moved.
+
+  **The packet's premise does not hold in this repository, and that is the
+  finding.** pantry has no accounts, no database and no write surface:
+  `account` / `tenant` / `owner` / `org_id` / `user_id` / `customer` across
+  `src/` return exactly one hit — `Manifest::owner`, the accountable *team* on a
+  `cafaye.yml`, which core's schema defines and which no query filters on;
+  `ROUTES` is four `get`s with no `post` / `put` / `patch` / `delete` anywhere
+  in `src/`; and the registry is YAML read once at startup. So D18's
+  `pantry 0` cross-tenant negative tests is a **correct measurement of a
+  property, not a gap in coverage**, and what is worth recording is the
+  boundary that *is* real: **the registry, and nothing outside it**.
+
+  Two ways to cross that boundary, both pinned. **Reach** — the `{name}` path
+  segment is the only free text a caller controls, and
+  `a_service_name_reaches_a_string_comparison_and_never_a_path` requires it to
+  reach nothing but a string comparison. **Existence as an oracle** — every
+  negative asserts the status is not 401, 403 or 405, and that the response
+  *shape* (`status`, `type`, `title`, `code`, content type) is byte-identical to
+  the answer for a name that has never existed. A 405 that differed between a
+  registered name and an unregistered one would be the same oracle as a 403.
+
+  Counts, each asserted by a named test and checkable against the source:
+
+  | set                                                     | count |
+  | ------------------------------------------------------- | ----- |
+  | `pub fn` / `pub async fn` in `src/`                     | 58    |
+  | HTTP entry points a request can reach (4 routes + 2 fallbacks) | 6 |
+  | registry data entry points (`registry.rs` + `filter.rs`) | 23 |
+  | of those, ones a request can change                     | 8     |
+  | routes registered with a verb other than `get`          | 0     |
+  | write primitives in `src/`                              | 0     |
+  | 403 / `forbidden` / `unauthorized` in `src/`            | 0     |
+
+  Per operation: **read** 1 entry point / 45 negative names, **list** 1 / 19
+  negative parameters plus 6 empty-match filters, **update** **0 entry points**
+  / 16 verb-path pairs all 405, **delete** **0** / the same 16. update and
+  delete are at zero and that is asserted, not assumed:
+  `every_write_verb_on_every_registered_path_is_405_and_never_a_success` sweeps
+  POST / PUT / PATCH / DELETE against all four registered paths and requires no
+  2xx.
+
+  **The names that carry the weight are the six repositories
+  `registry/index.yml` holds back** — `core`, `docs`, `cafaye-rb`, `cafaye-py`,
+  `parlor`, `kit`, four of which carry a valid `cafaye.yml`. They are read from
+  the index rather than written into the test, so a new exclusion row is a new
+  probe. A registry answering for one of them would be publishing a service the
+  platform cannot start. Alongside them: eleven **scope-shaped query parameters**
+  (`?account_id=`, `?tenant=`, `?org_id=`, `?owner=`, `?scope=`, …) which are
+  refused 400 with a shape byte-identical to a mistyped parameter, and eight
+  **scope-shaped headers** which leave the list and the read body byte-identical.
+  A caller cannot tell a parameter pantry recognises-but-refuses from one it has
+  never heard of, and no header can narrow a response.
+
+  Two tripwires for the next packet rather than this one:
+  `nothing_reads_an_authorization_header_or_a_credential` and
+  `the_only_environment_variables_the_service_reads_are_the_two_named`. A tenant
+  boundary cannot arrive in pantry unasked.
+
+  **One of these tests was caught failing rather than asserted.** The mutation
+  that proved it: a new `Problem::forbidden` plus an
+  `if name.contains("tenant")` guard in `get_service` — the plausible three-line
+  version of "add a tenant boundary". `tests/scoping.rs` caught it twice; the
+  behavioural file caught **nothing**, because all 36 of its read negatives were
+  near misses on real service names and path shapes and not one contained the
+  substring the guard looked for. Nine scope-shaped names were added (36 → 45)
+  and the same mutation is now red. The lesson is in the file: a negative set
+  has to contain the shapes of the **mistake**, not only the shapes of the
+  attack.
+
+  **No 403 was found**, so nothing in `src/` changed. The one existence oracle
+  pantry does have — a registered name answering 200 and an unregistered one 404
+  — is **deliberate and now recorded as such** in
+  `the_registry_is_public_and_serving_two_hundred_is_deliberate`: the registry
+  is public curated data, every caller is served all of it, and if it ever stops
+  being public that test is the line that has to change.
+
 - **`recordedAt`: every registry copy now records the commit it was taken from,
   and the copy is verified against that commit rather than the sibling checkout's
   working tree.** `registry/index.yml` gains `recordedAt` per service, and
