@@ -43,21 +43,21 @@ services:
     kind: api
     basePath: /v1
     # The commit of identity's own repository this copy was taken from.
-    recordedAt: 26723b6ad3021af9b7f86ab5e2f01d9db576156c
+    recordedAt: 793977bef9728eeeb37fc1c450c935f17bc2e63b
 
   # billing serves HTTP; `consumes: []`, so `kind: api` and not `both`.
   billing:
     kind: api
     basePath: /v1
     # The commit of billing's own repository this copy was taken from.
-    recordedAt: 80538f583e0687a695cba874a30f5c2381d4c358
+    recordedAt: 72519931c18773aacd66ff8dd942a209af10761e
 
   # muse serves HTTP; `consumes: []`, so `kind: api`.
   muse:
     kind: api
     basePath: /v1
     # The commit of muse's own repository this copy was taken from.
-    recordedAt: e3f53b08e080efc0b284537981bb1e4301577bd2
+    recordedAt: 53b6ebb1947eeb1ff90a4cfaff75897f358dc2e9
 
   # darkroom serves HTTP; its manifest declares no `consumes`, so `kind: api`.
   # basePath: /v1, from the same derivation as the three above — every path in
@@ -67,7 +67,7 @@ services:
     kind: api
     basePath: /v1
     # The commit of darkroom's own repository this copy was taken from.
-    recordedAt: d1184bc3674f0540694c308dfac5a02bb3c7c475
+    recordedAt: fdb3455b2737bbbb0b978a75171ab5576f91d202
 
   # courier serves HTTP; `consumes: []`, so `kind: api` and not `both` — even
   # though it publishes five events. Publishing is not subscribing, and the
@@ -107,7 +107,7 @@ services:
     kind: api
     basePath: /v1
     # The commit of courier's own repository this copy was taken from.
-    recordedAt: 73c9034404759ac0e2cac0cf2bfaa9254dfef53e
+    recordedAt: 467cd3efb849a339b3dae9eadb3c6b9882fbc1b9
 
   # pantry is in its own registry, which is the point: a service registry that
   # cannot describe the registry is a registry `caf dev` has to special-case.
@@ -119,7 +119,7 @@ services:
     kind: api
     basePath: /v1
     # The commit of pantry's own repository this copy was taken from.
-    recordedAt: 137a6787d70e9e4013cc77e9389dab1735f02557
+    recordedAt: f009b8e2a968f5b1179bb40ca95270033986b6e3
 
   # guard serves HTTP and its own manifest records the gap: it declares no
   # `exposes` at all because its OpenAPI document has not been written (see the
@@ -136,7 +136,7 @@ services:
     kind: api
     basePath: null
     # The commit of guard's own repository this copy was taken from.
-    recordedAt: 98182a19af4617fa3632835bc3dde87bec56a029
+    recordedAt: c1b328ea2ddbdd99afd556464a04b416e0818a34
 
   # caf is the platform CLI, and it is registered because it now declares a
   # valid manifest in core's own contract language — not because something
@@ -196,7 +196,7 @@ services:
     kind: cli
     basePath: null
     # The commit of caf's own repository this copy was taken from.
-    recordedAt: 6ed240284a09bf285d6a43f7f1f38c12dcc8623a
+    recordedAt: 20a616853e1840c5f3b6fe3aa3a4c23106462d69
 
   # cafaye-ts is the fleet's TypeScript client, and it is the entry most likely
   # to be filed wrongly in either direction, so this row is long.
@@ -359,13 +359,72 @@ services:
 excluded:
   - name: parlor
     blockedBy: schema
+    # REWRITTEN BY pantry-22, and the rewrite is the point of the row: this
+    # reason was a lie before it and nothing could see it. It said "still the
+    # pre-core draft shape — `apiVersion: cafaye/v0-draft` with `metadata`/`spec`
+    # instead of `name`/`language`/`core`/`repository`/`owner`", and parlor's file
+    # has carried all five of those keys for several packets — it is a core-0.2
+    # manifest in everything but the YAML. `blockedBy: schema` stayed true
+    # through the rewrite, so the tripwire never fired, which is the shape of
+    # failure this file's own header warns about: "a green run is not a reason to
+    # believe this list". See the header's WHAT A GREEN RUN DOES NOT TELL YOU.
     reason: >-
-      Still the pre-core draft shape — `apiVersion: cafaye/v0-draft` with
-      `metadata`/`spec` instead of `name`/`language`/`core`/`repository`/
-      `owner`. It is an app shell, not a platform service, and its file names
-      the reconciliation as outstanding.
+      The manifest does not parse. `description` on line 21 is an unquoted YAML
+      scalar containing a colon-space — "The cafaye web app: App Router shell,
+      …" — so the document stops being a mapping there, and neither `caf
+      contract lint` nor pantry's own validator can read a manifest to validate.
+      Note what this row is NOT saying any more, because the sentence it used to
+      carry was false: the file is no longer "the pre-core draft shape", and
+      `name`, `language`, `core`, `repository` and `owner` are all present. The
+      check that holds it back is one syntax error, and the row now says that
+      rather than the shape of the document.
     verify: "cd ../caf && go run ./cmd/caf contract lint ../parlor/cafaye.yml"
-    lint: 'INVALID ../parlor/cafaye.yml: is missing required fields ["name", "language", "core", "repository", "owner"]'
+    lint: 'INVALID ../parlor/cafaye.yml: invalid YAML: [21:14] mapping value is not allowed in this context'
+
+  # `site` is a clone of `parlor` that appeared in the workspace on 2026-10-02
+  # with `origin` at git@github.com:cafaye/site.git and its manifest still
+  # declaring `name: parlor` and `repository.url: git@github.com:cafaye/parlor.git`.
+  #
+  # The row exists because pantry's gate says three times over that a repository
+  # carrying a cafaye.yml must be registered or given a reason, and the three
+  # tests that say so forbid the only cheap answer — a list of tolerated directory
+  # names — in terms. So this is the honest state of it, and `blockedBy: schema`
+  # is a measured fact rather than a guess: `site/cafaye.yml` is byte-identical to
+  # `parlor/cafaye.yml` at the same commit (33d32e0), so it carries the same
+  # line-21 YAML error and the same verdict.
+  #
+  # > DECISION NEEDED (pantry-22): pantry cannot say whether `site` is `parlor`
+  # > renamed, a fork of it, or a different repository that happens to have been
+  # > cloned from it, because the only two things that would settle it disagree —
+  # > the checkout's remote names `cafaye/site` and the manifest names
+  # > `cafaye/parlor`. Whichever way it goes, the answer belongs to the packet that
+  # > owns the rename and not to this one, which does not own either repository.
+  # > Alternatives: (a) delete this row and the `parlor` row when the rename
+  # > lands, and register the result if its manifest validates — the manifest
+  # > declares no `exposes`, so that registration would need a curated `kind`,
+  # > which is the same gap `guard`'s row and DECISIONS.md D1 already name; (b)
+  # > leave both rows, which is what this file does, and re-read both when the
+  # > manifest stops being a syntax error — the moment it parses, this row's
+  # > tripwire fires with "register it" and names the kind the manifest then
+  # > derives.
+  # > Recommended: (b) until the rename has landed, then (a). The cost of holding
+  # > this row is that two rows briefly describe one manifest; the cost of not
+  # > holding it is a registry with no opinion about a repository in its own
+  # > workspace, which is the defect the three tests exist to prevent.
+  - name: site
+    blockedBy: schema
+    reason: >-
+      A clone of parlor at the same commit, whose checkout remote is
+      git@github.com:cafaye/site.git while its manifest still declares
+      `name: parlor` and `git@github.com:cafaye/parlor.git`. Held back by the same
+      check that holds `parlor` back and for the same measured reason: the file is
+      byte-identical to parlor's, so its `description` on line 21 is an unquoted
+      scalar with a colon-space in it and the document does not parse. This row
+      exists so the registry has an opinion about a repository in the workspace
+      rather than none; it is expected to be deleted or replaced by whichever
+      packet lands the rename, and it resolves nothing about it.
+    verify: "cd ../caf && go run ./cmd/caf contract lint ../site/cafaye.yml"
+    lint: 'INVALID ../site/cafaye.yml: invalid YAML: [21:14] mapping value is not allowed in this context'
 
   - name: kit
     blockedBy: no-manifest
@@ -386,7 +445,13 @@ excluded:
       whose language is `spec`, which is what keeps this row honest if someone
       copies a manifest into registry/services/.
     verify: "cd ../caf && go run ./cmd/caf contract lint ../core/cafaye.yml"
-    lint: "OK ../core/cafaye.yml — valid, and deliberately not a service"
+    # `lint` is the verify command's output, verbatim, and nothing more. caf's
+    # contract lint prints `OK <path>` and stops — the "— valid, and
+    # deliberately not a service" suffix three rows here used to carry was this
+    # file's own annotation dressed as recorded output, and pantry-22 removed it
+    # because the sentence is already the row's `blockedBy` and its `reason`.
+    # A field that claims to be a transcript has to be a transcript.
+    lint: "OK ../core/cafaye.yml"
 
   # --- `library`: valid, and not something anyone brings up -----------------
   #
@@ -428,7 +493,7 @@ excluded:
       question and stays open in that repository — this row is not a judgement
       about it, and does not resolve it.
     verify: "cd ../caf && go run ./cmd/caf contract lint ../docs/cafaye.yml"
-    lint: "OK ../docs/cafaye.yml — valid, and deliberately not a service"
+    lint: "OK ../docs/cafaye.yml"
 
   - name: cafaye-rb
     blockedBy: library
@@ -446,7 +511,7 @@ excluded:
       it and this row's reason is verified by a developer's run of
       tests/schema.rs rather than on every CI run — see .github/workflows/ci.yml.
     verify: "cd ../caf && go run ./cmd/caf contract lint ../cafaye-rb/cafaye.yml"
-    lint: "OK ../cafaye-rb/cafaye.yml — valid, and deliberately not a service"
+    lint: "OK ../cafaye-rb/cafaye.yml"
 
   # --- a directory, not yet a repository ------------------------------------
   #
