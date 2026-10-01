@@ -464,3 +464,78 @@ commit — **D26**. This ruling made the *tests* independent of the fleet; D26 i
 what makes the *ref* independent of whoever last ran `git fetch`. They are the
 same class of defect and were found the same afternoon, which is the argument for
 doing D26 next rather than later.
+
+---
+
+## D28 — two workers answered the observability packet and only one can land — RULED (manager, 2026-10-01)
+
+**What happened.** The observability packet was dispatched twice. Both workers
+returned research reports with the same headline and neither implemented
+anything:
+
+| branch | base | ships | report |
+|---|---|---|---|
+| `worker/pantry-07` (`d5608ee`) | `63f0b83` | `bin/fleet-telemetry` (240 lines) | 941 lines |
+| `worker/pantry-07-observability` (`e0c83e7`) | `92ca41e` | `scripts/redaction_canary.py` (263 lines) | 1019 lines |
+
+Neither is an ancestor of the other, they share a filename for the report, and
+both answer the same three questions. This is the shape D16 is about one level
+up: two independently-authored packets, one subject, no collision signal from
+git because neither touches the other's files under different names.
+
+**The ruling: land `worker/pantry-07`.**
+
+1. **The measurement is unique to it.** `bin/fleet-telemetry` answers *which of
+   the registered services emit telemetry today*, read from `registry/` rather
+   than hardcoded. Run on the merged tree it reports **1 of 9 registered
+   services emits** — `muse` — while `identity` links the OTel SDK and uses
+   nothing, which the script calls out by name as "the failure mode that reads
+   as coverage in a dependency audit and is not coverage at all." Nothing else
+   in the fleet answers that question, and it is the question a self-hoster asks
+   first.
+2. **Its second script is repeatable and it says what it did not measure.** It
+   prints its unmeasured surface — no docker needed for the inventory, ~1 GB
+   pulled only under `--footprint` — and it states outright that it is not a
+   gate. A research packet whose conclusion is a number keeps the number; this
+   one does.
+3. **Its other half is already answered, better, somewhere that owns it.**
+   `kit-16` landed `tests/canary_test.sh` — 662 lines proving the redaction
+   boundary against a **real collector**, with a capturing exporter, polling
+   rather than a race, and an assertion that removal is *observed* rather than
+   inferred. `scripts/redaction_canary.py` proves the same property against a
+   live Tempo and Loki. kit distributes the stack, so kit should own the
+   stack's proof, and `canary_test.sh`'s own header says it: *"a second copy of
+   the redaction config is a second answer to the question."* Landing a second
+   implementation in a repository that does not ship the stack would be exactly
+   that.
+
+**What is kept from the branch that did not land, because it is not in the
+other report and it matters more than the report it arrived in.** From §5.4 of
+`REPORT-pantry-07-observability.md` at `e0c83e7`:
+
+> A single OTLP/HTTP POST carrying 4000 spans returned **HTTP 200** with a body
+> of `{"partialSuccess":{}}` — an explicit *no rejections*.
+> `otelcol_receiver_accepted_spans` did not move. Nothing appeared in Tempo, and
+> Loki's `labels` endpoint had no series for those records.
+
+The worker's own conclusion is the part worth keeping, and it is stated against
+its own uncertainty: *"I do not know why, and I am not going to guess."* The
+finding that survives that uncertainty is that **the only way to learn the
+pipeline dropped everything is to ask the store at the far end.** A self-hoster
+has no reason to ask the store, and a health check that only asserts the
+collector returned 200 would be green in exactly this situation.
+
+So the obligation this creates is concrete and belongs to whoever implements the
+stack for real: **the boot check must be a round trip, not a receipt.** Assert
+that a canary span written through the collector is queryable in Tempo, and that
+a canary log line is queryable in Loki. The second half of it is the shape of
+`scripts/redaction_canary.py`, and the argument for it is the paragraph above —
+so the *script* was worth writing even though the branch did not land. Preserved
+on the remote at `keep/pantry-07-observability` (`e0c83e7`), not deleted.
+
+**Note for the next dispatch, because it will happen again.** This was one
+packet, two workers, because a dispatch was repeated after a death and the
+replacement was given the same name. The ledger shows the original at 18:21 and
+the replacement eight hours later. **A re-dispatch into the same packet name
+should check for a surviving branch first**, and if one exists, the replacement
+should be told what it is replacing rather than being left to redo it.
