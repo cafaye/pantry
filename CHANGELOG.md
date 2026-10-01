@@ -9,6 +9,19 @@ bottom.
 
 ### Added
 
+- **`LICENSE`: pantry is MIT.** The repository shipped no licence file at all,
+  which is not "unlicensed, therefore free" — it is **all rights reserved**, the
+  default copyright position when a public repository grants nothing. So the
+  service registry every consumer resolves their dependency graph through was
+  itself unresolvable as a dependency. `Cargo.toml` already declared
+  `license = "MIT"` and is now backed by the grant itself.
+
+  MIT rather than a copyleft licence is the whole reason the registry model
+  works: a consumer adds pantry without their own licensing situation changing.
+
+  The copyright line matches the three repositories that already shipped a
+  licence exactly: `Copyright (c) 2026 cafaye`.
+
 - **Tenant isolation: the enumeration of every entry point that reaches
   registered data, and a negative case for each.** `tests/scoping.rs` (new, 14
   tests) and `tests/entry_point_isolation.rs` (new, 11 tests), from the

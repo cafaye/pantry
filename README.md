@@ -641,3 +641,13 @@ pantry/
 ```
 
 Read `AGENTS.md` before changing anything here.
+
+## License
+
+MIT. See [LICENSE](LICENSE). `Cargo.toml` declares the same thing in its
+`license` field.
+
+pantry is the registry the fleet is consumed through, so the licence a
+dependency arrives under is the licence the dependency graph hands on. MIT
+keeps a consumer's own licensing situation unchanged by adding pantry, which is
+the whole reason the registry model works.
