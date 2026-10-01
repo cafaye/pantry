@@ -289,8 +289,8 @@ fn ceiling_of(pin: &str) -> u32 {
 /// Test-only, and named for what it is: the alternative is cloning the whole
 /// name set per pair, and this function is called from a test whose cost is
 /// already nine services.
-fn leak(value: &String) -> &'static String {
-    Box::leak(Box::new(value.clone()))
+fn leak(value: &str) -> &'static String {
+    Box::leak(Box::new(value.to_owned()))
 }
 
 #[test]
