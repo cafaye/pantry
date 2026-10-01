@@ -43,21 +43,21 @@ services:
     kind: api
     basePath: /v1
     # The commit of identity's own repository this copy was taken from.
-    recordedAt: 2fbaa87c16eb7ec333a676a1e385d905a2e1870a
+    recordedAt: 26723b6ad3021af9b7f86ab5e2f01d9db576156c
 
   # billing serves HTTP; `consumes: []`, so `kind: api` and not `both`.
   billing:
     kind: api
     basePath: /v1
     # The commit of billing's own repository this copy was taken from.
-    recordedAt: bd6ac844cc41ff0f8a8e2a17bef3653bc8117347
+    recordedAt: 14f3cf643b587e0d5099eaf0776ecbe3e4dab53e
 
   # muse serves HTTP; `consumes: []`, so `kind: api`.
   muse:
     kind: api
     basePath: /v1
     # The commit of muse's own repository this copy was taken from.
-    recordedAt: ab7118455be273bcfaeb1cae47d2e820a6329259
+    recordedAt: e3f53b08e080efc0b284537981bb1e4301577bd2
 
   # darkroom serves HTTP; its manifest declares no `consumes`, so `kind: api`.
   # basePath: /v1, from the same derivation as the three above — every path in
@@ -67,7 +67,7 @@ services:
     kind: api
     basePath: /v1
     # The commit of darkroom's own repository this copy was taken from.
-    recordedAt: c104364ea9f26b140d620f466dcb58ccdb769558
+    recordedAt: d1184bc3674f0540694c308dfac5a02bb3c7c475
 
   # courier serves HTTP; `consumes: []`, so `kind: api` and not `both` — even
   # though it publishes five events. Publishing is not subscribing, and the
@@ -107,7 +107,7 @@ services:
     kind: api
     basePath: /v1
     # The commit of courier's own repository this copy was taken from.
-    recordedAt: 35c6a277bf2aa600b4fcc37f4a09bf8213c34f1d
+    recordedAt: cc0c532535ea14a26b23117c44077036a8e5cd64
 
   # pantry is in its own registry, which is the point: a service registry that
   # cannot describe the registry is a registry `caf dev` has to special-case.
@@ -119,7 +119,7 @@ services:
     kind: api
     basePath: /v1
     # The commit of pantry's own repository this copy was taken from.
-    recordedAt: 63f0b83ccca009bd9d417c651316635a245e7fed
+    recordedAt: 92ca41ee98d97273be7fae58bb4e319f08ff86ea
 
   # guard serves HTTP and its own manifest records the gap: it declares no
   # `exposes` at all because its OpenAPI document has not been written (see the
@@ -136,7 +136,7 @@ services:
     kind: api
     basePath: null
     # The commit of guard's own repository this copy was taken from.
-    recordedAt: 97d83e9cd3f1c4316db97840d7b8c0147b3c80c9
+    recordedAt: 98182a19af4617fa3632835bc3dde87bec56a029
 
   # caf is the platform CLI, and it is registered because it now declares a
   # valid manifest in core's own contract language — not because something
@@ -196,7 +196,7 @@ services:
     kind: cli
     basePath: null
     # The commit of caf's own repository this copy was taken from.
-    recordedAt: 460acf3c7ae45c98816cbed8659baf75a76a14d2
+    recordedAt: 6ed240284a09bf285d6a43f7f1f38c12dcc8623a
 
   # cafaye-ts is the fleet's TypeScript client, and it is the entry most likely
   # to be filed wrongly in either direction, so this row is long.

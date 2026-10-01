@@ -90,6 +90,42 @@ fn names(response: &Response) -> Vec<String> {
         .collect()
 }
 
+/// What `registry/services/<name>/cafaye.yml` itself says `core:` is.
+///
+/// This exists because a *previous* version of this file hardcoded the pins —
+/// `^0.1.0` for identity, courier and guard — and the fleet-wide raise to
+/// `^0.2.0` turned four tests here red. The pins were never the thing under
+/// test: `every_filter_narrows_the_list` is about whether the filter reads the
+/// same field it serves, and a hardcoded pin makes that test fail every time core
+/// cuts a release while saying nothing whatever about the filter.
+///
+/// Reading the file is not a tautology. The registry is *loaded* from disk at
+/// startup and then projected through `serde_json` into an HTTP body, so this
+/// compares what a manifest says against what a client fetches, with the whole
+/// parse-and-project path in between. The claim that survives is the one worth
+/// making: **pantry serves each manifest's `core` unchanged.** The claim that
+/// was being made — "courier is on ^0.1.0" — was core's to change, and core
+/// changed it.
+fn manifest_core_pin(service: &str) -> String {
+    let path = registry_dir()
+        .join("services")
+        .join(service)
+        .join("cafaye.yml");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    text.lines()
+        .find_map(|line| line.strip_prefix("core:"))
+        .map(|value| value.trim().to_string())
+        .unwrap_or_else(|| {
+            panic!(
+                "{} declares no top-level `core:`. A registry entry with no pin cannot be \
+                 filtered by contract, and this helper exists so that is a panic here rather \
+                 than a `null` in somebody's generated client.",
+                path.display()
+            )
+        })
+}
+
 // ------------------------------------------------------------ the registry
 
 #[tokio::test]
@@ -156,7 +192,13 @@ async fn a_service_object_carries_exactly_the_documented_keys() {
     assert_eq!(entry["name"], json!("identity"));
     assert_eq!(entry["language"], json!("go"));
     assert_eq!(entry["kind"], json!("api"));
-    assert_eq!(entry["core"], json!("^0.1.0"));
+    assert_eq!(
+        entry["core"],
+        json!(manifest_core_pin("identity")),
+        "served unchanged from registry/services/identity/cafaye.yml. The value is core's to \
+         move — it moved once already, from ^0.1.0 to ^0.2.0, and this file did not follow, \
+         which is what this assertion is for"
+    );
     assert_eq!(entry["basePath"], json!("/v1"));
     assert_eq!(entry["exposes"]["api"], json!("openapi/v1.yaml"));
     assert_eq!(
@@ -321,9 +363,12 @@ async fn a_document_at_the_repository_root_is_served_verbatim() {
     assert_eq!(response.body["language"], json!("elixir"));
     assert_eq!(
         response.body["core"],
-        json!("^0.1.0"),
-        "what the manifest says. Its own comment calls this unresolved; the \
-         registry records the file, it does not predict core's first release"
+        json!(manifest_core_pin("courier")),
+        "what the manifest says, read from registry/services/courier/cafaye.yml. Its own \
+         comment once called the pin unresolved; the registry records the file, it does not \
+         predict core's first release — so the assertion is against the file, not against a \
+         remembered version. This test was written when the answer was ^0.1.0 and stayed green \
+         through the fleet-wide raise only because the registry copy was stale"
     );
     assert_eq!(
         response.body["exposes"]["api"],
@@ -400,13 +445,9 @@ async fn every_filter_narrows_the_list() {
         // cafaye-ts is the client, on ^0.2.0, serving nothing.
         ("?language=typescript", &["cafaye-ts", "guard"]),
         (
-            "?contract=%5E0.2.0",
-            &["billing", "caf", "cafaye-ts", "darkroom", "muse", "pantry"],
+            "?kind=api&language=python&contract=%5E0.2.0",
+            &["muse"],
         ),
-        // courier joins identity and guard on ^0.1.0, which pre-1.0 does not
-        // contain ^0.2.0.
-        ("?contract=%5E0.1.0", &["courier", "guard", "identity"]),
-        ("?kind=api&language=python&contract=%5E0.2.0", &["muse"]),
     ];
 
     for (query, want) in cases {
@@ -416,25 +457,73 @@ async fn every_filter_narrows_the_list() {
     }
 }
 
+/// `?contract=` narrows by the **same field it serves**, and that is the claim.
+///
+/// It used to be pinned by listing which services were on `^0.1.0` and which on
+/// `^0.2.0` — a hardcoded partition of a fleet that core is entitled to move,
+/// which is why this file went red on the raise rather than saying anything
+/// about the filter. So the partition is now derived from the registry on every
+/// run, and held in **both** directions:
+///
+///   * every distinct pin in the registry selects exactly the services carrying
+///     it — a filter that reads a different field than it serves fails here;
+///   * the pins **partition** the fleet — every service appears under exactly one
+///     pin. Without this half, a filter that ignored `contract` and returned
+///     everything would satisfy the first half on a one-pin fleet, which is what
+///     the fleet was for two weeks.
+#[tokio::test]
+async fn the_contract_filter_partitions_the_fleet_by_the_pin_each_service_serves() {
+    let everything = call(app(), "/v1/services").await;
+    assert_eq!(everything.status, StatusCode::OK);
+    let all = names(&everything);
+    assert!(!all.is_empty(), "the fleet is not empty, so this can fail");
+
+    let mut by_pin: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for service in &all {
+        let one = call(app(), &format!("/v1/services/{service}")).await;
+        assert_eq!(one.status, StatusCode::OK, "{service}");
+        let pin = one.body["core"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{service} serves no string `core`"))
+            .to_string();
+        by_pin.entry(pin).or_default().push(service.clone());
+    }
+
+    let mut covered: Vec<String> = Vec::new();
+    for (pin, mut members) in by_pin {
+        let query = format!("/v1/services?contract={}", pin.replace('^', "%5E"));
+        let response = call(app(), &query).await;
+        assert_eq!(response.status, StatusCode::OK, "{query}");
+        let mut got = names(&response);
+        got.sort_unstable();
+        members.sort_unstable();
+        assert_eq!(
+            got, members,
+            "?contract={pin} did not select exactly the services that serve it. The filter and \
+             the field it is supposed to read have come apart"
+        );
+        covered.extend(members);
+    }
+
+    covered.sort_unstable();
+    let mut expected = all.clone();
+    expected.sort_unstable();
+    assert_eq!(
+        covered, expected,
+        "the pins do not partition the fleet: a service is under no pin, or under two"
+    );
+}
+
 #[tokio::test]
 async fn a_filter_that_matches_nothing_is_an_empty_list() {
     for query in [
         "?kind=worker",
         "?kind=both",
         // courier is the only elixir service and it is on ^0.1.0, so `elixir`
-        // plus `^0.2.0` matches nothing. This used to be `?language=elixir` on
-        // its own and stopped being empty when courier registered: a case that
-        // a registration can invalidate is a case worth having, and the fix is
-        // to pick a genuinely empty question rather than to delete it.
-        "?language=elixir&contract=%5E0.2.0",
+// A contract pin no service carries. `^9.0.0` has never been one, and
+        // cannot become one without a service being written against it.
         "?contract=%5E9.0.0",
-        // muse is the only `python` repository and it is on ^0.2.0, which
-        // pre-1.0 does not contain ^0.1.0. This used to be `language=go` (caf
-        // registered) and then `language=typescript` (cafaye-ts registered):
-        // two filters are worth nothing if they cannot survive the next entry
-        // in the registry, so each replacement has to be checked rather than
-        // assumed.
-        "?language=python&contract=%5E0.1.0",
     ] {
         let response = call(app(), &format!("/v1/services{query}")).await;
 
@@ -446,6 +535,96 @@ async fn a_filter_that_matches_nothing_is_an_empty_list() {
         assert_eq!(response.body["data"], json!([]), "{query}");
         assert_eq!(response.body["page"]["has_more"], json!(false), "{query}");
     }
+}
+
+/// Two filters that cannot both match must return an empty list.
+///
+/// This is the case the list above used to carry by naming a `language` and a
+/// `contract` that happened not to intersect — `language=elixir&contract=^0.2.0`
+/// and `language=python&contract=^0.1.0`, both of which stopped being empty the
+/// moment the fleet raised every pin, and both of which were therefore asserting
+/// a coincidence rather than a rule. The intersection is now **computed**: pick
+/// two filters the fleet makes disjoint on purpose — a language exactly one
+/// service has, and a pin that service does not carry — so the emptiness is a
+/// consequence of the argument and not of what happens to be registered.
+///
+/// The negative space is worth the trouble: it is the only thing that tells a
+/// client a filter that returned nothing means *nothing matched* rather than
+/// *the conjunction is not implemented and returned an error's neighbour*.
+#[tokio::test]
+async fn two_filters_the_fleet_makes_disjoint_return_an_empty_list() {
+    let everything = call(app(), "/v1/services").await;
+    let mut by_language: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
+    let mut every_pin: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for service in names(&everything) {
+        let one = call(app(), &format!("/v1/services/{service}")).await;
+        let language = one.body["language"].as_str().expect("a language").to_string();
+        let pin = one.body["core"].as_str().expect("a core pin").to_string();
+        every_pin.insert(pin.clone());
+        by_language.entry(language).or_default().push((service, pin));
+    }
+
+    let mut checked = 0usize;
+    let mut unreached: Vec<String> = Vec::new();
+    for (language, members) in &by_language {
+        if members.len() != 1 {
+            // Two services share this language, so excluding one on a pin
+            // cannot be shown to exclude the other — the pair would not be
+            // disjoint. Skipping is not the same as asserting, which is what
+            // `checked` below is for.
+            continue;
+        }
+        let (service, its_pin) = &members[0];
+        let Some(other_pin) = disjoint_from(its_pin) else {
+            unreached.push(format!("{service} is on {its_pin}, a pin form this cannot reason about"));
+            continue;
+        };
+
+        let query = format!(
+            "/v1/services?language={language}&contract={}",
+            other_pin.replace('^', "%5E")
+        );
+        let response = call(app(), &query).await;
+
+        assert_eq!(response.status, StatusCode::OK, "{query}");
+        assert_eq!(
+            response.body["data"],
+            json!([]),
+            "{query} cannot match: {service} is the only {language} service, and {other_pin} \
+             cannot contain {its_pin}. A hit here means the filter is not applying both terms"
+        );
+        checked += 1;
+    }
+
+    assert!(
+        unreached.is_empty(),
+        "{}. A pin form this cannot reason about is a reason to look, not a reason to stop \
+         asking — teach this test the form or say why it cannot be reasoned about",
+        unreached.join("; ")
+    );
+    assert!(
+        checked > 0,
+        "no language in this fleet is carried by exactly one service, so this test proved \
+         nothing. That is a fact about the registry worth failing on rather than a test to \
+         delete — a fleet where every language is shared has no disjoint pair to check"
+    );
+}
+
+/// A pin that provably cannot contain any version `pin` can contain.
+///
+/// Caret on a `0.x` version pins the **minor**, so `^0.2.0` is `>=0.2.0 <0.3.0`
+/// and `^0.1.0` is `>=0.1.0 <0.2.0` — the two ranges cannot meet. That is a
+/// property of semver a client already relies on when it filters by contract, so
+/// using it here tests the filter rather than restating the standard.
+///
+/// Returns `None` for anything this cannot reason about, and the caller fails
+/// on that rather than skipping: a pin form this does not understand is a
+/// reason to look, not a reason to stop asking.
+fn disjoint_from(pin: &str) -> Option<String> {
+    let rest = pin.strip_prefix("^0.")?;
+    let minor = rest.split('.').next()?.parse::<u32>().ok()?;
+    (minor > 0).then(|| format!("^0.{}.0", minor - 1))
 }
 
 #[tokio::test]

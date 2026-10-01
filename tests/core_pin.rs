@@ -126,7 +126,7 @@ struct ValidExample {
 
 /// Which of core's schemas validates this document.
 ///
-/// Two kinds are real in `core/examples/valid/` today and they answer different
+/// Three kinds are real in `core/examples/valid/` today and they answer different
 /// questions. See `DocumentKind::manifest_suffix` and `NON_MANIFEST_EXAMPLES`
 /// for why the classification is by name rather than by sniffing the body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +135,14 @@ enum DocumentKind {
     Manifest,
     /// A gate declaration: `gate.schema.json`.
     GateDeclaration,
+    /// A tenancy declaration — what a service publishes about the account
+    /// boundary it enforces: `tenant-isolation.schema.json`.
+    ///
+    /// The third kind, and the one D3 said would arrive. It arrived with
+    /// `core-15`'s two examples rather than in the same packet as the table, so
+    /// this build went red naming both files — which is the mechanism working,
+    /// not the mechanism failing. See `DECISIONS.md` D3, RULED.
+    TenantIsolation,
 }
 
 impl DocumentKind {
@@ -143,6 +151,7 @@ impl DocumentKind {
         match self {
             DocumentKind::Manifest => "cafaye.manifest.schema.json",
             DocumentKind::GateDeclaration => "gate.schema.json",
+            DocumentKind::TenantIsolation => "tenant-isolation.schema.json",
         }
     }
 }
@@ -167,8 +176,8 @@ fn classify(name: &str) -> Option<DocumentKind> {
     if name.ends_with(".cafaye.yml") {
         return Some(DocumentKind::Manifest);
     }
-    if NON_MANIFEST_EXAMPLES.iter().any(|(file, _)| *file == name) {
-        return Some(DocumentKind::GateDeclaration);
+    if let Some((_, kind, _)) = NON_MANIFEST_EXAMPLES.iter().find(|(file, _, _)| *file == name) {
+        return Some(*kind);
     }
     None
 }
@@ -185,15 +194,38 @@ fn classify(name: &str) -> Option<DocumentKind> {
 /// `"owner" is a required property` on a document that was never a manifest.
 ///
 /// This is the consumer half of the decision. The producer half is core's: the
-/// directory would be cleaner split by kind (`examples/valid/manifests/` and
-/// `examples/valid/gates/`), and that change is core's to make, not this
-/// repository's — see `DECISIONS.md` D3, which records the recommendation and
-/// says why it was not made here.
-const NON_MANIFEST_EXAMPLES: &[(&str, &str)] = &[
-    ("gate.external.yml", "a gate that needs the machine"),
+/// directory would be cleaner split by kind (`examples/valid/manifests/`,
+/// `examples/valid/gates/`, `examples/valid/tenancy/`), and that change is
+/// core's to make, not this repository's — see `DECISIONS.md` D3, which records
+/// the recommendation and says why it was not made here.
+///
+/// Each row now carries the **kind** as well as the name and the description,
+/// because the third kind arrived carrying its own schema. With two kinds the
+/// table could infer `GateDeclaration` for every row and still be right; with
+/// three it cannot, and a table that hardcoded the inference would have validated
+/// `tenancy.honest-zero.yml` against `gate.schema.json` — a document passing a
+/// schema that governs none of its fields, which is the exact conflation D3 was
+/// opened to prevent.
+const NON_MANIFEST_EXAMPLES: &[(&str, DocumentKind, &str)] = &[
+    (
+        "gate.external.yml",
+        DocumentKind::GateDeclaration,
+        "a gate that needs the machine",
+    ),
     (
         "gate.self-contained.yml",
+        DocumentKind::GateDeclaration,
         "a gate that needs nothing but itself",
+    ),
+    (
+        "tenancy.account-scoped.yml",
+        DocumentKind::TenantIsolation,
+        "a service holding customer rows, declaring every entry point that reaches them",
+    ),
+    (
+        "tenancy.honest-zero.yml",
+        DocumentKind::TenantIsolation,
+        "a service holding none, saying so explicitly rather than by omission",
     ),
 ];
 
@@ -540,6 +572,7 @@ fn every_example_in_core_s_valid_examples_is_classified_by_this_table() {
         match classify(name) {
             Some(DocumentKind::Manifest) => manifests += 1,
             Some(DocumentKind::GateDeclaration) => {}
+            Some(DocumentKind::TenantIsolation) => {}
             None => unclassified.push(name),
         }
     }
@@ -570,7 +603,7 @@ fn every_example_in_core_s_valid_examples_is_classified_by_this_table() {
     // and it is the direction that never shows up as a failure.
     let vanished: Vec<&str> = NON_MANIFEST_EXAMPLES
         .iter()
-        .map(|(file, _)| *file)
+        .map(|(file, _, _)| *file)
         .filter(|file| !names.iter().any(|name| name == file))
         .collect();
 
@@ -596,22 +629,34 @@ fn every_example_in_core_s_valid_examples_is_classified_by_this_table() {
 /// schema is the defect, so the schema half is asserted rather than documented.
 #[test]
 fn every_non_manifest_kind_names_the_schema_that_governs_it() {
-    for (file, description) in NON_MANIFEST_EXAMPLES {
+    let Some(core) = core_checkout() else {
+        eprintln!("SKIP schema binding: no core checkout found. Set PANTRY_CAFAYE_ROOT.");
+        return;
+    };
+
+    for (file, declared, description) in NON_MANIFEST_EXAMPLES {
         let kind = classify(file)
             .unwrap_or_else(|| panic!("{file} is in the table but does not classify"));
         assert_eq!(
-            kind,
-            DocumentKind::GateDeclaration,
-            "{file} ({description}) is declared as a non-manifest but classifies as {kind:?}"
-        );
-        assert_eq!(
-            kind.schema_file(),
-            "gate.schema.json",
-            "{file} is a gate declaration, so gate.schema.json governs it"
+            kind, *declared,
+            "{file} ({description}) is declared as {declared:?} but classifies as {kind:?}"
         );
         assert!(
             !description.trim().is_empty(),
             "{file} is declared without saying what it is"
+        );
+
+        // The schema has to EXIST in core, at the ref being read. A row naming
+        // a schema core does not ship is a row that reads as authority and
+        // checks nothing — and with three kinds in the directory it is now the
+        // failure mode a typo in a match arm would produce, silently.
+        let head = pin::published_head(&core).expect("core resolves a published head");
+        let schema = kind.schema_file();
+        assert!(
+            pin::show(&core, &head, &format!("schemas/{schema}")).is_ok(),
+            "{file} is declared as {declared:?}, so schemas/{schema} governs it — but core does \
+             not ship that file at {head}. Either core renamed the schema or this row names the \
+             wrong kind. A row pointing at a schema that is not there validates nothing."
         );
     }
 }
