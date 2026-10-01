@@ -25,6 +25,60 @@ cd "$(dirname "$0")/.."
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
+# ---------------------------------------------------------------------------
+# THE TOOLCHAIN, ASSERTED BEFORE ANYTHING ELSE RUNS
+# ---------------------------------------------------------------------------
+#
+# WHY THIS IS HERE, because it is not in the other two gates of this repository
+# and it is the whole lesson of the cafaye-rb packet.
+#
+# This repository pins its toolchain in THREE files — `mise.toml`'s
+# `[tools] rust = "1.95"`, `Cargo.toml`'s `rust-version = "1.95"`, and
+# `docker/Dockerfile`'s `ARG RUST_VERSION=1.95` — and has NO
+# `rust-toolchain.toml`. So nothing here makes cargo enforce the pin: whatever
+# `rustc` answers on PATH is what formats, builds, lints and tests this gate.
+# Run this on a machine with a system rustc and the gate does not say "the wrong
+# toolchain answered" — it says whatever cargo says, which on a mismatched
+# edition or a stale resolver is a wall of text about features and dependency
+# versions that reads as a defect in the code under test.
+#
+# cafaye-rb had exactly this shape and it cost a debugging session: its gate
+# picked up macOS system Ruby 2.6.10 while its own `external` requirement named
+# the pinned 4.0.1, and every failure was a gem error about a language feature
+# that the project had legitimately stopped supporting. The `external` block in
+# gate.yml said 4.0.1 the whole time. **A requirement the gate does not check is
+# a comment**, and a loud refusal at step zero is worth more than the correct
+# answer three steps later.
+#
+# So: read the pin out of `mise.toml` — the file that owns it — rather than
+# hardcoding a second copy here, because a hardcoded number is a fourth place to
+# forget and would still be right on the day the pin moved. Exit 127, the
+# conventional "dependency missing" code, with a sentence that names the number
+# it wanted and the command that fixes it.
+if ! command -v rustc >/dev/null 2>&1; then
+  echo "bin/prime: rustc is not on PATH — run 'mise install' in this worktree" >&2
+  exit 127
+fi
+
+pinned_rust="$(sed -n 's/^rust *= *"\(.*\)"/\1/p' mise.toml)"
+if [ -z "$pinned_rust" ]; then
+  echo "bin/prime: mise.toml pins no rust toolchain, so this gate cannot check the" >&2
+  echo "  toolchain it is about to run. Either restore the pin or stop claiming one." >&2
+  exit 127
+fi
+
+actual_rust="$(rustc --version | awk '{print $2}')"
+if [ "$actual_rust" != "$pinned_rust" ] && [ "${actual_rust#"$pinned_rust."}" = "$actual_rust" ]; then
+  echo "bin/prime: rustc is $actual_rust, and mise.toml pins $pinned_rust." >&2
+  echo "  Run 'mise install' in this worktree. Continuing would report cargo" >&2
+  echo "  errors about features and dependency versions as if they were" >&2
+  echo "  defects in the code under test." >&2
+  exit 127
+fi
+
+step "toolchain: rustc $actual_rust (mise.toml pins $pinned_rust)"
+rustc --version
+
 step "cargo fmt --check"
 cargo fmt --check
 
@@ -35,7 +89,69 @@ step "cargo clippy -D warnings"
 cargo clippy --all-targets -- -D warnings
 
 step "cargo test (no network, no database)"
-cargo test --no-fail-fast
+# `--nocapture`, and the reason is measured rather than preferred.
+#
+# THIS SUITE HAS NO `#[ignore]`. Every environment-gated tier — drift, schema,
+# core-pin, recorded-copy — prints `SKIP …` on stderr and RETURNS EARLY from the
+# test body, which libtest scores as a PASS. So the skip is a `return` and the
+# count does not move: a run on a machine with no cafaye workspace reports the
+# same `114 passed; 0 failed; 0 ignored` as a run that compared every registry
+# copy against the real services. That is the `cafaye-rb` defect — 1430 tests
+# green against an empty schema — wearing a Rust hat.
+#
+# `--nocapture` is what makes the SKIP lines reach the terminal. libtest captures
+# a passing test's output and DISCARDS it, so without this flag the one signal
+# that a tier did not run is captured and thrown away, and `bin/prime` reports a
+# clean green over a suite that verified pantry against itself. Verified
+# directly: `cargo test --test drift` on a bare clone prints 8 `SKIP` lines with
+# `--nocapture` and none without it, while both runs report
+# `test result: ok. 12 passed`.
+#
+# So the tier reports itself, and the gate says so at the end rather than leaving
+# it to be inferred. `set -o pipefail` is above, so `cargo_status` below is the
+# exit code of `cargo` and not of `tee` — which is the whole reason this
+# file is a script and the reason PLAN.md §1 exists.
+test_log="$(mktemp "${TMPDIR:-/tmp}/pantry-prime-test.XXXXXX")"
+trap 'rm -f "$test_log"' EXIT
+set +e
+cargo test --no-fail-fast -- --nocapture 2>&1 | tee "$test_log"
+cargo_status="${PIPESTATUS[0]}"
+set -e
+
+# The count, reported ALWAYS and not only when it is zero. A gate whose skip
+# report only appears when something went wrong is a report nobody learns to
+# read, which is the same defect as the report being absent.
+#
+# `^test result: ok\.` and not `^test result:` on purpose: a binary that FAILED
+# prints `test result: FAILED.`, so counting only the `ok.` lines makes this the
+# number of tests that PASSED rather than the number that ran. On a red gate that
+# difference is the whole point, and a summary reporting the passing count while
+# tests are failing would be the shape of the false green this file exists to
+# prevent, reproduced in the report itself.
+suite_passed="$(awk '/^test result: ok\./ { for (i = 1; i <= NF; i++) if ($i == "passed;") total += $(i - 1) } END { print total + 0 }' "$test_log")"
+suite_skipped="$(grep -c '^SKIP ' "$test_log" || true)"
+
+echo
+echo "suite: ${suite_passed} passed across 11 test binaries"
+if [[ "$suite_skipped" -eq 0 ]]; then
+  echo "skips: 0 — every tier ran"
+else
+  # Named, because a skip count with no variable is a number nobody can act on.
+  # `PANTRY_CAFAYE_ROOT` must point at the directory holding
+  # `core/schemas/cafaye.manifest.schema.json`; that one file is what
+  # `cafaye_root()` looks for. The first few are echoed so the reader does not
+  # have to open the log to learn WHICH tier stood down.
+  echo "skips: ${suite_skipped} — a tier did not run. These counted as PASSES."
+  echo "  set PANTRY_CAFAYE_ROOT to the cafaye workspace (the directory holding"
+  echo "  core/, identity/, billing/, guard/ and muse/) and re-run. Without it"
+  echo "  this gate verified pantry against ITSELF, not against the fleet."
+  grep '^SKIP ' "$test_log" | sort -u | head -5 | sed 's/^/  /'
+fi
+
+if [[ "$cargo_status" -ne 0 ]]; then
+  echo "bin/prime: cargo test exited ${cargo_status}" >&2
+  exit "$cargo_status"
+fi
 
 step "the manifest validates against core's schema"
 if [[ -f ../caf/go.mod ]]; then

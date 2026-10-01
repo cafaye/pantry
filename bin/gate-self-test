@@ -1,0 +1,1154 @@
+#!/usr/bin/env bash
+#
+# bin/gate-self-test — pantry's proof that its gate DECLARATION is able to fail.
+#
+#   ./bin/gate-self-test
+#   PANTRY_GATE_STATIC_ONLY=1 ./bin/gate-self-test     # the fast half only
+#
+# WHAT THIS IS FOR
+#
+# `gate.yml` is a claim about this repository: the command exists, the mise task
+# resolves to the same file, CI invokes it, the requirements are satisfiable, and
+# running the gate makes the suite print the lines the declaration says it will
+# print. A claim that has only ever been true is not a claim that was checked —
+# it is a comment with a YAML extension. So this script copies the repository,
+# breaks exactly one thing in each copy, and asserts that core's checker goes
+# RED **and names the finding it expects**.
+#
+# Naming matters and is the half that decays silently. "Something went red" is a
+# weak claim when twenty checks can go red: the check written for one specific
+# defect can be dead code forever while everything stays green.
+#
+# The shape is courier's `bin/gate-self-test` and darkroom's `bin/gate-self-test`,
+# for their reasons — a control on the unmodified repository FIRST, a fresh
+# throwaway copy per breakage so one can never mask the next, and a non-zero exit
+# if any breakage stayed green. pantry keeps executables in `bin/`, so it lives
+# here rather than in `tests/`, which is cargo's directory and holds nothing but
+# Rust test binaries.
+#
+# THE CONTROLS ARE THE HALF THAT MAKES THE REST MEAN ANYTHING
+#
+# Twenty red runs against a repository that was already red prove nothing. Both
+# controls run first, unmodified. The static one asserts the declaration is true
+# of this tree. The proving one runs the real `bin/prime` and is the only
+# evidence that the declared proofs match what this repository's gate ACTUALLY
+# prints — a floor nobody has ever seen satisfied is a floor nobody has checked.
+#
+# A control that is red BLOCKS this packet. handing one over anyway is the
+# failure this script exists to make impossible, so the red cases below are
+# reported individually and the tally still prints.
+#
+# WHY IT IS NOT PART OF `bin/prime`
+#
+# Three reasons, and the first would settle it alone. (1) It needs `core`: the
+# checker is core's and is deliberately not vendored here, because
+# `gate_check.py` travels with `harness/cafaye_contract.py` and a copy of one
+# without the other is a second YAML dialect. A `bin/prime` that needed
+# `../core` on disk to finish would stop being runnable from a clone of this
+# repository alone, which is the whole claim this repository makes about its
+# gate. (2) A self-test inside every gate invocation is a second gate that can
+# disagree with the first — core keeps `harness/tests/gate_self_test.sh` out of
+# its `bin/prime` for the same reason. (3) Cost: the proving breakages run the
+# whole gate, and each one is a full cargo build at a fresh path.
+#
+# EXIT CODES, WHICH ARE THE WHOLE CONTRACT
+#
+#   0  every breakage went red naming the finding it was supposed to name, both
+#      controls are green, and nothing was skipped.
+#   1  a breakage stayed green, went red as something else, or a check in this
+#      script itself failed.
+#   2  the run COULD NOT HAPPEN — core's harness is not where this looked, or no
+#      python >= 3.11 is on PATH. Never 0: a check that could not find the
+#      checker has not checked anything, and a green badge over that is the exact
+#      defect this packet exists to remove.
+#
+# PASS AND SKIP COUNTS ARE REPORTED SEPARATELY, ALWAYS. A skipped check is not a
+# passing check. `PANTRY_GATE_STATIC_ONLY=1` runs the static half alone and says
+# how many proving cases it skipped rather than folding them into a total.
+
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# core owns the format, the schema and the checker. pantry consumes it and does
+# not reimplement it, so a break IN the checker is core's self-test's business.
+# `CAFAYE_CORE` overrides where a sibling checkout lives, because a worktree, a
+# checkout in ~/src and a CI runner all put this repository somewhere different
+# and a hardcoded path is a script that only works on the machine that wrote it.
+CORE="${CAFAYE_CORE:-}"
+if [ -z "$CORE" ]; then
+  for candidate in "$ROOT/../core" "$ROOT/../../cafaye/core" "$ROOT/../../../cafaye/core"; do
+    if [ -x "$candidate/harness/bin/gate-check" ]; then
+      CORE="$(cd "$candidate" && pwd)"
+      break
+    fi
+  done
+fi
+
+if [ -z "$CORE" ] || [ ! -x "$CORE/harness/bin/gate-check" ]; then
+  printf 'gate-self-test: core'"'"'s gate checker was not found.\n' >&2
+  printf 'gate-self-test: pantry declares the gate; it does not implement the check.\n' >&2
+  printf 'gate-self-test: set CAFAYE_CORE to a cafaye/core checkout, or leave a\n' >&2
+  printf '               sibling directory named core next to this repository.\n' >&2
+  printf '               Exiting 2: a check that could not run has not checked.\n' >&2
+  exit 2
+fi
+CHECK="$CORE/harness/bin/gate-check"
+
+# The proving cases need a build directory. Reusing one is a CONVENIENCE and
+# never a dependency: unset it and the run is slower, not different. It has to be
+# an absolute path, because a copy of this repository at a different path is a
+# different cargo unit and a relative CARGO_TARGET_DIR would send every copy
+# writing into the copy next to it.
+export CARGO_TARGET_DIR="${PANTRY_GATE_TARGET_DIR:-$ROOT/target}"
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/pantry-gate-self-test.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+
+failures=0
+breakages=0
+warn_cases=0
+skips=0
+
+# Decided ONCE, up front, and reported in the summary, so the last line says
+# whether the proving half of this script ran at all.
+#
+# Written as an `if` rather than as a chain of `||` defaults, because the chain
+# form is wrong in the direction that matters here: `[ "$x" = "1" ] || [ "$y" =
+# "1" ] || can_prove=0` runs `can_prove=0` when BOTH are unset, because two false
+# tests fall through to it. That made every proving case skip while the header
+# printed a plausible-sounding reason and the run still reported "0 failures".
+# A skip that reports itself as a skip is at least visible; this one hid behind
+# an inverted condition, which is the same class of defect as the packet's.
+can_prove=1
+if [ "${PANTRY_GATE_STATIC_ONLY:-0}" = "1" ] || [ "${PANTRY_GATE_NO_PROVE:-0}" = "1" ]; then
+  can_prove=0
+fi
+
+# --------------------------------------------------------------------------
+# helpers
+# --------------------------------------------------------------------------
+
+# fresh_copy <name> — a throwaway copy of the repository, minus build output.
+#
+# The file list comes from git: tracked plus untracked-but-not-ignored, so this
+# can be run while editing `gate.yml` and the copy carries the edit. `target/` is
+# gitignored and never copied — the static breakages do not need it, and the
+# proving ones would otherwise spend minutes writing into a tree they are about
+# to throw away.
+fresh_copy() {
+  local dst="$WORK/$1" rel
+  rm -rf "$dst"
+  mkdir -p "$dst"
+  while IFS= read -r -d '' rel; do
+    mkdir -p "$dst/$(dirname "$rel")"
+    cp -p "$ROOT/$rel" "$dst/$rel"
+  done < <(git -C "$ROOT" ls-files -co --exclude-standard -z)
+  printf '%s' "$dst"
+}
+
+# edit <file> <old> <new> — a textual breakage that FAILS LOUDLY if this
+# repository has moved past it.
+#
+# This is the difference between a self-test and a stamp. A breakage recipe that
+# silently stopped matching would leave the copy UNBROKEN, and the case would
+# then report "caught by gate.proof-missing" while breaking nothing at all —
+# having learned nothing. `sed -i ''` exits 0 when a pattern matches nothing on
+# BSD sed, which is how that failure ships. So the edit is done in Python, it
+# asserts the old text is present, and an un-applied edit is a FAILURE and never
+# a pass. It RECORDS rather than exits, so the run still prints its tally.
+EDIT_APPLIED=1
+edit() {
+  if python3 - "$1" "$2" "$3" <<'PYEOF'
+import sys
+
+path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+body = open(path, encoding="utf-8").read()
+if old not in body:
+    sys.exit(f"no longer applies to {path}: {old!r} is not in the file")
+open(path, "w", encoding="utf-8").write(body.replace(old, new, 1))
+PYEOF
+  then
+    EDIT_APPLIED=1
+    return 0
+  fi
+  EDIT_APPLIED=0
+  failures=$((failures + 1))
+  printf 'FAIL  the breakage no longer applies: %s\n' "$2" >&2
+  return 1
+}
+
+# write <file> — a whole-file breakage, read from stdin.
+write() { cat > "$1"; }
+
+# run_checker <repo> [prove] — core's checker, on one copy. The exit code is the
+# checker's own and is read immediately: `$?` after an assignment is the
+# ASSIGNMENT's status, and a pipeline's `$?` is the last element's. Nothing here
+# is piped, for the reason the whole packet exists — this fleet shipped one green
+# over a red gate because the exit code it read was `tail`'s.
+run_checker() {
+  local repo="$1" prove="${2:-}"
+  if [ -n "$prove" ]; then
+    "$CHECK" --prove --log-dir "$repo/.log" "$repo" 2>&1
+  else
+    "$CHECK" --log-dir "$repo/.log" "$repo" 2>&1
+  fi
+}
+
+# expect_red [--prove] <label> <finding-id> <repo> — the copy must exit 1 AND
+# name the finding. Both halves, deliberately.
+#
+# `--prove` is a flag on THIS function rather than a second function, on the
+# strength of a bug darkroom's copy of this script had: `expect_red_prove`
+# delegated to `expect_red` and forgot to forward `--prove`, so five proving
+# cases quietly ran the static phase instead, each reported a perfectly honest
+# "0 failures", and the whole run tested nothing. A wrapper that forgets to
+# forward the thing it exists to forward is worse than no wrapper.
+#
+# The match is on `FAIL gate.<id>: ` rather than the bare id, because that is
+# how the checker renders a finding. Matching the bare id is a bug this script
+# shape has shipped elsewhere: `gate.declaration-missing`'s own remediation line
+# reads "schemas/gate.schema.json is the format", so a copy with no gate.yml at
+# all satisfies an expectation of `gate.schema`.
+expect_red() {
+  local prove_it=""
+  if [ "${1:-}" = "--prove" ]; then prove_it="--prove"; shift; fi
+  local label="$1" expect="$2" repo="$3" out code
+  if [ "$EDIT_APPLIED" -eq 0 ]; then
+    failures=$((failures + 1))
+    printf 'FAIL  %s — the breakage that sets this case up did not apply, so a\n' "$label" >&2
+    printf '      red here would mean nothing and a green here would mean less\n' >&2
+    return
+  fi
+  out="$(run_checker "$repo" "$prove_it")"
+  code=$?
+  if [ "$code" -ne 1 ]; then
+    failures=$((failures + 1))
+    printf 'FAIL  %s — expected exit 1 from gate-check, got %s\n%s\n' "$label" "$code" "$out" >&2
+    return
+  fi
+  if ! printf '%s' "$out" | grep -qF "FAIL gate.$expect: "; then
+    failures=$((failures + 1))
+    printf 'FAIL  %s — went red as something else and never said gate.%s\n%s\n' \
+      "$label" "$expect" "$out" >&2
+    return
+  fi
+  printf 'ok    %-52s gate.%s%s\n' "$label" "$expect" "${prove_it:+ (--prove)}"
+}
+
+# suite_is_red <report> — did THIS REPOSITORY's own gate exit nonzero?
+#
+# The discriminator between "this declaration is wrong" and "this repository's
+# gate is red", which look identical from the exit code and mean opposite things.
+#
+# It is `gate.nonzero` and nothing subtler. The first attempt at this asked
+# whether `gate.nonzero` was the ONLY finding, and that is measurably false: a
+# gate that exits nonzero also trips `gate.floor` for every proof whose binary
+# never reached the end of, and `gate.proof-missing` for every proof after the
+# point it died. A real red run reported all five. So the branch never fired, and
+# the script called a foreign failure its own — which is precisely the confusion
+# this helper exists to prevent.
+#
+# `gate.nonzero` is the right test because it is the only finding that does not
+# depend on the gate's output being complete. Every other one is downstream.
+suite_is_red() {
+  printf '%s' "$1" | grep -qF 'FAIL gate.nonzero: '
+}
+
+# expect_red_prove <label> <finding-id> <repo> — the same, against a copy whose
+# gate actually ran. SKIPPED, loudly, when proving is off. A skip is counted and
+# printed and never folded into a pass.
+expect_red_prove() {
+  if [ "$can_prove" -eq 0 ]; then
+    skips=$((skips + 1))
+    printf 'SKIP  %-52s --prove runs the real gate\n' "$1"
+    return
+  fi
+  expect_red --prove "$1" "$2" "$3"
+}
+
+# expect_green_prove <label> <repo> — the inverse, for the cases whose WHOLE CLAIM
+# is that a copy stays green: the near-miss below, and the documented blind spot.
+#
+# It has to tell three outcomes apart, and the middle one is why this function
+# exists at all:
+#
+#   0  green — the case proved what it claims.
+#   1  red, and the findings are ONLY `gate.nonzero` for a pre-existing suite
+#      failure — this case cannot be judged while the repository's own gate is
+#      red, and saying "FAIL" would be reporting the wrong repository's defect.
+#      Counted as a skip, named as a skip.
+#   *  anything else — a real failure of the case.
+#
+# Without this, a repository whose suite is red for a cross-repository reason
+# turns every "must stay green" case into a FAIL, which is the mirror image of the
+# false green and just as useless: a reader learns the self-test is broken, goes
+# and looks, and finds somebody else's merge.
+expect_green_prove() {
+  local label="$1" repo="$2" out code unexpected
+  if [ "$can_prove" -eq 0 ]; then
+    skips=$((skips + 1))
+    printf 'SKIP  %-52s --prove runs the real gate\n' "$label"
+    return
+  fi
+  if [ "$EDIT_APPLIED" -eq 0 ]; then
+    failures=$((failures + 1))
+    printf 'FAIL  %s — the breakage that sets this case up did not apply\n' "$label" >&2
+    return
+  fi
+  out="$(run_checker "$repo" prove)"
+  code=$?
+  if [ "$code" -eq 0 ]; then
+    warn_cases=$((warn_cases + 1))
+    printf 'ok    %-52s exit 0, as it must\n' "$label"
+    return
+  fi
+  if suite_is_red "$out"; then
+    skips=$((skips + 1))
+    printf 'SKIP  %-52s the suite is red for another reason\n' "$label"
+    printf '      (gate.nonzero only: this repository'"'"'s own tests are failing, so\n'
+    printf '       a must-stay-green case cannot be judged here. See REPORT-pantry-08-gate.md §9.)\n'
+    return
+  fi
+  failures=$((failures + 1))
+  printf 'FAIL  %s — expected exit 0, got %s\n%s\n' "$label" "$code" "$out" >&2
+}
+
+# expect_warn <label> <finding-id> <repo> — the finding must be PRINTED and the
+# exit code must still be 0. The exit code is the half that matters and the half
+# a tri-state checker gets wrong: promote a warning to a failure and it is red on
+# a laptop and green on CI.
+expect_warn() {
+  local label="$1" expect="$2" repo="$3" out code
+  if [ "$EDIT_APPLIED" -eq 0 ]; then
+    failures=$((failures + 1))
+    printf 'FAIL  %s — the breakage that sets this case up did not apply\n' "$label" >&2
+    return
+  fi
+  out="$(run_checker "$repo")"
+  code=$?
+  if [ "$code" -ne 0 ]; then
+    failures=$((failures + 1))
+    printf 'FAIL  %s — a warning moved the exit code to %s\n%s\n' "$label" "$code" "$out" >&2
+    return
+  fi
+  if ! printf '%s' "$out" | grep -qF "$expect"; then
+    failures=$((failures + 1))
+    printf 'FAIL  %s — exited 0 without even printing %s\n%s\n' "$label" "$expect" "$out" >&2
+    return
+  fi
+  warn_cases=$((warn_cases + 1))
+  printf 'ok    %-52s %s, and still exit 0\n' "$label" "$expect"
+}
+
+printf 'gate-self-test: pantry'"'"'s gate declaration, proved able to fail\n'
+printf '  repository:  %s\n' "$ROOT"
+printf '  declaration: gate.yml\n'
+printf '  checker:     %s\n' "${CHECK#"$CORE"/}"
+printf '  core at:     %s\n' "$CORE"
+if [ "$can_prove" -eq 0 ]; then
+  printf '  proving:     OFF (PANTRY_GATE_STATIC_ONLY / PANTRY_GATE_NO_PROVE)\n'
+else
+  printf '  proving:     on — each --prove case runs the real bin/prime\n'
+fi
+printf '\n'
+
+# --------------------------------------------------------------------------
+# PRE-FLIGHT: is this repository's own gate green right now?
+# --------------------------------------------------------------------------
+#
+# Asked once, before any case runs, because it decides how every proving case
+# below has to be read — and because the answer is frequently NOT this packet's.
+#
+# pantry reads sibling checkouts, so a merge in `core` can turn this repository's
+# suite red for reasons that have nothing to do with any declaration. When that
+# happens a "must stay green" case and a "must go red" case are both
+# unjudgeable, and reporting them as failures sends the reader to the wrong
+# repository. REPORT-pantry-08-gate.md §9 has the case that was live during
+# this packet: two failures, both from core merging examples pantry had not
+# classified and from the recorded core pin going 18 commits stale.
+#
+# So the verdict is printed BEFORE the cases, in the reader's eye, and the
+# run-checker cases below classify on `gate.nonzero` alone.
+preflight_log="$WORK/preflight-gate.log"
+mkdir -p "$WORK/preflight"
+preflight_dir="$WORK/preflight"
+rm -rf "$preflight_dir"
+mkdir -p "$preflight_dir"
+while IFS= read -r -d '' rel; do
+  mkdir -p "$preflight_dir/$(dirname "$rel")"
+  cp -p "$ROOT/$rel" "$preflight_dir/$rel"
+done < <(git -C "$ROOT" ls-files -co --exclude-standard -z)
+printf '==> pre-flight: is bin/prime itself green right now?\n'
+( cd "$preflight_dir" && CARGO_TARGET_DIR="$CARGO_TARGET_DIR" timeout 3600 ./bin/prime ) \
+  > "$preflight_log" 2>&1
+preflight_status=$?
+if [ "$preflight_status" -eq 0 ]; then
+  printf 'ok    %-52s exit 0\n' 'bin/prime is green, so proving cases are judgeable'
+else
+  printf 'NOTE  %-52s exit %s\n' 'bin/prime is RED' "$preflight_status"
+  printf '      Every --prove case below is reported against a red gate. Cases whose\n'
+  printf '      claim is "this must stay green" cannot be judged and are SKIPPED, and the\n'
+  printf '      run is NOT green. This is not a verdict on gate.yml.\n'
+  printf '      The failing tests are:\n'
+  grep -E '^    [a-z_]+$' "$preflight_log" | sort -u | sed 's/^/        /' | head -20
+  printf '      Full gate output: %s\n' "$preflight_log"
+  printf '      REPORT-pantry-08-gate.md section 9 says whether these are ours.\n'
+fi
+printf '\n'
+
+# --------------------------------------------------------------------------
+# the controls
+# --------------------------------------------------------------------------
+printf '==> the controls: this repository, unmodified\n'
+
+control="$(fresh_copy control)"
+out="$(run_checker "$control")"
+code=$?
+if [ "$code" -ne 0 ]; then
+  failures=$((failures + 1))
+  printf 'FAIL  the static control: gate.yml as committed is not true of this tree\n%s\n' \
+    "$out" >&2
+else
+  printf 'ok    %-52s static, exit 0\n' 'the static control'
+fi
+
+# Every requirement in pantry's declaration is satisfied by a bare command on
+# PATH, which the checker deliberately does not run, so every run prints three
+# `gate.requirement-unproven` warnings and every one of them exits 0. Asserting
+# that here makes "three warnings on every run" a tested property rather than
+# something a reader has to notice in a log — and it is the assertion that keeps
+# `warn` a warning. Promote it to a failure and the checker is red on a laptop
+# and green on CI.
+warn_count="$(printf '%s' "$out" | grep -c '^WARN gate\.requirement-unproven' || true)"
+if [ "$warn_count" -eq 3 ] && [ "$code" -eq 0 ]; then
+  warn_cases=$((warn_cases + 1))
+  printf 'ok    %-52s 3 warnings, exit 0\n' \
+    'the three unrunnable requirements warn rather than fail'
+else
+  failures=$((failures + 1))
+  printf 'FAIL  expected exactly 3 gate.requirement-unproven warnings and exit 0,\n' >&2
+  printf '      got %s warnings and exit %s\n' "$warn_count" "$code" >&2
+fi
+
+# And green in the PROVING phase — the only phase that can tell a gate that ran
+# from a command that exited zero.
+#
+# **The distinction this makes is the packet's whole subject.** A red here is
+# either "this declaration is wrong" or "this repository's own suite is red", and
+# those two call for opposite responses: the first is this packet's job, the
+# second is somebody else's merge. Collapsing them is what sends a reader into
+# the wrong repository. So the second is named, counted as a SKIP, and the run is
+# still NOT green — because a control that could not be judged is not a passing
+# control, and calling it one is the false green this packet exists to remove.
+if [ "$can_prove" -eq 0 ]; then
+  skips=$((skips + 1))
+  printf 'SKIP  %-52s --prove runs the real gate\n' 'the proving control'
+else
+  control_prove="$(fresh_copy control-prove)"
+  out="$(run_checker "$control_prove" prove)"
+  code=$?
+  if [ "$code" -eq 0 ]; then
+    printf 'ok    %-52s --prove, exit 0\n' \
+      'the proving control: every proof appeared at or above its floor'
+  else
+    # Is `gate.nonzero` the ONLY finding? The floors and the absent proofs above
+    # it are all downstream of a gate that exited early, so a run where nothing
+    # but `gate.nonzero` fired is "this repository's suite is red", and a run with
+    # anything else fired is "this declaration does not match this gate". Both
+    # start as exit 1 and mean opposite things.
+    if suite_is_red "$out"; then
+      skips=$((skips + 1))
+      printf 'SKIP  %-52s this repository'"'"'s own suite is red\n' 'the proving control'
+      printf '      bin/prime exits nonzero, so no proof can be evaluated against it.\n'
+      printf '      See REPORT-pantry-08-gate.md 9 — the failures are cross-repository.\n'
+      printf '      The captured bytes are in %s\n' "$control_prove/.log/gate.log"
+    else
+      failures=$((failures + 1))
+      printf 'FAIL  the proving control: bin/prime did not satisfy the declaration —\n%s\n' \
+        "$out" >&2
+      printf '       Either the gate is red, or a declared proof does not match what\n'
+      printf '       this repository'"'"'s gate actually prints. The captured bytes are in\n'
+      printf '       %s\n' "$control_prove/.log/gate.log" >&2
+    fi
+  fi
+fi
+printf '\n'
+
+# --------------------------------------------------------------------------
+# the breakages: the declaration disagreeing with the tree
+# --------------------------------------------------------------------------
+
+printf '==> static breakages: the declaration vs. this tree\n'
+
+breakages=$((breakages + 1))
+one="$(fresh_copy no-declaration)"
+rm -f "$one/gate.yml"
+expect_red 'a repository that declares no gate at all' 'declaration-missing' "$one"
+
+breakages=$((breakages + 1))
+two="$(fresh_copy command-missing)"
+edit "$two/gate.yml" '  command: [bin/prime]' '  command: [bin/not-the-gate]'
+expect_red 'a gate command naming a file this repository does not have' \
+  'command-missing' "$two"
+
+breakages=$((breakages + 1))
+three="$(fresh_copy entrypoint-missing)"
+edit "$three/gate.yml" '  entrypoint: bin/prime' '  entrypoint: bin/not-the-gate'
+expect_red 'a gate entrypoint that does not exist, while the command still does' \
+  'entrypoint-missing' "$three"
+
+breakages=$((breakages + 1))
+four="$(fresh_copy entrypoint-not-executable)"
+chmod -x "$four/bin/prime"
+expect_red 'a gate nobody is allowed to execute' 'entrypoint-not-executable' "$four"
+
+breakages=$((breakages + 1))
+five="$(fresh_copy task-missing)"
+edit "$five/gate.yml" '  miseTask: prime' '  miseTask: verify'
+expect_red 'a mise task that is not in this repository'"'"'s mise config' \
+  'task-missing' "$five"
+
+breakages=$((breakages + 1))
+# The drift this one is for: `mise run prime` and gate.yml are two ways of
+# saying what the gate is, and this is the check that notices when they stop
+# being the same sentence.
+six="$(fresh_copy task-unresolvable)"
+edit "$six/mise.toml" 'run = "./bin/prime"' 'run = "./bin/only-lints"'
+expect_red 'a mise task that resolves to a DIFFERENT file than the entrypoint' \
+  'task-unresolvable' "$six"
+
+breakages=$((breakages + 1))
+seven="$(fresh_copy ci-missing)"
+edit "$seven/gate.yml" \
+  '  workflow: .github/workflows/ci.yml' '  workflow: .github/workflows/gate.yml'
+expect_red 'a declaration naming a CI workflow that is not in this repository' \
+  'ci-missing' "$seven"
+
+breakages=$((breakages + 1))
+# `ci-disagrees` is the check whose whole job is noticing that CI stopped
+# running the gate. The recipe replaces the ONE `run:` line in the workspace
+# job; `edit` fails loudly if that ever stops being a unique string, which is
+# how this case retires instead of silently breaking nothing.
+eight="$(fresh_copy ci-disagrees)"
+edit "$eight/.github/workflows/ci.yml" '        run: ./bin/prime' '        run: echo no gate here'
+expect_red 'a CI workflow whose gate step no longer invokes the gate' \
+  'ci-disagrees' "$eight"
+
+breakages=$((breakages + 1))
+# The negative twin, and the reason the case above is worth reading. Control 1 is
+# green on a workflow whose ONLY invocation of the declared argv is the one-line
+# form, so a reader collecting block bodies only would make control 1 red — the
+# fix in `core-12` is what makes it green. A green case with no red twin cannot
+# say which of the two is doing the work, so here the command goes entirely and
+# the argv is absent from every `run:` body. The finding has to be the same one.
+nine="$(fresh_copy ci-command-removed)"
+edit "$nine/.github/workflows/ci.yml" '        run: ./bin/prime' '        run: cargo test --no-fail-fast'
+expect_red 'a CI workflow whose gate step carries a different command' \
+  'ci-disagrees' "$nine"
+
+breakages=$((breakages + 1))
+# The identity defect in the shape of an over-claim: self-contained while still
+# enumerating four things it needs.
+ten="$(fresh_copy selfcontained-overclaim)"
+edit "$ten/gate.yml" '  selfContained: false' '  selfContained: true'
+expect_red 'a gate calling itself self-contained while naming what it needs' \
+  'schema' "$ten"
+
+breakages=$((breakages + 1))
+# `selfContained: false` with the list renamed out from under it is "it needs
+# things" written without saying what — which is exactly what identity's gate
+# did, and the shape this packet exists to make impossible to write.
+eleven="$(fresh_copy not-self-contained-and-says-nothing)"
+edit "$eleven/gate.yml" '  requirements:' '  unused-requirements:'
+expect_red 'a declaration that is not self-contained and names nothing it needs' \
+  'schema' "$eleven"
+
+breakages=$((breakages + 1))
+twelve="$(fresh_copy requirement-path-missing)"
+edit "$twelve/gate.yml" '        command: [cargo, fetch]' '        command: [bin/cargo-fetch]'
+expect_red 'a requirement satisfied by a file this repository does not have' \
+  'requirement-path-missing' "$twelve"
+
+breakages=$((breakages + 1))
+# Caught at the SHAPE layer, before the gate runs at all, which is the better
+# answer: a pattern that does not compile should not cost a whole gate runtime to
+# discover. The brief names this case — a proof pattern that will not compile is
+# a DEFECT, not "no proof required".
+thirteen="$(fresh_copy proof-uncompilable)"
+edit "$thirteen/gate.yml" \
+  "0 failed; 0 ignored; 0 measured; 0 filtered out;'" \
+  "0 failed; 0 ignored; 0 measured; 0 filtered out; ('"
+expect_red 'a proof whose pattern does not compile' 'schema' "$thirteen"
+printf '\n'
+
+# --------------------------------------------------------------------------
+# the warnings, and the promise they make
+# --------------------------------------------------------------------------
+
+printf '==> warnings: reported, and the exit code does not move\n'
+
+breakages=$((breakages + 1))
+w1="$(fresh_copy command-unknown)"
+edit "$w1/gate.yml" '  command: [bin/prime]' '  command: [pantry-gate-not-on-any-path]'
+expect_warn 'a gate command that is a bare name this machine does not have' \
+  'gate.command-unknown' "$w1"
+
+breakages=$((breakages + 1))
+w2="$(fresh_copy task-undeclared)"
+edit "$w2/gate.yml" '  miseTask: prime
+' ''
+expect_warn 'a repository with mise tasks and a declaration naming none of them' \
+  'gate.task-undeclared' "$w2"
+
+breakages=$((breakages + 1))
+w3="$(fresh_copy ci-undeclared)"
+# Deleted from the END of the file rather than by matching a block, because the
+# `ci:` block is the last thing in gate.yml but the exact trailing whitespace and
+# comment lines around it are not something to hardcode here. Slicing at the last
+# occurrence of `^ci:` keeps this recipe applying however the comment above it is
+# reworded — and if the block ever stops being last, this breakage silently
+# becomes a no-op, which is why the expectation below is checked for the finding
+# rather than for the absence of the text.
+python3 - "$w3/gate.yml" <<'PYEOF' || { failures=$((failures + 1)); EDIT_APPLIED=0; }
+import sys
+
+path = sys.argv[1]
+body = open(path, encoding="utf-8").read()
+head, sep, tail = body.rpartition("\nci:")
+if not sep:
+    raise SystemExit("gate-self-test: gate.yml has no top-level ci: block to remove")
+open(path, "w", encoding="utf-8").write(head + "\n")
+PYEOF
+EDIT_APPLIED=1
+expect_warn 'a declaration that says nothing about CI' 'gate.ci-undeclared' "$w3"
+printf '\n'
+
+# --------------------------------------------------------------------------
+# the breakages that need the gate to have run
+# --------------------------------------------------------------------------
+#
+# Every finding from here down is a PROVING-phase finding. That is worth saying
+# out loud because it was darkroom's bug: `gate.proof-missing`, `gate.nonzero`,
+# `gate.timeout`, `gate.floor` and `gate.proof-invalid` do not exist in the static
+# phase at all, so a case written against one of them and run WITHOUT `--prove`
+# cannot fail, and reports a clean static run instead. That is how five cases in
+# a copy of this script passed for a whole run while testing nothing.
+
+# THE ONE THAT IS NOT STRING MATCHING AT ALL. Every string in the declaration
+# about this copy is true — the command exists, the entrypoint is executable, the
+# mise task resolves to it, CI calls it, the schema is satisfied — and the
+# repository is ungated. Nothing about the declaration is wrong. The only thing
+# that catches it is asking the gate to say what it did, which is what
+# `gate.proof` is for, and it is the defect this whole packet exists to remove.
+breakages=$((breakages + 1))
+false_green="$(fresh_copy false-green)"
+write "$false_green/bin/prime" <<'SH'
+#!/usr/bin/env bash
+# A well-formed gate that runs nothing, prints nothing, and exits 0. This is the
+# false green reproduced deliberately: every string the declaration holds about
+# this repository is true, and the repository is not gated at all.
+exit 0
+SH
+chmod +x "$false_green/bin/prime"
+expect_red_prove 'a gate that exited 0 without running anything' \
+  'proof-missing' "$false_green"
+
+# The specific substitution the packet names: `bin/prime` REPLACED BY `exit 0`.
+# Kept as its own case even though it is a variant of the one above, because it
+# is the exact thing a reader wants to be able to reproduce, and a case that
+# breaks a different file is not obviously the same case.
+breakages=$((breakages + 1))
+exit_zero="$(fresh_copy bin-prime-is-exit-zero)"
+write "$exit_zero/bin/prime" <<'SH'
+#!/usr/bin/env bash
+# bin/prime, replaced by a script whose entire body is `exit 0`.
+exit 0
+SH
+chmod +x "$exit_zero/bin/prime"
+expect_red_prove 'bin/prime replaced by a script that is only `exit 0`' \
+  'proof-missing' "$exit_zero"
+
+# A GATE STEP DELETED. Nothing in the declaration is wrong, the suite still runs,
+# and the run is still green — this is guard's `typecheck` breakage and the
+# strongest argument for presence proofs with no floor. `bin/prime` loses its
+# clippy step AND its banner, so `gate.proof-missing` is the finding; the suite
+# proof is untouched, which is the whole point.
+breakages=$((breakages + 1))
+no_clippy="$(fresh_copy clippy-step-deleted)"
+edit "$no_clippy/bin/prime" 'step "cargo clippy -D warnings"
+cargo clippy --all-targets -- -D warnings
+' ''
+expect_red_prove 'a gate that quietly stopped linting' 'proof-missing' "$no_clippy"
+
+# THE SKIP REPORT DELETED — the case this packet exists for. `bin/prime`'s
+# `--nocapture` and its `skips: N` line are what make a stood-down tier visible
+# at all: libtest scores an early `return` as a pass AND discards the stderr that
+# said so, so before this change a run that verified pantry against itself was
+# indistinguishable from one that did not. Remove the reporting and the gate goes
+# back to being green over nothing.
+#
+# The breakage removes the `--nocapture` flag AND the whole reporting block that
+# prints `suite:` and `skips:`, so it reproduces the state this repository was in
+# before the packet rather than a partial imitation of it.
+#
+# The first draft removed only the flag. That is NOT the same defect, and it is
+# worth saying why: with the flag gone, libtest swallows the SKIP lines again,
+# so `suite_skipped` counts zero — and the gate prints `skips: 0 — every tier
+# ran` about a run in which nothing ran. The declaration stayed green, which is
+# correct: it is a presence proof and the line IS present. So that breakage is a
+# GREEN case, and it is asserted as one below rather than quietly deleted, because
+# "removing the flag alone is not caught" is a real property of this design and
+# the next reader should not have to rediscover it.
+breakages=$((breakages + 1))
+no_skip_report="$(fresh_copy skip-report-deleted)"
+python3 - "$no_skip_report/bin/prime" <<'PYEOF' || { failures=$((failures + 1)); EDIT_APPLIED=0; }
+import sys
+
+path = sys.argv[1]
+lines = open(path, encoding="utf-8").read().split("\n")
+out, skip = [], False
+for line in lines:
+    if "cargo test --no-fail-fast -- --nocapture" in line:
+        out.append('cargo test --no-fail-fast 2>&1 | tee "$test_log"')
+        continue
+    # Drop the reporting block: the awk that computes the total, and the whole
+    # `if/else` that echoes `suite:` and `skips:`.
+    if line.startswith("suite_passed=") or line.startswith("suite_skipped="):
+        skip = True
+        continue
+    if skip and (line.startswith("if [[ \"$suite_skipped\"") or line.startswith("  echo")
+                 or line.startswith("  grep '^SKIP '")):
+        continue
+    if skip and line == "fi":
+        skip = False
+        continue
+    out.append(line)
+open(path, "w", encoding="utf-8").write("\n".join(out))
+PYEOF
+EDIT_APPLIED=1
+expect_red_prove 'a gate that no longer reports which tiers stood down' \
+  'proof-missing' "$no_skip_report"
+
+# The green twin, and it is the interesting one. Removing ONLY `--nocapture`
+# reproduces the exact shape of the original defect — libtest discards the SKIP
+# lines, so the count is zero — and the gate then prints `skips: 0 — every tier
+# ran` over a run that verified nothing. The declaration cannot catch that: the
+# proof is a presence proof and the line is present.
+#
+# Asserting it GREEN is not covering for a hole. It is recording, as an
+# assertion rather than as a sentence nobody re-reads, the honest limit of what
+# `--nocapture` buys: it makes the count TRUE, and nothing makes a wrong count
+# fail. The mitigation is that `tests/ci.rs` forces the tier to run in CI at all,
+# and that the count is now printed on every run for a human to read. What is
+# NOT true is that any floor here would catch a regression to the no-flag state.
+breakages=$((breakages + 1))
+no_flag_only="$(fresh_copy nocapture-removed-only)"
+edit "$no_flag_only/bin/prime" \
+  'cargo test --no-fail-fast -- --nocapture 2>&1 | tee "$test_log"' \
+  'cargo test --no-fail-fast 2>&1 | tee "$test_log"'
+out="$(run_checker "$no_flag_only" prove)"
+code=$?
+if [ "$code" -eq 0 ]; then
+  warn_cases=$((warn_cases + 1))
+  printf 'ok    %-52s exit 0 — the known blind spot\n' \
+    '--nocapture removed but the reporting left in place'
+else
+  # Same distinction as `expect_green_prove`: a red that is ONLY this repository's
+  # own suite failing says nothing about whether the flag removal was caught.
+  if suite_is_red "$out"; then
+    skips=$((skips + 1))
+    printf 'SKIP  %-52s the suite is red for another reason\n' \
+      '--nocapture removed, reporting kept: only gate.nonzero'
+  else
+    printf 'note  --nocapture-removed-only went red BEYOND gate.nonzero (exit %s). A\n' "$code"
+    printf '      wrong skip count would now fail the gate, which is BETTER than\n'
+    printf '      expected and changes what this declaration proves. Record it in\n'
+    printf '      gate.yml.\n%s\n' "$out"
+  fi
+fi
+
+# And the suite total gone, which is the floor that moves when ANY test is lost
+# rather than when the alphabetically-last file is. Separate from the case above
+# because they protect different numbers and a gate that lost both is caught only
+# once.
+breakages=$((breakages + 1))
+no_total="$(fresh_copy total-report-deleted)"
+edit "$no_total/bin/prime" 'echo "suite: ${suite_passed} passed across 11 test binaries"' \
+  'true'
+expect_red_prove 'a gate that no longer prints the suite total' \
+  'proof-missing' "$no_total"
+
+# DELETING A TEST FILE the proofs name, and specifically THE SMALLEST ONE.
+#
+# `tests/recorded_copy.rs` holds 4 tests — the smallest file in `tests/`, measured
+# by counting `#[test]` attributes, not estimated. Deleting it takes the suite
+# total from 114 to 110 against a floor of 112, so it is `gate.floor`.
+#
+# This case is the one that changed the declaration. The first draft set the
+# `total` floor to 110 with a margin of five, copying guard/muse/courier. That
+# margin meant this deletion landed EXACTLY on the floor and satisfied it: a
+# four-test file was invisible. The floor is now 112 and the margin is two, which
+# is smaller than the smallest file. Deleting `tests/kind.rs` (7 tests) is the
+# weaker version of the same case and is asserted alongside it, because a
+# declaration that only catches the big files is one that has not been measured
+# against the small ones.
+breakages=$((breakages + 1))
+deleted_small="$(fresh_copy smallest-test-file-deleted)"
+rm -f "$deleted_small/tests/recorded_copy.rs"
+expect_red_prove 'the SMALLEST test file deleted (4 tests) — the margin that hid it' \
+  'floor' "$deleted_small"
+
+breakages=$((breakages + 1))
+deleted_test="$(fresh_copy test-file-deleted)"
+rm -f "$deleted_test/tests/kind.rs"
+expect_red_prove 'a 7-test file deleted' 'floor' "$deleted_test"
+
+# THE NEAR-MISS, ASSERTED DIRECTLY. Deleting `tests/kind.rs` leaves the `suite`
+# proof completely untouched, and that is not a guess: `suite` reads the LAST
+# `test result:` line, which is `tests/schema.rs`, and a deleted `kind.rs` does
+# not change schema.rs's count. So this case asserts BOTH halves — that
+# `suite` alone would have stayed green, and that `total` is what catches it.
+#
+# Asserting only the catch would let a future edit to gate.yml quietly make the
+# floors redundant without anybody noticing, which is precisely how guard's
+# near-miss survived in the first place.
+if [ "$can_prove" -eq 0 ]; then
+  skips=$((skips + 1))
+  printf 'SKIP  %-52s --prove runs the real gate\n' 'the suite-floor near-miss, asserted'
+else
+  breakages=$((breakages + 1))
+  near_miss="$(fresh_copy suite-floor-near-miss)"
+  rm -f "$near_miss/tests/kind.rs"
+  # Drop the `total` proof, so only `suite` is left to catch this.
+  python3 - "$near_miss/gate.yml" <<'PYEOF' || { failures=$((failures + 1)); EDIT_APPLIED=0; }
+import sys
+
+path = sys.argv[1]
+body = open(path, encoding="utf-8").read()
+blocks = body.split("    - id: ")
+kept = [blocks[0]] + [b for b in blocks[1:] if not b.startswith("total\n")]
+if len(kept) == len(blocks):
+    raise SystemExit("gate-self-test: no `total` proof to remove")
+open(path, "w", encoding="utf-8").write("    - id: ".join(kept))
+PYEOF
+  EDIT_APPLIED=1
+  out="$(run_checker "$near_miss" prove)"
+  code=$?
+  if [ "$code" -eq 0 ]; then
+    warn_cases=$((warn_cases + 1))
+    printf 'ok    %-52s exit 0, as it must\n' \
+      'NEAR-MISS: a 7-test deletion passes `suite` alone'
+  else
+    if suite_is_red "$out"; then
+      skips=$((skips + 1))
+      printf 'SKIP  %-52s the suite is red for another reason\n' \
+        'NEAR-MISS: only gate.nonzero, so the claim cannot be judged'
+    else
+      failures=$((failures + 1))
+      printf 'FAIL  the near-miss case went red, which means `suite` now catches a\n' >&2
+      printf '      7-test deletion on its own. That is BETTER than expected, and it\n' >&2
+      printf '      means gate.yml says the floors are independent when they are not.\n%s\n' \
+        "$out" >&2
+    fi
+  fi
+fi
+
+# DELETING A SCRIPT THE PROOFS NAME — `bin/prime` itself, which is simultaneously
+# the entrypoint and the thing every proof reads. Two findings fire here and both
+# are correct; the entrypoint one is what the assertion names.
+breakages=$((breakages + 1))
+deleted_script="$(fresh_copy entrypoint-deleted)"
+rm -f "$deleted_script/bin/prime"
+expect_red 'the gate file itself, deleted' 'entrypoint-missing' "$deleted_script"
+
+# A FLOOR RAISED PAST WHAT THE SUITE REPORTS. Proves the floor is a live number
+# and not decoration: the pattern compiles, the gate is true, and the declaration
+# is red because the number is below what it promised.
+breakages=$((breakages + 1))
+floor="$(fresh_copy floor-too-high)"
+edit "$floor/gate.yml" '      minimum: 7' '      minimum: 9999'
+expect_red_prove 'a gate that proved fewer tests than the declaration promised' \
+  'floor' "$floor"
+
+# The same floor raised on the SUITE-WIDE count rather than the per-binary one.
+# The two catch different deletions and both were measured, which is why there
+# are two.
+breakages=$((breakages + 1))
+total_floor="$(fresh_copy total-floor-too-high)"
+edit "$total_floor/gate.yml" '      minimum: 112' '      minimum: 9999'
+expect_red_prove 'a gate whose suite total fell below the promised floor' \
+  'floor' "$total_floor"
+
+# THE FLOOR THAT MUST NOT BE RAISED. The near-miss, stated as an assertion
+# rather than left as a lesson in a comment.
+#
+# `skip-count`'s `minimum` is 0 on purpose. A future packet that "helpfully"
+# raises it to today's skip count on some machine would turn "the drift tier
+# stood down" into a green — the exact defect this whole packet exists to
+# remove, introduced by the very mechanism introduced to remove it. So this case
+# raises it and asserts the run is STILL GREEN.
+#
+# What it proves is narrower than it looks, and honestly so: it proves the
+# declaration is indifferent to the NUMBER, because the proof asserts presence
+# and a lower bound of 0 is satisfied by every value. It does not prove the
+# skip-reporting survives — `skip-report-deleted` above does that. What it
+# forbids is the specific wrong turn of hardening this number into a target.
+breakages=$((breakages + 1))
+skip_floor_raised="$(fresh_copy skip-floor-raised)"
+# Deliberately NOT matching the comment block above `minimum: 0`. The first draft
+# of this case quoted those comment lines verbatim, and it broke twice for
+# reasons that had nothing to do with the case: the em-dash and the phrase inside
+# the backticks made the shell do command substitution, so the recipe it compared
+# against was not the recipe in the file. A breakage should be ONE edit against a
+# green — quoting a paragraph of prose to move a number is the recipe most likely
+# to rot. So this one replaces the `minimum:` line belonging to the `skip-count`
+# proof and nothing else, found by splitting the proof list on `- id:`.
+python3 - "$skip_floor_raised/gate.yml" <<'PYEOF' || { failures=$((failures + 1)); EDIT_APPLIED=0; }
+import re
+import sys
+
+path = sys.argv[1]
+body = open(path, encoding="utf-8").read()
+blocks = body.split("    - id: ")
+for index, block in enumerate(blocks):
+    if block.startswith("skip-count\n") and "minimum: 0" in block:
+        blocks[index] = block.replace("minimum: 0", "minimum: 40", 1)
+        break
+else:
+    raise SystemExit("gate-self-test: no skip-count proof with `minimum: 0` to raise")
+open(path, "w", encoding="utf-8").write("    - id: ".join(blocks))
+PYEOF
+EDIT_APPLIED=1
+out="$(run_checker "$skip_floor_raised")"
+code=$?
+if [ "$code" -ne 0 ]; then
+  failures=$((failures + 1))
+  printf 'FAIL  a skip floor above 0 did not stay green. That number is a lower bound\n' >&2
+  printf '      on a count that is zero in the healthy case; a floor on it can only\n' >&2
+  printf '      ever fire when a tier stood down, which is the defect, not a catch.\n%s\n' \
+    "$out" >&2
+else
+  warn_cases=$((warn_cases + 1))
+  printf 'ok    %-52s exit 0, as it must\n' \
+    'a skip floor above zero: still green, which is the point'
+fi
+
+# A FLOOR WITH NO CAPTURE GROUP TO READ IT FROM. One half of a finding: the
+# pattern compiles and the declaration is well formed, and the floor is promised
+# against a group that is not there. A checker that read that as "no floor" would
+# accept a suite of any size.
+breakages=$((breakages + 1))
+unmeasurable="$(fresh_copy floor-with-no-group)"
+edit "$unmeasurable/gate.yml" \
+  "match: 'test result: ok\\. ([1-9][0-9]*) passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;'" \
+  "match: 'test result: ok\\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;'"
+expect_red_prove 'a floor with no capture group to read the floor from' \
+  'proof-invalid' "$unmeasurable"
+
+# The other half of that rule, and the one every other group in a pattern obeys:
+# it is `(?:...)`. A floor is read from EXACTLY ONE group, so a second one is not
+# a smaller pattern — it is an ambiguous declaration, because "the number" is no
+# longer a single thing in the pattern. core says so in words and in the checker
+# (`compiled.groups != 1`), and this is the case that says it here.
+#
+# It is applied to `total`, NOT to `suite`, and the reason is worth recording
+# because the first draft of this case got it wrong and went red for the wrong
+# reason. `suite`'s pattern ends at `0 filtered out;` — the real line continues
+# ` finished in 0.00s` — so appending a group there yields a pattern that matches
+# NOTHING, and the checker reports `gate.proof-missing` and returns before it
+# ever looks at the group count. The case would then have "passed" on a
+# different finding while testing nothing about groups, which is the exact
+# failure mode this script exists to prevent, one layer up.
+#
+# `total`'s pattern is the whole line, so the appended group still matches a real
+# line and `gate.proof-invalid` is genuinely the finding.
+breakages=$((breakages + 1))
+two_groups="$(fresh_copy floor-with-two-groups)"
+edit "$two_groups/gate.yml" \
+  "match: '^suite: ([0-9]+) passed across [0-9]+ test binaries\$'" \
+  "match: '^suite: ([0-9]+) passed across ([0-9]+) test binaries\$'"
+expect_red_prove 'a floor with a SECOND capture group beside it' \
+  'proof-invalid' "$two_groups"
+
+# A PROOF THAT MATCHES NOTHING THE REAL GATE PRINTS. Not string matching at all:
+# the pattern is well formed, the gate really runs, all 114 tests really execute,
+# and the declaration is red only because it promised a line that is not on.
+breakages=$((breakages + 1))
+unmatched="$(fresh_copy proof-matches-nothing)"
+edit "$unmatched/gate.yml" "0 failed; 0 ignored; 0 measured;" "0 failed; 999999 ignored; 0 measured;"
+expect_red_prove 'a proof that matches nothing the real gate prints' \
+  'proof-missing' "$unmatched"
+
+# RUNS, PRINTS EVERY DECLARED PROOF, AND STILL FAILS. Without this the checker
+# would accept a gate that proved itself and died on the next line — and
+# `gate.proof-missing` on its own would too.
+breakages=$((breakages + 1))
+nonzero="$(fresh_copy gate-ran-and-failed)"
+edit "$nonzero/bin/prime" 'step "ok"' 'step "ok"
+echo "FAIL one assertion in a suite this gate did not really run" >&2
+exit 1'
+expect_red_prove 'a gate that printed its proofs and then failed' 'nonzero' "$nonzero"
+
+# A BUDGET SO SMALL THE GATE CANNOT FINISH INSIDE IT, and WITHOUT a sleep:
+# `sleep 3` would make the answer depend on the scheduler rather than on the
+# checker. A CPU-bound wait ends by itself, so a checker that failed to stop the
+# gate makes this script slow rather than hung.
+breakages=$((breakages + 1))
+overrun="$(fresh_copy timeout)"
+edit "$overrun/gate.yml" '  timeoutSeconds: 3600' '  timeoutSeconds: 1'
+write "$overrun/bin/prime" <<'SH'
+#!/usr/bin/env bash
+# Burns CPU for a few seconds and never sleeps, so the result depends on the
+# checker's budget rather than on a timer.
+set -uo pipefail
+python3 - <<'PYEOF'
+import time
+
+end = time.monotonic() + 3.0
+while time.monotonic() < end:
+    pass
+PYEOF
+SH
+chmod +x "$overrun/bin/prime"
+expect_red_prove 'a gate that outlived the budget its own declaration gave it' \
+  'timeout' "$overrun"
+
+# THE TOOLCHAIN CHECK, BROKEN. This is the case that is only pantry's: the gate
+# opens with a pin assertion, and deleting it is a green gate on a machine
+# answering with the wrong rustc — which is the cafaye-rb defect wearing a Rust
+# hat. Removing the block takes the banner with it, so the `toolchain` proof is
+# the finding.
+breakages=$((breakages + 1))
+no_toolchain="$(fresh_copy toolchain-check-deleted)"
+edit "$no_toolchain/bin/prime" 'step "toolchain: rustc $actual_rust (mise.toml pins $pinned_rust)"
+rustc --version
+' ''
+expect_red_prove 'a gate that no longer checks the toolchain it runs on' \
+  'proof-missing' "$no_toolchain"
+
+# --------------------------------------------------------------------------
+# THE REGRESSION GUARD ON THE ESCAPE TOLERANCE
+# --------------------------------------------------------------------------
+#
+# Every case above proves a proof behaves correctly. None of them notices if
+# somebody PUTS ANSI ESCAPE TOLERANCE BACK, because a pattern that tolerates
+# escapes still satisfies every green case and every red case whose defect is a
+# missing line — it just also accepts the escaped bytes. core strips ANSI before
+# matching (MD17), so a tolerance here is not a workaround; it is a pattern that
+# is broader than the line it is supposed to name. This case notices.
+#
+# Scoped to `match:` deliberately: the comments in gate.yml quote the captured
+# bytes on purpose, and a check that failed on those would have to be deleted the
+# moment somebody explained them. The token list is every way the tolerance
+# could be spelled again — the ESC byte raw or escaped, and the SGR shape itself.
+if escapes=$(python3 - "$ROOT/gate.yml" <<'PYEOF'
+import re
+import sys
+
+# Every way an escape could be spelled again, and nothing else. A character class
+# with letters in it is deliberately NOT flagged: `[a-z]` is an ordinary thing for
+# a proof to match and flagging it would make this case wrong for every
+# declaration except this one. The `-` goes LAST in that class so it is a literal
+# hyphen rather than a range operator.
+TOKENS = re.compile(r'\x1b|\x9b|\\x1[bB]|\\x9[bB]|\\033|\\e|\\u001[bB]|\[[0-9;:?-]*\][*+?]*m')
+
+path = sys.argv[1]
+offenders, patterns = [], 0
+for number, raw in enumerate(open(path, encoding="utf-8").read().splitlines(), start=1):
+    line = raw.strip()
+    if not line.startswith("match:"):
+        continue
+    patterns += 1
+    body = line[len("match:"):].strip().strip("'\"")
+    for token in TOKENS.finditer(body):
+        offenders.append(f"line {number}: {token.group(0)!r} in {body}")
+if not patterns:
+    print("gate.yml declares no match: pattern at all, which is a broken file")
+    raise SystemExit(1)
+if offenders:
+    print("\n  ".join(offenders))
+    raise SystemExit(1)
+PYEOF
+); then
+  printf 'ok    %-52s no terminal escape in any match:\n' \
+    'no proof pattern in gate.yml names a terminal escape'
+else
+  failures=$((failures + 1))
+  printf 'FAIL  a match: pattern in gate.yml can match a terminal escape:\n%s\n' "$escapes" >&2
+  printf '      core strips ANSI before matching (MD17), so a tolerance here is not a\n' >&2
+  printf '      workaround — it is a pattern that also accepts the lines it should refuse\n' >&2
+fi
+
+# --------------------------------------------------------------------------
+# THE ONE CASE THAT IS EXPECTED TO STAY GREEN
+# --------------------------------------------------------------------------
+#
+# Not a breakage. It is the one thing in gate.yml that nothing in this repository
+# can check, recorded here as a limitation with a reproduction rather than left to
+# be discovered by somebody who believed the word "checked".
+#
+# `selfContained: true` with an EMPTY requirements list is a perfectly valid
+# declaration of a perfectly false thing: this gate needs rustc, crates.io, a
+# cafaye workspace and a Go toolchain, and the checker reads the DECLARATION, not
+# the machine and not the network. Nothing in the tree can prove the absence of a
+# fetch, so no breakage of gate.yml will ever turn this red. It is `external`
+# being load-bearing in one direction only: the schema can insist that "not
+# self-contained" comes with a list, and it cannot insist the list is honest.
+#
+# Written whole rather than edited, because a blind spot that only reproduces
+# through a two-step edit is a blind spot nobody will ever re-run.
+breakages=$((breakages + 1))
+blind="$(fresh_copy blind-spot-selfcontained-true)"
+write "$blind/gate.yml" <<'YAML'
+version: 1
+name: pantry
+
+gate:
+  command: [bin/prime]
+  miseTask: prime
+  entrypoint: bin/prime
+  timeoutSeconds: 3600
+  proof:
+    - id: suite
+      match: '^([0-9]+)$'
+      minimum: 1
+
+external:
+  selfContained: true
+  requirements: []
+
+ci:
+  workflow: .github/workflows/ci.yml
+  invokes: [./bin/prime]
+YAML
+out="$(run_checker "$blind")"
+code=$?
+if [ "$code" -eq 0 ]; then
+  warn_cases=$((warn_cases + 1))
+  printf 'ok    %-52s exit 0, as it must\n' \
+    'the documented blind spot: selfContained: true with no requirements'
+else
+  failures=$((failures + 1))
+  printf 'FAIL  the documented blind spot went red, which means this checker now\n' >&2
+  printf '      knows something it is documented not to know. Re-read the case.\n%s\n' "$out" >&2
+fi
+
+# --------------------------------------------------------------------------
+
+printf '\n'
+if [ "$skips" -ne 0 ]; then
+  printf 'SKIPPED %d case(s). A skipped check is not a passing check.\n' "$skips"
+fi
+printf 'gate-self-test: %s breakages, %s warning cases, %s failure(s), %s skipped\n' \
+  "$breakages" "$warn_cases" "$failures" "$skips"
+if [ "$failures" -ne 0 ]; then
+  exit 1
+fi
+if [ "$skips" -ne 0 ]; then
+  # kit's rule, applied here: a skip in a self-test fails the run. The static half
+  # ran and its results are real; the proving half did not, and calling that green
+  # would be the false green this script exists to catch.
+  exit 1
+fi
+exit 0
