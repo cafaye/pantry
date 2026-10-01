@@ -107,7 +107,7 @@ services:
     kind: api
     basePath: /v1
     # The commit of courier's own repository this copy was taken from.
-    recordedAt: cc0c532535ea14a26b23117c44077036a8e5cd64
+    recordedAt: 73c9034404759ac0e2cac0cf2bfaa9254dfef53e
 
   # pantry is in its own registry, which is the point: a service registry that
   # cannot describe the registry is a registry `caf dev` has to special-case.
