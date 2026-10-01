@@ -83,6 +83,15 @@ bottom.
   has to contain the shapes of the **mistake**, not only the shapes of the
   attack.
 
+  A second one, from a failure I caused rather than a mutation: the on-disk
+  probe set's size is **floored at 15, and the six held-back names are checked
+  for membership**, not pinned to an exact count. Pinning it meant writing this
+  packet's own report file turned a reach guard red. The property is "no path in
+  this repository is reachable by name", not "this repository has N top-level
+  entries" — and a number that goes red because a file was added is a number
+  people bump without reading, which is the exemption branch `AGENTS.md` warns
+  about.
+
   **No 403 was found**, so nothing in `src/` changed. The one existence oracle
   pantry does have — a registered name answering 200 and an unregistered one 404
   — is **deliberate and now recorded as such** in

@@ -169,6 +169,7 @@ found a hole in my own test.**
 | 2 | `read_to_string(registry_dir().join(&name))` in `get_service` | `a_service_name_reaches_a_string_comparison_and_never_a_path` |
 | 3 | `to_lowercase()` in `Registry::get`                          | both halves; `Courier` becoming a hit is caught |
 | 4 | **`Problem::forbidden` + `if name.contains("tenant")`**       | **`tests/scoping.rs` twice, and the behavioural file *not at all*** |
+| 5 | writing this report file                                     | `the_only_names_that_answer_two_hundred_are_the_registered_ones` — **and the assertion was wrong** |
 
 **Mutation 4 is the finding, and it is why there is a separate commit for it.**
 
@@ -191,7 +192,26 @@ not only the shapes of the *attack*.** A near miss tests the comparison; a
 scope-shaped name tests the refusal. I had one and not the other, and the gate
 was green on a suite that could not see the thing it was written for.
 
-All four mutations reverted. `git diff src/` is empty.
+All five mutations reverted. `git diff src/` is empty.
+
+**Mutation 5 was not a mutation at all, which is why it is worth writing down.**
+`the_only_names_that_answer_two_hundred_are_the_registered_ones` walked this
+repository's root and asserted the exact number of names it probed. Writing this
+report added a file to the root, the count moved 29 → 30, and the test went red.
+
+The test did its job — it noticed a change in what the sweep covers. The
+*assertion* was wrong: the property is "no path in this repository is reachable
+by name", not "this repository has N top-level entries", and a new file is not a
+defect. A number that goes red for that reason is a number people bump without
+reading, which is the exemption branch `AGENTS.md` warns about. So the total is
+now **floored at 15** root entries and the six held-back repositories are
+checked for **membership** rather than counted — the set cannot fail for a file
+that went missing, and the count cannot fail for a file that arrived.
+
+Worth recording as a process fact rather than a lesson about tests: a hardcoded
+count over a directory that a *later commit in the same packet* will add to is
+going to be wrong, and the ordering of my writes was part of what the test
+asserted. The four mutations were deliberate; this one I did to myself.
 
 ## Two things recorded as deliberate, not treated as defects
 
@@ -276,6 +296,8 @@ it carried.
 | `b040157` | a negative case per entry point — `tests/entry_point_isolation.rs`, 11 tests |
 | `82907d9` | nine scope-shaped names, because mutation 4 needed them |
 | `81730e7` | CHANGELOG, at the top of Unreleased |
+| `04b33fc` | this report |
+| `31b6fe8` | floor the on-disk probe count, because mutation 5 needed it |
 
 Committed inside the first ten minutes as the addendum asked, then after each
 test group.
