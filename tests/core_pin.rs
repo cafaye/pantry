@@ -176,7 +176,10 @@ fn classify(name: &str) -> Option<DocumentKind> {
     if name.ends_with(".cafaye.yml") {
         return Some(DocumentKind::Manifest);
     }
-    if let Some((_, kind, _)) = NON_MANIFEST_EXAMPLES.iter().find(|(file, _, _)| *file == name) {
+    if let Some((_, kind, _)) = NON_MANIFEST_EXAMPLES
+        .iter()
+        .find(|(file, _, _)| *file == name)
+    {
         return Some(*kind);
     }
     None

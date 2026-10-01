@@ -203,14 +203,16 @@ fn contract_filter_matches_by_range_intersection() {
         contract: Some(Constraint::parse(&format!(">={lowest}")).expect("grammar")),
         ..Filter::default()
     };
-    assert_eq!(names(all).len(), registry.len(), ">={lowest} is a floor nothing is under");
+    assert_eq!(
+        names(all).len(),
+        registry.len(),
+        ">={lowest} is a floor nothing is under"
+    );
 
     for pin in by_pin.keys() {
         let ceiling = ceiling_of(pin);
         let none = Filter {
-            contract: Some(
-                Constraint::parse(&format!("^0.{}.0", ceiling + 1)).expect("grammar"),
-            ),
+            contract: Some(Constraint::parse(&format!("^0.{}.0", ceiling + 1)).expect("grammar")),
             ..Filter::default()
         };
         assert_eq!(
@@ -373,7 +375,12 @@ fn two_filters_are_both_applied() {
 /// A pin that cannot contain any version `pin` can: caret on a `0.x` pins the
 /// minor, so `^0.2.0` and `^0.1.0` are disjoint ranges.
 fn disjoint_pin(pin: &str) -> Option<String> {
-    let minor = pin.strip_prefix("^0.")?.split('.').next()?.parse::<u32>().ok()?;
+    let minor = pin
+        .strip_prefix("^0.")?
+        .split('.')
+        .next()?
+        .parse::<u32>()
+        .ok()?;
     (minor > 0).then(|| format!("^0.{}.0", minor - 1))
 }
 

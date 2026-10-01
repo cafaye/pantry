@@ -444,10 +444,7 @@ async fn every_filter_narrows_the_list() {
         // is the point of asking by language: guard serves HTTP on ^0.1.0 and
         // cafaye-ts is the client, on ^0.2.0, serving nothing.
         ("?language=typescript", &["cafaye-ts", "guard"]),
-        (
-            "?kind=api&language=python&contract=%5E0.2.0",
-            &["muse"],
-        ),
+        ("?kind=api&language=python&contract=%5E0.2.0", &["muse"]),
     ];
 
     for (query, want) in cases {
@@ -521,7 +518,7 @@ async fn a_filter_that_matches_nothing_is_an_empty_list() {
         "?kind=worker",
         "?kind=both",
         // courier is the only elixir service and it is on ^0.1.0, so `elixir`
-// A contract pin no service carries. `^9.0.0` has never been one, and
+        // A contract pin no service carries. `^9.0.0` has never been one, and
         // cannot become one without a service being written against it.
         "?contract=%5E9.0.0",
     ] {
@@ -559,10 +556,16 @@ async fn two_filters_the_fleet_makes_disjoint_return_an_empty_list() {
     let mut every_pin: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for service in names(&everything) {
         let one = call(app(), &format!("/v1/services/{service}")).await;
-        let language = one.body["language"].as_str().expect("a language").to_string();
+        let language = one.body["language"]
+            .as_str()
+            .expect("a language")
+            .to_string();
         let pin = one.body["core"].as_str().expect("a core pin").to_string();
         every_pin.insert(pin.clone());
-        by_language.entry(language).or_default().push((service, pin));
+        by_language
+            .entry(language)
+            .or_default()
+            .push((service, pin));
     }
 
     let mut checked = 0usize;
@@ -577,7 +580,9 @@ async fn two_filters_the_fleet_makes_disjoint_return_an_empty_list() {
         }
         let (service, its_pin) = &members[0];
         let Some(other_pin) = disjoint_from(its_pin) else {
-            unreached.push(format!("{service} is on {its_pin}, a pin form this cannot reason about"));
+            unreached.push(format!(
+                "{service} is on {its_pin}, a pin form this cannot reason about"
+            ));
             continue;
         };
 
