@@ -211,15 +211,26 @@ gate:
       # the margin is two rather than the five the `suite` floor above uses for a
       # MEASURED reason that the first draft of this file got wrong.
       #
-      # **Still 112, against a measured 146, and NOT raised — deliberately.** The
-      # argument below is a margin, and a margin is a statement about how far the
-      # count may FALL before it means something. Raising the floor to keep pace
-      # with the count would convert a deletion-detector into a growth-assertion,
-      # and a growth-assertion is a check that goes red every time somebody adds
-      # a test — which is a red that gets edited rather than investigated, and
-      # editing it is how 112 became wrong in the first place. The re-measured
-      # numbers are in the header block above; the floor stays put and the gap
-      # is 34, which is headroom in the only direction that is safe.
+      # **Raised 112 -> 144, and the reason is that leaving it was WRONG — it was
+      # caught by `bin/gate-self-test`, which is the whole reason that script
+      # exists.** An earlier draft of this packet argued the floor should stay at
+      # 112 on the grounds that it is a decrease-detector and a margin is a
+      # statement about how far the count may fall. That reasoning was correct
+      # about the DIRECTION and wrong about the CONSEQUENCE: the margin has to be
+      # smaller than the smallest test file, and "146 - 4" is a 4-test file
+      # falling from 146 to 142 against a floor of 112 — which SATISFIES it. The
+      # detector had stopped detecting, by 30 tests, and nothing said so.
+      #
+      # This is guard's near-miss reproduced in a second direction. That one was a
+      # margin of five hiding a four-test file; this one is a margin of 34 hiding
+      # the same file, and it was introduced by *adding tests*, which is why it
+      # looked like the safe direction. "Safe" is the word that should make a
+      # reader suspicious of a floor.
+      #
+      # 144 against a measured 146: a margin of two, unchanged in kind, and
+      # `bin/gate-self-test` asserts both ends of it — deleting
+      # `tests/recorded_copy.rs` (4) and `tests/kind.rs` (7) are both `gate.floor`
+      # again, re-run after this change rather than argued about.
       #
       # This floor is what catches a deleted test FILE, since the format cannot
       # express a floor on the file count itself (see `targets` for the two
@@ -235,10 +246,14 @@ gate:
       # measuring the file sizes rather than by reasoning about them.
       #
       # A margin of two leaves headroom for the consolidation a growing
-      # repository does, and still trips on the smallest file: 114 - 4 = 110,
-      # below 112. Raising this number is a deliberate act and belongs in the same
-      # commit as the test it accounts for.
-      minimum: 112
+      # repository does, and still trips on the smallest file: 146 - 4 = 142,
+      # below 144. **Raising this number is a deliberate act and belongs in the
+      # same commit as the test it accounts for** — and, on the evidence above, it
+      # belongs in the same commit as any commit that ADDS tests, because adding
+      # tests is what opens the margin. The line above that says "raising this
+      # number is deliberate" is not a formality: this number is wrong again
+      # within about thirty tests, silently.
+      minimum: 144
     # ---------------------------------------------------------------------
     # The structural detector, and the one proof here that is immune to the
     # environment-gated tier. `Running tests/<name>.rs` is printed once per
