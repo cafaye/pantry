@@ -137,53 +137,73 @@ jobs:
     # minute. `docs` is here because the coverage test in tests/drift.rs asks
     # about it by name. `pantry` is absent because it is the checkout above.
     #
-    # CAFAYE_UNREADABLE is the curated names this job cannot clone, and why,
-    # because the two reasons are not the same and collapsing them would make the
-    # list mean one thing twice. It is a fact about the runner, not an exemption
-    # from coverage:
+    # `cafaye-py` was moved here by pantry-23: it was declared unreadable and is
+    # a written PUBLIC repository (pyproject.toml, CHANGELOG, its own gate, 948
+    # tests) whose exclusion row called it "a directory, not yet a repository".
+    # Cloning it is what ends the vacuous pass the row had to confess to —
+    # `no-manifest` is now asserted against real bytes on every CI run.
     #
-    #   cafaye-rb is PRIVATE — `gh repo view cafaye/cafaye-rb` says PRIVATE, and
-    #   an anonymous `git clone https://github.com/cafaye/cafaye-rb.git` from a
-    #   hosted runner is a 404. That is why it is named here rather than left to
-    #   fail the clone step: a 404 reads as "this repository does not exist", not
-    #   as "this repository is not yours", and the second reading is the true
-    #   one. The credential that would fix it is exactly what pantry-04 deleted
-    #   from this workflow — a long-lived key in repository settings, for one
-    #   private repository that is a Ruby gem and not a service.
+    # CAFAYE_UNREADABLE is the curated names this job cannot clone, and why. It
+    # is a fact about the runner, not an exemption from coverage, and after
+    # pantry-23 it carries ONE claim across both of its entries:
     #
-    #   cafaye-py DOES NOT EXIST YET — `moon/cafaye/cafaye-py/` is a directory
-    #   with nothing in it, curated in registry/index.yml as
-    #   `blockedBy: no-manifest` so the registry has an opinion about it. There
-    #   is no repository to clone and no remote that would answer: the same 404,
-    #   for the opposite reason, and it would take the job's clone step down with
-    #   `set -euo pipefail`. This entry is here because
-    #   `the_drift_job_clones_every_repository_pantry_curates` refuses a curated
-    #   name that is in neither list — the check fired, and this is the answer it
-    #   demanded. It is a claim about coverage, not about permissions: nothing
-    #   about cafaye-py is unreadable, because there is nothing there to read.
-    #   When the Python client is written, this name moves to CAFAYE_REPOS and
-    #   the row in registry/index.yml is deleted in the same commit. The honest
-    #   vocabulary for that row is a fifth `blockedBy` — `planned` — and it is
-    #   `DECISIONS.md` D2, open.
+    #   cafaye-rb  a private repository. `site` a private repository, seeded
+    #              from the public `parlor` template. Both are anonymous 404s
+    #              and for the same reason, so the list means one thing again —
+    #              which is what DECISIONS.md D2's ruling needed and could not
+    #              have had while `cafaye-py` sat here for a different reason.
+    #
+    #   A 404 is named here rather than left to fail the clone step because a
+    #   404 reads as "this repository does not exist", not as "this repository
+    #   is not yours", and the second reading is the true one. The credential
+    #   that would fix it is exactly what pantry-04 deleted from this workflow —
+    #   a long-lived key in repository settings, for two private repositories
+    #   that are a gem and a website, neither of which is a service.
+    #
+    #   `site` is here for a reason worth stating, because pantry-23 got it
+    #   wrong first. `site` is `parlor` renamed (`7a44310 rename: this
+    #   repository is site, not parlor`) and was added to CAFAYE_REPOS on the
+    #   reasoning that a fork of a public template would be public. It is not:
+    #   `site/cafaye.yml` declares `visibility: private` in its own
+    #   `repository:` block, and an anonymous `git ls-remote
+    #   https://github.com/cafaye/site.git HEAD` is a 404. That would have taken
+    #   this job's clone step down under `set -euo pipefail`. **A manifest is
+    #   the record of its own visibility**, and the cheap way to be wrong about a
+    #   cafaye repository is to infer its visibility from its name.
+    #
+    #   FINDING, not acted on, because acting on it belongs to a packet that
+    #   does not own cafaye-rb: an anonymous `git ls-remote
+    #   https://github.com/cafaye/cafaye-rb.git HEAD` SUCCEEDED on 2026-10-02,
+    #   which says the repository reads without a credential and the PRIVATE
+    #   claim three files have repeated since pantry-03 no longer holds. Moving
+    #   the name to CAFAYE_REPOS would end a real coverage gap, and it is
+    #   deliberately not done here, because the two errors are not symmetric:
+    #   leaving it wrong keeps a gap that is at least written down, and moving
+    #   it wrong takes the drift job down on a 404. Confirm with
+    #   `gh repo view cafaye/cafaye-rb` and move it in the same commit.
     #
     # What it costs, stated here rather than left to be inferred from a green
     # badge: `every_exclusion_reason_is_still_true` cannot check the
-    # `cafaye-rb` exclusion row, because there is no checkout to read. That row's
-    # reason is verified by a developer's run of the test with
-    # PANTRY_CAFAYE_ROOT pointed at a real workspace, and by nothing else.
-    # `tests/schema.rs` prints a SKIP for that row saying exactly that, and
+    # `cafaye-rb` or `site` exclusion rows, because there is no checkout to
+    # read. Those rows' reasons are verified by a developer's run of the test
+    # with PANTRY_CAFAYE_ROOT pointed at a real workspace, and by nothing else.
+    # `tests/schema.rs` prints a SKIP for each saying exactly that, and
     # `tests/ci.rs` keeps this list and registry/index.yml honest in both
     # directions — so a repository that becomes readable is a red rather than a
     # silent loss of coverage.
     #
     # A name belongs in this list only while the runner genuinely cannot clone
-    # it — because it is private, or because it is not a repository yet. Moving
-    # one back into CAFAYE_REPOS when that stops being true is the fix, and
+    # it. It used to read "because it is private, or because it is not a
+    # repository yet", and the second clause is gone with its only member:
+    # pantry-23 found `cafaye-py` written, which is the sentence in
+    # `DECISIONS.md` D2 that said a fifth `blockedBy` — `planned` — would be
+    # needed for a thing that does not exist yet. It does not, so the value does
+    # not either, and D2 is RULED. And
     # `an_unreadable_repository_is_neither_cloned_nor_registered` below is what
-    # makes that move a decision rather than a forgetting.
+    # makes removing a name from this list a decision rather than a forgetting.
     env:
-      CAFAYE_REPOS: core caf cafaye-ts identity billing courier darkroom muse guard parlor kit docs
-      CAFAYE_UNREADABLE: cafaye-rb cafaye-py
+      CAFAYE_REPOS: core caf cafaye-ts identity billing courier darkroom muse guard parlor kit docs cafaye-py
+      CAFAYE_UNREADABLE: cafaye-rb site
     steps:
       - uses: actions/checkout@v4
         with:

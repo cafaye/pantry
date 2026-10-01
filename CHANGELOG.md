@@ -7,6 +7,134 @@ bottom.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`bin/prime` under-reported the suite total on a red gate.** It printed
+  `suite: 131 passed` on a run whose true count was **144**: the awk matched
+  `^test result: ok\.`, and a failing binary prints `test result: FAILED. 13
+  passed; 2 failed; …` — it still reports its passes, and every one of them was
+  dropped from the total.
+
+  The comment above that line stated the intent correctly and the code did the
+  opposite of it. It is not cosmetic, because `gate.yml`'s `total` proof is a
+  **floor** on this line, currently 144 and derived from a green run:
+  under-reporting by a whole binary on a red run lets a run that has both lost
+  tests and has failures still satisfy a floor computed from a healthy one.
+  `gate.yml` raises its own floors to avoid exactly that shape. Fixed by summing
+  `passed;` from every result line, `ok.` and `FAILED.` alike; the output shape
+  `gate.yml` matches is unchanged and `bin/gate-self-test` is still green at 36
+  breakages / 0 failures. The residual is named at the line: on a red gate this
+  can now read high, and it must be read with the `error: N target(s) failed`
+  block and this script's exit status — which is why the line says `passed` and
+  not `ok`.
+
+- **`schemas/cafaye.manifest.schema.json` rejected manifests core accepts.**
+  The vendored copy was pinned at core `9d6bb87` and core-24 (`ec28365`) added
+  two keys since: `kind` (`service` | `template`) and `environments`. The schema
+  closes with `additionalProperties: false`, so a manifest declaring either was
+  a **hard reject** here rather than a silently dropped field — and `/readyz`
+  validates every entry at startup, so such a manifest took the whole registry
+  down rather than one entry. Measured, not assumed: a probe manifest declaring
+  `kind: template` and nothing else exotic exits 0 against `core`'s own harness
+  at core HEAD, and is rejected by the copy this repository was shipping. The
+  pin moves to `5ec0cec` with the documented `cp`, and
+  `this_repository_says_how_far_behind_core_it_is` — which had gone red at 11
+  commits against a 9-commit budget — is green and reporting `current`.
+
+  What made this urgent rather than routine: core-24 shipped
+  `examples/valid/parlor.template.cafaye.yml`, a worked **template** manifest
+  named for the very repository `registry/index.yml` holds back. Core had a word
+  for it and this copy did not.
+
+  One consequence is **not** fixed by the `cp` and is recorded on `parlor`'s row
+  instead: `src/registry.rs::check_kind` refuses anything but `api` or `cli` for
+  a manifest declaring no contract surface, so a manifest that adopts
+  `kind: template` would fail the load on the word `template`. That is a
+  vocabulary decision and not a copy.
+
+- **Three of the seven exclusion rows were describing repositories that had
+  moved on, and the tripwire could not see any of it.** Re-read every row
+  against its checkout, as `registry/index.yml`'s own header asks:
+
+  - **`site`** said the manifest still declared `name: parlor` and
+    `git@github.com:cafaye/parlor.git`, and that the file was byte-identical to
+    `parlor`'s. All three were true of the shared **seed** commit `33d32e0` and
+    false of the file: the repository was renamed, by `7a44310 rename: this
+    repository is site, not parlor`. Its recorded `lint` transcript was stale
+    too — line 21 became line 47, because the colon-space is in a different
+    sentence. The row's `> DECISION NEEDED (pantry-22)` is **answered by fact**
+    and the block is replaced by the answer.
+  - **`cafaye-py`** said "a directory, not yet a repository: no files, no git
+    checkout" across three specific claims. It is a **written public
+    repository** — `git@github.com:cafaye/cafaye-py.git`, a `pyproject.toml`, its
+    own gate, 948 tests — and still has no `cafaye.yml`, which is the only thing
+    `blockedBy: no-manifest` ever claimed.
+  - **`parlor`** was accurate and was still wrong to read: it made the fleet's
+    own website sound like a customer template. The row now says what `parlor`
+    is and points at the rename.
+
+  None of the three could go stale, because all three kept a `blockedBy` that
+  remained true. **Nothing in this repository checks a `lint` transcript** —
+  `every_exclusion_reason_is_still_true` asserts `blockedBy` semantics and never
+  reads the field — so a transcript is prose that can rot. This is the first one
+  caught rather than found, and it is the reason the transcripts in
+  `registry/index.yml` are quoted and never paraphrased.
+
+- **`the_drift_job_clones_every_repository_pantry_curates` was red on `site`.**
+  The `site` exclusion row was added without widening `CAFAYE_REPOS`, so a
+  curated repository was in neither list: the job could not read it and no drift
+  test could compare against it. `site` turns out to be **private** —
+  `site/cafaye.yml` declares `visibility: private` and an anonymous
+  `git ls-remote` is a 404 — so it joins `cafaye-rb` in `CAFAYE_UNREADABLE`
+  rather than the clone list, and its own row records the coverage gap on its
+  face. `cafaye-py` went the other way: it is a written public repository, so it
+  moves to `CAFAYE_REPOS` and the `no-manifest` arm stops being a vacuous pass.
+  `CAFAYE_UNREADABLE`'s two entries now carry the same claim, which is what
+  `DECISIONS.md` D2 needed and could not have had while `cafaye-py` sat there
+  for a different one.
+
+- **The negative-case count in `tests/entry_point_isolation.rs`.** The read entry
+  point sends 46 negative names, not 45, and the module header's table said 45.
+  Both now say 46.
+
+### Changed
+
+- **`tests/entry_point_isolation.rs` no longer pins the size of the exclusion
+  record.** It asserted `names.len() == 6` over a list **read out of the index
+  three lines above**, so the property the message claimed to protect — "a new
+  row is a new probe" — was true by construction, and the number could only ever
+  go red because `registry/index.yml` grew. That is the shape of assertion this
+  file's own header had already ruled out on the sibling count: *a number that
+  goes red because a file grew teaches people to bump it rather than read it.*
+  A curation row is not a defect.
+
+  The two invariants a reader might expect in its place are **not**
+  reimplemented, because both already exist and a duplicate reads like coverage:
+  the registered-and-excluded collision is
+  `tests/schema.rs::a_registered_service_is_never_also_excluded`, and
+  non-emptiness is `tests/schema.rs::every_exclusion_reason_is_still_true`. What
+  is left is the one vacuity risk local to this file — the `excluded` arm of the
+  probe loop contributing zero cases while the hardcoded total still reads 46 —
+  and that is asserted.
+
+- **`DECISIONS.md` D2 is RULED, by the repository landing rather than by a
+  decision.** All three of its costs came due in the same direction and none
+  needed a fifth `blockedBy` value: `no-manifest` went from a slight
+  overstatement to an exact statement, CI's vacuous pass became a real assertion
+  against real bytes, and `CAFAYE_UNREADABLE` went from carrying two claims to
+  carrying one. D2's argument for the fifth value was **the count** — "Go and
+  Rust clients are also unstarted, and a third empty directory is a matter of
+  time" — and both halves of that premise failed on their own: the one
+  non-repository was written, and no second one appeared.
+
+  The reasoning is kept, with the general shape it leaves behind: **prefer the
+  value whose meaning does not depend on the thing being temporary.**
+  `no-manifest` means "no `cafaye.yml` on master", true before the repository
+  existed and true after it. `planned` would have meant "no repository exists",
+  true once and false forever, at the cost of a variant in `src/registry.rs`, an
+  arm in `every_exclusion_reason_is_still_true`, a table row, a README section
+  and a published meaning in `openapi/v1.yaml` — none of it ever deletable.
+
 ### Added
 
 - **A report of what the workspace walk skipped.** `every_worktree_in_this_

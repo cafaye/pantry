@@ -122,13 +122,34 @@ set -e
 # report only appears when something went wrong is a report nobody learns to
 # read, which is the same defect as the report being absent.
 #
-# `^test result: ok\.` and not `^test result:` on purpose: a binary that FAILED
-# prints `test result: FAILED.`, so counting only the `ok.` lines makes this the
-# number of tests that PASSED rather than the number that ran. On a red gate that
-# difference is the whole point, and a summary reporting the passing count while
-# tests are failing would be the shape of the false green this file exists to
-# prevent, reproduced in the report itself.
-suite_passed="$(awk '/^test result: ok\./ { for (i = 1; i <= NF; i++) if ($i == "passed;") total += $(i - 1) } END { print total + 0 }' "$test_log")"
+# THE COUNTING IS FROM EVERY RESULT LINE, `ok.` AND `FAILED.`, and that is a
+# correction rather than a preference. It used to match `^test result: ok\.` on
+# the reasoning stated here — that counting only the `ok.` lines "makes this the
+# number of tests that PASSED rather than the number that ran". The reasoning
+# was right and the implementation did the opposite, which is the worst kind of
+# both.
+#
+# A test binary that fails prints `test result: FAILED. 13 passed; 2 failed; …`
+# — it still reports its passes. Matching `ok\.` therefore DROPPED every passing
+# test in every failing binary, so the number on a red gate was not the passing
+# count either: it was the passing count MINUS the failures' binary. Measured on
+# pantry-23: a run whose true total was 144 reported `suite: 131 passed`, and
+# 131 is 144 minus the 13 that passed inside the one failing target.
+#
+# That is not a cosmetic wrong number, because `gate.yml`'s `total` proof is a
+# FLOOR on exactly this line, currently 144. Under-reporting by a whole binary on
+# a red run means a run that has lost tests AND has failures can still satisfy a
+# floor derived from a green run's count — which is guard's near-smell
+# reproduced in a third direction, and the same failure `gate.yml` raises its own
+# floor to 144 to avoid. A decrease-detector that under-reports on the runs it
+# most needs to report on is not a decrease-detector.
+#
+# So the number is now the true passing count whatever the outcome. The residual
+# is stated rather than papered over: on a red gate this line can read high
+# (`suite: 144 passed`) and must be read WITH the `error: N target(s) failed`
+# block and this script's exit status, which are what say the gate is red. That
+# is why the line says `passed` and not `ok`.
+suite_passed="$(awk '/^test result:/ { for (i = 1; i <= NF; i++) if ($i == "passed;") total += $(i - 1) } END { print total + 0 }' "$test_log")"
 suite_skipped="$(grep -c '^SKIP ' "$test_log" || true)"
 
 # The number of test binaries, COUNTED rather than written down, because the

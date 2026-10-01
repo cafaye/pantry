@@ -351,41 +351,71 @@ courier-03 renamed them, and pantry-03 registered it.
 
 | repository | held back because | re-verified against the checkout on |
 | --- | --- | --- |
-| `parlor` | still the pre-core draft shape (`apiVersion: cafaye/v0-draft`, `metadata`/`spec`); an app shell, not a platform service. `caf contract lint`: `is missing required fields ["name", "language", "core", "repository", "owner"]` | 2026-09-30 (pantry-05) |
-| `kit` | carries no `cafaye.yml`; configuration only, and its own AGENTS.md says "not a CLI, a package, or a service" | 2026-09-30 (pantry-05) |
-| `core` | `language: spec` — a specification, not a service. `Registry::load` refuses any `spec` manifest, so this stays true if someone copies one in. `caf contract lint`: `OK` | 2026-09-30 (pantry-05) |
-| `docs` | `library` — the documentation site. A valid manifest with no `exposes` on purpose: its own file says it "serves no HTTP traffic of its own … The same shape a library takes". A static site is depended on, not started. `caf contract lint`: `OK` | 2026-09-30 (pantry-05) |
-| `cafaye-rb` | `library` — the shared Ruby gem. core's schema says to "omit `exposes` entirely for libraries" and its manifest does, and says why: "it is not deployed, serves no traffic and publishes no events". `caf contract lint`: `OK` | 2026-09-30 (pantry-05), on a local checkout — see below |
-| `cafaye-py` | `no-manifest` — **a directory, not a repository.** No files, no checkout, no manifest: the planned hand-written Python client, which MD6 ruled hand-written rather than generated. The row is here so the registry has an opinion about a directory a reader can see, and so a `cafaye.yml` appearing there fails the suite | 2026-09-30 (pantry-06) — and **the check on it is vacuous in CI**, see below |
+| `parlor` | `schema` — **the manifest does not parse.** `description` on line 21 is an unquoted YAML scalar with a colon-space in it, so the document stops being a mapping there. Not "the wrong shape": `name`, `language`, `core`, `repository` and `owner` are all present. `caf contract lint`: `invalid YAML: [21:14]`. Also the app-shell **template** every cafaye-built product starts from, and the repository cafaye's own website was renamed from — see `site` | 2026-10-02 (pantry-23) |
+| `site` | `schema` — one syntax error, the same class as `parlor`'s and on a *different* line: `description` on line 47. This is `parlor` renamed (`7a44310 rename: this repository is site, not parlor`), and both rows are held because both manifests are held | 2026-10-02 (pantry-23) |
+| `kit` | carries no `cafaye.yml`; configuration only, and its own AGENTS.md says "not a CLI, a package, or a service" | 2026-10-02 (pantry-23) |
+| `core` | `language: spec` — a specification, not a service. `Registry::load` refuses any `spec` manifest, so this stays true if someone copies one in. `caf contract lint`: `OK` | 2026-10-02 (pantry-23) |
+| `docs` | `library` — the documentation site. A valid manifest with no `exposes` on purpose: its own file says it "serves no HTTP traffic of its own … The same shape a library takes". A static site is depended on, not started. `caf contract lint`: `OK` | 2026-10-02 (pantry-23) |
+| `cafaye-rb` | `library` — the shared Ruby gem. core's schema says to "omit `exposes` entirely for libraries" and its manifest does, and says why: "it is not deployed, serves no traffic and publishes no events". `caf contract lint`: `OK` | 2026-10-02 (pantry-23), on a local checkout — see below |
+| `cafaye-py` | `no-manifest` — **a real repository with no manifest.** `git@github.com:cafaye/cafaye-py.git`, a `pyproject.toml`, its own gate and 948 tests, and still no `cafaye.yml`. The hand-written Python client, which MD6 ruled hand-written rather than generated. The row is here so the moment a `cafaye.yml` appears there, the suite says "register it" | 2026-10-02 (pantry-23) |
 
-The first five were re-read against their checkouts in pantry-05, which was the
-fourth packet to do that by hand and each time it was necessary: every one of the
-first three had a reason another repository's packet made false.
+**Every row was re-read against its checkout in pantry-23, and three of the seven
+were wrong while `blockedBy` stayed true.** That is the sharpest evidence this
+table has for itself, because the tripwire could not have caught any of them.
+`site`'s row described a repository that had been renamed — it claimed the
+manifest still declared `name: parlor` and was byte-identical to parlor's, which
+was true of the shared *seed* commit and false of the file. `cafaye-py`'s row
+called it "a directory, not yet a repository: no files, no git checkout" across
+three specific claims, and it is a written public repository. `parlor`'s row was
+accurate and still wrong to read, because it made the fleet's own website sound
+like a customer template. All three kept a `blockedBy` that remained true
+throughout.
 
-**The sixth row cannot be re-read, and saying so is why it is written down.**
-`cafaye-py` is a directory with nothing in it, so there is no checkout to confirm
-the reason against, and in the `workspace-drift` job it does not exist at all:
-the `no-manifest` arm asserts the manifest is *absent*, and a directory that was
-never cloned satisfies that. **A green run does not mean this row was checked.**
-It is verified by a developer's run of `tests/schema.rs` with
-`PANTRY_CAFAYE_ROOT` set, and by nothing else.
+So the mechanism's limit is worth stating next to its strength: it fires when a
+reason stops holding, and it cannot fire when a reason is a correct description
+of a thing that has since been renamed or written. Only re-reading covers that.
 
-It *is* named in `CAFAYE_UNREADABLE`, which this packet first claimed it would
-not be and was wrong about — `the_drift_job_clones_every_repository_pantry_curates`
-refuses a curated name the job neither clones nor declares unreadable, and the
-clone would fail the job's clone step on a 404. The entry is there with the
-reason written beside it, and that reason is a different one from `cafaye-rb`'s:
-nothing about `cafaye-py` is *unreadable*, because there is nothing there to
-read. One list now carries two different claims, which is the other half of
-`DECISIONS.md` **D2**'s argument for a fifth `blockedBy` value that says
-"planned" instead of "not readable".
+**Two rows are not checked on every CI run, and both say so on their face.**
+`cafaye-rb` and `site` are **private** repositories, so the `workspace-drift`
+job's anonymous clone is a 404 and `every_exclusion_reason_is_still_true` cannot
+read their manifests. Each row's reason is verified by a developer's run of
+`tests/schema.rs` with `PANTRY_CAFAYE_ROOT` set, and by nothing else;
+`tests/schema.rs` prints a `SKIP` for each saying exactly that. Both are named
+in `CAFAYE_UNREADABLE` in `.github/workflows/ci.yml`, which `tests/ci.rs` keeps
+honest in both directions via
+`an_unreadable_repository_is_neither_cloned_nor_registered` — so the day either
+becomes public, that is a red rather than a silent loss of coverage.
 
-What the row does buy is a live tripwire. A `cafaye.yml` appearing in that
-directory fails `every_exclusion_reason_is_still_true` with *"now carries a
+`site` is the one that is easy to get wrong. It is `parlor` **renamed**, and
+`parlor` is public, so "a fork of a public template is public" is a reasonable
+guess and a wrong one. Its own manifest says `visibility: private` in its
+`repository:` block, and that block is the record. pantry-23 made exactly that
+guess, filed `site` in `CAFAYE_REPOS`, and would have taken the CI job's clone
+step down under `set -euo pipefail`.
+
+A finding recorded but **not** acted on: an anonymous
+`git ls-remote https://github.com/cafaye/cafaye-rb.git HEAD` **succeeded** on
+2026-10-02, so the "PRIVATE" claim three files have repeated since pantry-03 no
+longer holds and `cafaye-rb`'s coverage gap is unjustified. Moving it to
+`CAFAYE_REPOS` would end a real gap, and it is deliberately left alone here
+because the two errors are not symmetric — leaving it wrong keeps a gap that is
+at least written down, and moving it wrong takes the drift job down on a 404.
+`gh repo view cafaye/cafaye-rb` settles it, for whoever owns that repository.
+
+`cafaye-py` was the third such row, and the only one that went the other way.
+Its row was `no-manifest` on a directory that was not a repository, so CI's "the
+manifest is absent" check was satisfied by a directory that was never cloned —
+a **vacuous pass**, recorded as one at the time. The repository has since been
+written and is public, so it is cloned and the check runs against real bytes.
+That was `DECISIONS.md` **D2**, open from 2026-09-30 and **RULED** on
+2026-10-02 — by the repository landing rather than by a decision, which is the
+outcome worth having: the vocabulary gap it described closed itself instead of
+needing the fifth `blockedBy` value D2 said would be required.
+
+What the row still buys is a live tripwire. A `cafaye.yml` appearing in that
+repository fails `every_exclusion_reason_is_still_true` with *"now carries a
 cafaye.yml — register it or change this row's blockedBy and say why it is still
-held back"*, so an empty directory cannot be tolerated indefinitely by doing
-nothing. That `no-manifest` is a slight overstatement — the value presumes a
-repository, and there is not one yet — is `DECISIONS.md` **D2**, open.
+held back"*, so it cannot be tolerated indefinitely by doing nothing.
 
 ### `library` — valid, and not something anyone brings up
 

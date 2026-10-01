@@ -37,10 +37,40 @@
 # repository, and it is the only thing about core that should be able to turn this
 # gate red.
 #
-# The sha below is core's `9d6bb87`, and `schemas/cafaye.manifest.schema.json` is
+# The sha below is core's `5ec0cec`, and `schemas/cafaye.manifest.schema.json` is
 # byte-identical to core's copy at that commit — which
 # `the_vendored_schema_is_core_s_schema_at_the_ref_this_repository_records`
 # asserts on every run, rather than this comment asking to be believed.
+#
+# RE-VENDORED by pantry-23, from `9d6bb87` to `5ec0cec` — 11 commits, and NOT
+# housekeeping. The distance test failed on a 9-commit budget, which is the
+# mechanism working, but the distance was the symptom and the defect is that
+# the copy was WRONG rather than old. core-24 (ec28365) added two keys to the
+# manifest schema, `kind` (`service` | `template`) and `environments`, and this
+# file's schema closes with `additionalProperties: false`. So a manifest
+# declaring either key was a hard REJECT here, not a silently dropped field, and
+# `/readyz` validates every entry against this copy at startup — which means
+# such a manifest took the whole registry down rather than one entry.
+#
+# Measured rather than assumed, because "a stale copy is a maintenance chore"
+# would have been the wrong reading and the cheap one. A probe manifest
+# declaring `kind: template` and nothing else exotic:
+#
+#   core's own harness, at core HEAD   exit 0, "conforms to core"
+#   pantry's vendored copy             rejects it
+#
+# The second line is why this was not left as an 11-commit note. What made it
+# urgent is who the new vocabulary is FOR: core-24 shipped
+# `examples/valid/parlor.template.cafaye.yml` — a worked template manifest named
+# for the very repository `parlor` that registry/index.yml holds back. The
+# schema had a word for it, and this copy did not.
+#
+# One consequence outside the schema, named here because it is not fixed by the
+# `cp`: `src/registry.rs::check_kind` refuses anything but `api` or `cli` for a
+# manifest declaring no contract surface, so a manifest that adopts
+# `kind: template` would fail the load on the word `template`. That is recorded
+# on `parlor`'s row in registry/index.yml, which is where a reader asking "can
+# this be registered" will look.
 apiVersion: vendir.k14s.io/v1alpha1
 kind: Config
 directories:
@@ -51,4 +81,4 @@ directories:
           url: git@github.com:cafaye/core.git
           # core's master at the moment these bytes were taken.
           ref: master
-          sha: 9d6bb8794cba684619c0a3f0ddbd4739d5e64f21
+          sha: 5ec0cec89db4fce578423a56bcfcc057dd3e8bab
