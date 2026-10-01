@@ -46,7 +46,7 @@
 //! | entry point                              | op      | negative cases |
 //! | ---------------------------------------- | ------- | -------------- |
 //! | `GET /v1/services`                       | list    | 19            |
-//! | `GET /v1/services/{name}`                | read    | 36            |
+//! | `GET /v1/services/{name}`                | read    | 45            |
 //! | `GET /healthz`                           | probe   | 6             |
 //! | `GET /readyz`                            | probe   | 6             |
 //! | fallback (`not_found`)                   | —       | 8             |
@@ -202,12 +202,12 @@ async fn baseline_for_a_missing_name() -> (String, String) {
 
 // ================================================================ read: 1 entry point
 
-/// `GET /v1/services/{name}` — 36 negative names, one shape.
+/// `GET /v1/services/{name}` — 45 negative names, one shape.
 #[tokio::test]
 async fn read_a_name_that_is_not_a_registry_entry_answers_exactly_as_one_that_never_existed() {
     let (baseline, _) = baseline_for_a_missing_name().await;
 
-    // 6 excluded repositories + 30 more (20 near misses, 10 path shapes), grouped by what
+    // 6 excluded repositories + 39 more (29 near misses, 10 path shapes), grouped by what
     // each is trying to do
     // so a reader can see the classes rather than count a list.
     //
@@ -240,6 +240,22 @@ async fn read_a_name_that_is_not_a_registry_entry_answers_exactly_as_one_that_ne
         "courier%3Fkind=api", // a query character inside a path segment
         "courier%2F",         // a trailing encoded slash
         "%2Fcourier",         // a leading encoded slash
+        // Scope-shaped names. These are the strings a 403 oracle would be
+        // written around — `if name.contains("account") { forbidden() }` is a
+        // three-line edit and a plausible one, because "this exists and is not
+        // yours" is what a tenant boundary looks like to somebody adding one.
+        // They are here so that edit fails here rather than shipping, and they
+        // belong beside the near misses because they attack the same property:
+        // the answer must depend only on whether the name is a registry entry.
+        "account-1",
+        "account_1",
+        "accounts",
+        "tenant",
+        "tenant-1",
+        "tenant_1",
+        "org-1",
+        "user-1",
+        "courier%2Faccount-1",
     ]
     .into_iter()
     .map(str::to_string)
@@ -286,8 +302,8 @@ async fn read_a_name_that_is_not_a_registry_entry_answers_exactly_as_one_that_ne
     }
 
     assert_eq!(
-        probed, 36,
-        "this test probes {probed} negative names, not 36. Update the count in the module header \
+        probed, 45,
+        "this test probes {probed} negative names, not 45. Update the count in the module header \
          when a class is added or removed — it is the number a reader checks."
     );
 }
