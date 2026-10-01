@@ -529,7 +529,7 @@ reach a commit a `--depth 1` clone does not have, so a shallow clone would turn
 every recorded-ref check into a skip. `tests/ci.rs` fails if `--depth` comes
 back.
 
-With a workspace, these tests run and compare. Without one, **21 of them print
+With a workspace, these tests run and compare. Without one, **25 of them print
 `SKIP …` on stderr naming the directory that would make them run**, and return. A
 skip is reported, never hidden. The full gate, run by hand:
 
@@ -538,8 +538,8 @@ $ PANTRY_CAFAYE_ROOT=/Users/kaka/Code/any/moon/cafaye ./bin/prime
 ```
 
 The shape of the problem is that a pantry-only clone and a real workspace print
-**the same 114 passing tests and the same exit code 0**. The only difference
-between them is those 21 `SKIP` lines — and, since pantry-05, one more for the
+**the same 146 passing tests and the same exit code 0**. The only difference
+between them is those 25 `SKIP` lines — and, since pantry-05, one more for the
 private repository this job cannot clone (see "Not registered, and why" below).
 Nothing in a green run distinguishes
 "verified the fleet" from "verified itself" — which is why the job that has the
@@ -549,15 +549,22 @@ fleet has to be a separate job with a name that says so.
 the suite in a clone with no siblings beside it and comparing:
 
 ```console
-$ git clone --no-hardlinks ../cafaye/pantry-worker-core-11-pin /tmp/lonely && cd /tmp/lonely
+$ git clone --no-hardlinks --no-local ../pantry /tmp/lonely/repo && cd /tmp/lonely/repo
 $ cargo test --no-fail-fast -- --nocapture 2>&1 | grep -c '^SKIP'
-21
+25
 ```
 
 `cargo test` prints skips on stderr, which a terminal shows but a captured
-pipeline does not. A gate that reports "114 passed" without also reporting how
-many of those 114 verified nothing is the defect this repository has been
+pipeline does not. A gate that reports "146 passed" without also reporting how
+many of those 146 verified nothing is the defect this repository has been
 reporting against itself three times, so the count is part of the claim.
+
+**The `wt-*` worktree rule is deliberately in the half that does not skip.** Two
+of pantry's worktree tests build their own workspace and never ask for a real
+one, so the rule is proven in a pantry-only clone; only the test that *reports*
+what the walk skipped on your actual disk skips without a workspace. The bug
+that rule came from was a rule that was wrong about every shape actually
+present, and a check that only runs where the shapes are is how that happens.
 
 **A green badge on the `build` job has verified pantry against itself, not
 against reality.** That job is a clone of pantry alone. It proves the registry

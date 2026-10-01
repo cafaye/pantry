@@ -144,6 +144,18 @@ fresh_copy() {
     mkdir -p "$dst/$(dirname "$rel")"
     cp -p "$ROOT/$rel" "$dst/$rel"
   done < <(git -C "$ROOT" ls-files -co --exclude-standard -z)
+  # Every breakage starts here, so this is where the flag for "did the breakage
+  # apply?" goes back to its optimistic default.
+  #
+  # It is reset HERE rather than set after each breakage because the breakages
+  # that are a `rm` rather than an `edit` had no line to set it, and a flag
+  # left over from the PREVIOUS case is worse than a flag that is never set: one
+  # `edit` that stopped matching reported three later cases as "the breakage
+  # that sets this case up did not apply", none of which was true, and all three
+  # of which were green. **A check that reports a neighbouring failure as its
+  # own teaches the reader to distrust the whole run**, and this file's entire
+  # argument is that a green here means something.
+  EDIT_APPLIED=1
   printf '%s' "$dst"
 }
 
@@ -772,10 +784,44 @@ fi
 # rather than when the alphabetically-last file is. Separate from the case above
 # because they protect different numbers and a gate that lost both is caught only
 # once.
+#
+# **The breakage deletes the `echo` LINE, matched by PATTERN, not by the literal
+# text it used to carry** — and the reason is that it did not, and this case
+# went red for a while as a result.
+#
+# The literal was `echo "suite: ${suite_passed} passed across 11 test binaries"`,
+# so a change to how the binary count is printed — replacing the hardcoded `11`
+# with a count off `tests/*.rs`, which is a fix this repository needed — broke
+# the SETUP of this case, not the gate. `edit` reports that as
+# "the breakage no longer applies", which is the correct thing for it to say and
+# which is a FAILURE here, so one honest fix to `bin/prime` turned three
+# unrelated breakages red and cost a full self-test run to diagnose.
+#
+# A breakage's setup has to keep working as the thing it is breaking changes.
+# That is the whole lesson of this file, pointed the other way: a check that
+# fails when the code is IMPROVED teaches its readers to skip it.
 breakages=$((breakages + 1))
 no_total="$(fresh_copy total-report-deleted)"
-edit "$no_total/bin/prime" 'echo "suite: ${suite_passed} passed across 11 test binaries"' \
-  'true'
+if python3 - "$no_total/bin/prime" <<'PYEOF'
+import re, sys
+
+path = sys.argv[1]
+body = open(path, encoding="utf-8").read()
+# The line that prints the summary the `total` proof reads its floor out of.
+# Matched on its shape so the number in it can change without this breakage
+# needing to know what the number is.
+patched, count = re.subn(r'^echo "suite: .*$', 'true', body, count=1, flags=re.M)
+if count != 1:
+    sys.exit(f'no suite-total echo line found in {path}')
+open(path, "w", encoding="utf-8").write(patched)
+PYEOF
+then
+  EDIT_APPLIED=1
+else
+  EDIT_APPLIED=0
+  failures=$((failures + 1))
+  printf 'FAIL  the suite-total breakage no longer applies: no `echo "suite: …"` line in bin/prime\n' >&2
+fi
 expect_red_prove 'a gate that no longer prints the suite total' \
   'proof-missing' "$no_total"
 
@@ -874,9 +920,41 @@ expect_red_prove 'a gate that proved fewer tests than the declaration promised' 
 # The same floor raised on the SUITE-WIDE count rather than the per-binary one.
 # The two catch different deletions and both were measured, which is why there
 # are two.
+#
+# The `total` floor's own value is matched by PATTERN, not written down. It was
+# a literal `minimum: 112` and raising the floor in gate.yml — which had to
+# happen, because adding tests had silently opened its margin to 34 and stopped
+# it detecting a deleted four-test file — broke the SETUP of this case instead of
+# anything real. Same lesson as the suite-total breakage above, and the same
+# shape: a breakage that names a value goes stale when the value moves, and a
+# value that moves is usually the value being FIXED.
 breakages=$((breakages + 1))
 total_floor="$(fresh_copy total-floor-too-high)"
-edit "$total_floor/gate.yml" '      minimum: 112' '      minimum: 9999'
+if python3 - "$total_floor/gate.yml" <<'PYEOF'
+import re, sys
+
+path = sys.argv[1]
+body = open(path, encoding="utf-8").read()
+# The `total` proof's floor: the one whose id is `total`, raised to a number no
+# suite can reach. Located by its proof id so the real value can change without
+# this case needing to know what it is.
+patched, count = re.subn(
+    r'(- id: total\n(?:.*\n)*?\s*minimum: )[0-9]+',
+    r'\g<1>9999',
+    body,
+    count=1,
+)
+if count != 1:
+    sys.exit(f'no `total` proof floor found in {path}')
+open(path, "w", encoding="utf-8").write(patched)
+PYEOF
+then
+  EDIT_APPLIED=1
+else
+  EDIT_APPLIED=0
+  failures=$((failures + 1))
+  printf 'FAIL  the total-floor breakage no longer applies: no `total` proof minimum in gate.yml\n' >&2
+fi
 expect_red_prove 'a gate whose suite total fell below the promised floor' \
   'floor' "$total_floor"
 

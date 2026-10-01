@@ -119,7 +119,7 @@ services:
     kind: api
     basePath: /v1
     # The commit of pantry's own repository this copy was taken from.
-    recordedAt: 9ca35d4ec9b7d3fa3fd8353f999a810811fa35f4
+    recordedAt: 137a6787d70e9e4013cc77e9389dab1735f02557
 
   # guard serves HTTP and its own manifest records the gap: it declares no
   # `exposes` at all because its OpenAPI document has not been written (see the
