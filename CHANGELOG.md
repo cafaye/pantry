@@ -9,6 +9,21 @@ bottom.
 
 ### Added
 
+- **A report of what the workspace walk skipped.** `every_worktree_in_this_
+  workspace_is_a_working_copy_of_a_curated_repository` is a new drift test, and
+  it is the first one here that checks the worktree rule against the **real**
+  workspace rather than a fixture. On the workspace this landed on it prints all
+  nine live worktrees and the curated repository each is a working copy of. When
+  a `wt-` directory is **not** a linked worktree of a curated repository it
+  fails, naming which of two things it is: a repository nobody registered
+  wearing a worktree's name, or a convention that moved and left this rule
+  stale.
+
+  It exists because the bug it is next to was found in exactly the way a
+  fixture cannot catch. The old rule was not wrong about a shape, it was wrong
+  about every shape present, and a fixture built from the same reasoning would
+  have been built wrong in the same way.
+
 - **`LICENSE`: pantry is MIT.** The repository shipped no licence file at all,
   which is not "unlicensed, therefore free" — it is **all rights reserved**, the
   default copyright position when a public repository grants nothing. So the
@@ -162,6 +177,71 @@ bottom.
   whose `cafaye.yml` bytes are identical to the recorded ones.
 
 ### Fixed
+
+- **pantry's gate can be run while a worker is running.** cafaye does its work
+  on `wt-*` worktrees under the workspace root, one per in-flight packet, and
+  the drift test walked that root requiring every directory it found to be
+  curated in `registry/index.yml`. So the gate went red the moment a worker
+  started and stayed red until every worker had finished and the directory was
+  removed. **A gate that can only run in the window where nothing is in flight
+  is a gate that cannot decide anything**, which is the whole reason to have
+  one. Measured on the workspace this was found in: **9 directories reported
+  uncurated**, one per active packet, 7 of them carrying a `cafaye.yml`.
+
+  The predicate meant to exempt them read `name.contains("-worker-")`. The
+  convention is `wt-<service>-<packet>`. **The rule was not wrong about a
+  shape; it was wrong about every shape present**, and four packets of `wt-`
+  names went past it.
+
+  A directory is now skipped by the walk only when all three of these hold:
+
+  1. the name carries the `wt-` prefix — the convention, which is what lets
+     tomorrow's worktrees skip without this repository listing today's names;
+  2. its `.git` is a **file** naming `<repository>/.git/worktrees/<id>` — the
+     proof, and git wrote it. A plain directory called `wt-whatever` and a
+     genuine new repository called `wt-whatever` both fail this, and so does a
+     submodule's `.git` file, which points at `.git/modules/<name>`;
+  3. that repository is one **this registry curates** — the reason. A worktree is
+     a second working copy of a directory the registry already describes; its
+     `cafaye.yml` is that repository's manifest at that branch, already checked
+     through the repository's own checkout.
+
+  **Clause 3 is what makes this a rule rather than a list.** A worktree of a
+  repository pantry has no opinion about is a repository pantry has no opinion
+  about, and it is reported like one. Without it the exemption is a prefix in a
+  trusted list, and the first worktree of a new service is precisely how a
+  repository nobody registered would slip past the walk. That is the failure the
+  walk exists to catch, so the exemption is not allowed to be the way it
+  happens.
+
+  **Clause 2 does not require git's administrative directory to exist**, which is
+  deliberate: `git worktree prune` removes it and leaves the working copy on
+  disk, which is the shape of a stale worktree — the gigabytes-nothing-uses case
+  this exists for. Failing on that would mean the cleanup the exemption enables
+  is what makes the gate unrunnable again.
+
+  Two fixture-based tests hold the three clauses down in both directions — a real
+  worktree of a curated repository is skipped, and five things wearing a
+  worktree's name are not — and a third proves the original intent survived: a
+  plain unregistered repository is still reported by both walks, in the two
+  shapes each exists for. Three mutations of the rule were run and each was
+  observed to go red naming what it broke. See `DECISIONS.md` D30, and **D30b** for
+  the part of it that is deliberately still open: reporting a worktree's branch
+  and staleness, which is a report and not a failure, and which is not built.
+
+  The exclusion was NOT widened and no assertion was weakened: the two walks
+  still report every uncurated directory, and the message is unchanged.
+
+- **`registry/index.yml`: pantry's own copy was 10 commits stale and outside the
+  budget.** `the_registry_says_how_far_behind_each_copy_is_and_names_the_fix`
+  was red on entry to this packet, on `master` before this work started —
+  `recordedAt` said `9ca35d4` and pantry's own checkout was at `137a678`. The
+  bytes were already identical (`git diff 9ca35d4 137a678 -- cafaye.yml` is
+  empty), so this is a `recordedAt` bump to the ref the copy was already
+  verbatim at, which is the fix the failure message itself prescribes. It is
+  recorded here separately from the worktree work because it is a pre-existing
+  red that had nothing to do with it, and folding it into the same change would
+  have hidden which commit closed which.
 
 - **`bin/prime` now asserts the toolchain pin before it does anything else.** The
   pin lives in three files — `mise.toml`'s `[tools] rust`, `Cargo.toml`'s
@@ -429,6 +509,29 @@ bottom.
   and it applies to every copy from here on.
 
 ### Decisions worth the changelog
+
+- **A check that names a convention is a clock, and this one had stopped.**
+  `tests/drift.rs` exempted worktrees by `name.contains("-worker-")` and the
+  convention is `wt-<service>-<packet>`, so the exemption matched nothing and the
+  gate was red for as long as any worker ran. The lesson is not "fix the
+  substring" — it is that **the substring was the whole check**. Nothing asked
+  whether the directory was a worktree at all, so the rule had no way to be
+  right and no way to be caught being wrong.
+
+  The replacement is three clauses and the name is the weakest of them: the
+  prefix (the convention), a `.git` **file** pointing at
+  `<repository>/.git/worktrees/<id>` (the proof, written by git), and that the
+  repository is one the registry curates (the reason). The third is what makes it
+  a rule: **a worktree of a repository pantry has no opinion about is a
+  repository pantry has no opinion about**, and the first worktree of a new
+  service would otherwise be precisely how an unregistered repository slipped
+  past the walk the walk exists to protect.
+
+  Clause 2 deliberately does not require git's administrative directory to
+  exist, because `git worktree prune` removes it and leaves the working copy
+  behind. That is the shape of a stale worktree — the gigabytes-nothing-uses case
+  the exemption exists for — and a rule that failed on it would make the cleanup
+  it enables the thing that re-breaks the gate.
 
 - **A new vocabulary value is not a branch, it is a closed set.** The curated
   branch of `check_kind` used to refuse `worker` and say "curate this as `api`",

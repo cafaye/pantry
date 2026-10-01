@@ -15,6 +15,7 @@
 //! single-repository clone, a published crate — every test in this file says so
 //! on stderr and returns. A skip is reported, never hidden (kit's AGENTS.md).
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use pantry::manifest::{self, Language};
@@ -661,6 +662,311 @@ fn published_documents(root: &Path) -> Vec<PathBuf> {
     found
 }
 
+// ---------------------------------------------------------------------------
+// THE WORKSPACE WALK, and the two questions it is asked
+// ---------------------------------------------------------------------------
+
+/// One directory in the workspace root, as far as curation is concerned.
+struct WorkspaceDirectory {
+    name: String,
+    path: PathBuf,
+    /// A `cafaye.yml` at its root. This is the shape of a cafaye repository,
+    /// and it is a *condition* rather than a definition — a repository that
+    /// lost its manifest is a repository no longer — which is why
+    /// `every_directory_in_the_workspace_is_a_repository_the_registry_curates`
+    /// asks about every directory and this file's other walk does not.
+    carries_manifest: bool,
+}
+
+/// Which of the two questions about a directory the walk is being asked.
+///
+/// They differ in what they accept as a repository and nowhere else, which is
+/// why they share one walk and one rule below rather than two copies of each.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Curation {
+    /// `no_workspace_repository_is_missing_from_the_curation_lists`: only a
+    /// directory carrying a `cafaye.yml` counts.
+    ManifestCarrying,
+    /// `every_directory_in_the_workspace_is_a_repository_the_registry_curates`:
+    /// every directory counts, because a repository that lost its manifest is
+    /// invisible to the other question.
+    Every,
+}
+
+/// Every directory in the workspace root, sorted by name.
+///
+/// Sorted because `read_dir` order is a filesystem detail and a failure
+/// message that reshuffles itself between two runs of the same tree reads as
+/// two findings.
+fn workspace_directories(root: &Path) -> Vec<WorkspaceDirectory> {
+    let mut directories = Vec::new();
+
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return directories;
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let path = entry.path();
+
+        directories.push(WorkspaceDirectory {
+            carries_manifest: path.join("cafaye.yml").is_file(),
+            name,
+            path,
+        });
+    }
+
+    directories.sort_by(|left, right| left.name.cmp(&right.name));
+    directories
+}
+
+/// Whether `registry/index.yml` has an opinion about `name` — registered, or
+/// excluded with a `blockedBy` and a reason.
+fn curated(name: &str, registry: &Registry, index: &registry::RegistryIndex) -> bool {
+    registry.get(name).is_some() || index.excluded.iter().any(|excluded| excluded.name == name)
+}
+
+/// The name every cafaye working copy carries: `moon/cafaye/wt-<service>-<packet>`.
+///
+/// It used to be `<service>-worker-<packet>`, and the walk's rule was
+/// `name.contains("-worker-")` for four packets after the convention moved.
+/// That is the whole defect in one line: **a stale rule about worktrees is not
+/// a stale test, it is an ungateable fleet.** The moment a worker started, two
+/// tests went red and stayed red until it stopped, and the gate is worth
+/// exactly nothing in the window where there is something to decide.
+///
+/// So the rule is three clauses and the name is only the first of them, and the
+/// other two are there because a name is a claim anybody can make.
+const WORKTREE_PREFIX: &str = "wt-";
+
+/// The repository `directory` is a linked git worktree of — or `None`, which
+/// means it is not one, whatever it is called.
+///
+/// Three clauses, and each is load-bearing:
+///
+/// 1. **`wt-`** — the convention above. It is what makes tomorrow's worktrees
+///    skip without this file carrying a list of today's names, and a list of
+///    today's names is a hardcoded test that is green until tomorrow.
+/// 2. **A `.git` FILE naming `<repository>/.git/worktrees/<id>`** — the proof,
+///    and git wrote it. A linked worktree is the one thing git gives a `.git`
+///    *file* to, and the administrative directory it points at is always under
+///    `worktrees/`, so a plain directory called `wt-whatever` has no such file,
+///    a genuine new repository called `wt-whatever` has a `.git` *directory*,
+///    and a submodule's `.git` file points at `.git/modules/<name>` instead.
+///    All three are caught here, and the fixture holds all three.
+/// 3. **The repository is one this registry curates** — in `curation_covers`,
+///    because it is a claim about the registry rather than about git.
+///
+/// **The third clause is what makes the first two safe.** A worktree is skipped
+/// because it is a *second working copy of a directory the registry already
+/// describes* — its `cafaye.yml` is that repository's manifest at that branch,
+/// already checked through the repository's own checkout, and counting it again
+/// would report every service once per worker in flight. Without clause 3 the
+/// rule would be a name in a trusted list, and a new service repository's first
+/// worktree would be exactly how a repository nobody registered slips past the
+/// walk. With it, a worktree of an uncurated repository is a repository, and is
+/// reported like one.
+///
+/// **Clause 2 does not require the administrative directory to exist**, and that
+/// is deliberate rather than an oversight: `git worktree prune` deletes that
+/// directory and leaves the working copy on disk, which is the shape of a stale
+/// worktree — the gigabytes-nothing-uses case this exclusion exists to keep
+/// from blocking a gate. Failing on it would mean the cleanup the exclusion
+/// enables is the thing that makes the gate unrunnable again.
+fn worktree_repository(directory: &Path) -> Option<PathBuf> {
+    if !directory
+        .file_name()?
+        .to_str()?
+        .starts_with(WORKTREE_PREFIX)
+    {
+        return None;
+    }
+
+    let pointer = directory.join(".git");
+    if !pointer.is_file() {
+        return None;
+    }
+
+    let administrative = std::fs::read_to_string(&pointer).ok()?;
+    let administrative = PathBuf::from(administrative.trim().strip_prefix("gitdir:")?.trim());
+
+    // git writes an absolute path here, and a relative one is resolved against
+    // the working copy — which is how a submodule's pointer reads. Resolving
+    // both the same way means the submodule is rejected by the shape test
+    // below rather than by a special case, and the special case is what would
+    // have been the exemption.
+    let administrative = if administrative.is_absolute() {
+        administrative
+    } else {
+        directory.join(administrative)
+    };
+
+    // `<repository>/.git/worktrees/<id>`, so the repository is three levels up
+    // and each level is checked rather than assumed.
+    let worktrees = administrative.parent()?;
+    if worktrees.file_name() != Some(OsStr::new("worktrees")) {
+        return None;
+    }
+    let git = worktrees.parent()?;
+    if git.file_name() != Some(OsStr::new(".git")) || !git.is_dir() {
+        return None;
+    }
+
+    git.parent().map(Path::to_path_buf)
+}
+
+/// Whether the workspace directory `repository` is one the registry curates.
+///
+/// A worktree of it may be skipped, so this is the clause that decides whether
+/// the exclusion is justified. It asks the registry — registered or excluded —
+/// rather than a list in this file, which is the difference between a rule and
+/// a hardcoded answer.
+fn curation_covers(
+    root: &Path,
+    repository: &Path,
+    registry: &Registry,
+    index: &registry::RegistryIndex,
+) -> bool {
+    // A repository outside this workspace is not curated by this registry's
+    // workspace, whatever it is called: a worktree of somebody's laptop clone
+    // in the fleet directory is a directory nobody registered, and is reported.
+    let Some(parent) = repository.parent() else {
+        return false;
+    };
+    if !same_directory(parent, root) {
+        return false;
+    }
+
+    let Some(name) = repository.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    curated(name, registry, index)
+}
+
+/// Two paths are the same directory even when one of them reached it through a
+/// symlink.
+///
+/// `git worktree add` writes the resolved path into a worktree's `.git` file,
+/// while `cafaye_root()` reports whatever `PANTRY_CAFAYE_ROOT` or
+/// `CARGO_MANIFEST_DIR` spelled — so the two names for one workspace differ
+/// whenever either is a symlink, and a worktree the walk cannot recognise is a
+/// red on the whole fleet. This is the difference between the rule working and
+/// the rule depending on how someone typed the path. Canonicalisation failing
+/// is not a reason to say no: `canonicalize` is only used to compare, and a path
+/// that cannot be resolved is compared as written.
+fn same_directory(left: &Path, right: &Path) -> bool {
+    let resolve = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    resolve(left) == resolve(right)
+}
+
+/// Whether `directory` is a worktree the walk may skip, and why.
+///
+/// The whole exclusion, in one function, with the three clauses above as its
+/// parts. `Ok(())` is the skip; `Err(reason)` is why not, and the reason is
+/// kept as text because the only consumer of it is a human reading a failure.
+///
+/// > DECISION NEEDED (pantry): D30b — **should the gate REPORT a worktree, and
+/// > how much?** The exclusion above answers "is this directory a repository the
+/// > registry is missing", and a worktree is not one. It says nothing about a
+/// > worktree left behind by a worker that died, which is the thing that eats
+/// > gigabytes and the reason anyone cleans them up. Reporting is not failing,
+/// > so nothing here is blocked on it, and the shape of the question is narrow:
+/// >   * *the branch* is a fact about the working copy itself
+/// >     (`git -C <worktree> rev-parse --abbrev-ref HEAD` reads a local file) and
+/// >     is safe to state;
+/// >   * *whether the branch has been merged* is NOT. It is a claim about a
+/// >     mutable ref in a **sibling clone**, which is exactly what rule 3 of this
+/// >     repository's AGENTS.md forbids asserting — D26 is that defect already
+/// >     open elsewhere in this file's neighbourhood — so a version of this that
+/// >     FAILS on merge state would break the rule it lives under, and a version
+/// >     that reports it must label it "as of this clone".
+/// >   * the one fact that is unambiguous and is not a merge question at all:
+/// >     a `wt-` directory whose administrative directory `git worktree prune`
+/// >     has already removed. Git does not know it any more; the bytes are
+/// >     still there. That is stale by definition.
+/// > Recommended: a report, never a failure, and the branch first — a worker
+/// > worktree's branch is the handle the manager needs to land or discard it.
+/// > Cost of flipping: one function and one `eprintln!` in this file, no
+/// > assertion, nothing in `src/`, and no change to any HTTP contract. What must
+/// > NOT be built is a staleness *threshold* — "a worktree older than N days is a
+/// > failure" is a clock this repository would then depend on, and a red that
+/// > fires on a developer's schedule is a red that gets disabled.
+/// > Not built in this packet: the manager asked for the narrow fix and for a
+/// > view on this, and a test that shells out to git in a sibling clone to answer
+/// > a merge question is a different packet's decision, not this one's.
+fn worktree_verdict(
+    root: &Path,
+    directory: &WorkspaceDirectory,
+    registry: &Registry,
+    index: &registry::RegistryIndex,
+) -> Result<(), String> {
+    let Some(repository) = worktree_repository(&directory.path) else {
+        return Err(format!(
+            "{} is not a linked git worktree",
+            directory.path.display()
+        ));
+    };
+
+    if curation_covers(root, &repository, registry, index) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} is a linked worktree of {}, which registry/index.yml curates in \
+             neither direction",
+            directory.path.display(),
+            repository.display()
+        ))
+    }
+}
+
+/// Whether `directory` is something the registry has to have an opinion about.
+fn needs_curation(
+    root: &Path,
+    directory: &WorkspaceDirectory,
+    registry: &Registry,
+    index: &registry::RegistryIndex,
+    curation: Curation,
+) -> bool {
+    // A hidden directory is configuration *for* repositories (`.git`,
+    // `.github`), not one of them. Only the `Every` walk sees it, because only
+    // that walk looks at directories rather than at manifests.
+    if curation == Curation::Every && directory.name.starts_with('.') {
+        return false;
+    }
+    if curation == Curation::ManifestCarrying && !directory.carries_manifest {
+        return false;
+    }
+    if curated(&directory.name, registry, index) {
+        return false;
+    }
+    worktree_verdict(root, directory, registry, index).is_err()
+}
+
+/// Every directory in the workspace that `registry/index.yml` curates in
+/// neither direction, in one stable list.
+///
+/// The two tests below differ in their `Curation` and in nothing else, so
+/// there is one answer to this question and both tests read it here. That is
+/// the point of the function existing: a rule with two copies is a rule one
+/// copy of which is already stale, which is how
+/// `name.contains("-worker-")` outlived the convention it named.
+fn uncurated(
+    root: &Path,
+    registry: &Registry,
+    index: &registry::RegistryIndex,
+    curation: Curation,
+) -> Vec<WorkspaceDirectory> {
+    workspace_directories(root)
+        .into_iter()
+        .filter(|directory| needs_curation(root, directory, registry, index, curation))
+        .collect()
+}
+
 /// Every directory in the workspace that carries a `cafaye.yml` must appear in
 /// one of the two curation lists — registered, or excluded with a reason.
 ///
@@ -697,36 +1003,22 @@ fn no_workspace_repository_is_missing_from_the_curation_lists() {
     let index = registry::read_index(&dir).expect("registry/index.yml parses");
     let registry = Registry::load(&dir).expect("the official registry loads");
 
-    // Worktrees are not repositories: `moon/cafaye` holds several, and a
-    // worktree's directory name is `<service>-worker-<packet>`. A manifest inside
-    // one is that service's manifest, already checked through its own checkout,
-    // so counting it again would double-report every service mid-packet.
-    let is_worktree = |name: &str| name.contains("-worker-");
-
-    let mut missing: Vec<String> = Vec::new();
-
-    for entry in std::fs::read_dir(&root).expect("the cafaye root is readable") {
-        let Ok(entry) = entry else { continue };
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        if is_worktree(&name) || !entry.path().join("cafaye.yml").is_file() {
-            continue;
-        }
-
-        let registered = registry.get(&name).is_some();
-        let excluded = index.excluded.iter().any(|e| e.name == name);
-
-        if !registered && !excluded {
-            missing.push(format!(
-                "  {name} — carries a valid cafaye.yml at {} and appears in no curation list",
-                entry.path().join("cafaye.yml").display()
-            ));
-        }
-    }
+    // Worktrees are not repositories: `moon/cafaye` holds one per in-flight
+    // packet. A manifest inside one is its repository's manifest, already
+    // checked through that repository's own checkout, so counting it again would
+    // report every service once per worker in flight. What counts as a worktree
+    // is `worktree_verdict` above — three clauses, and the narrowness of the
+    // third is why this list is not simply every `wt-` directory.
+    let missing: Vec<String> = uncurated(&root, &registry, &index, Curation::ManifestCarrying)
+        .into_iter()
+        .map(|directory| {
+            format!(
+                "  {} — carries a valid cafaye.yml at {} and appears in no curation list",
+                directory.name,
+                directory.path.join("cafaye.yml").display()
+            )
+        })
+        .collect();
 
     assert!(
         missing.is_empty(),
@@ -772,9 +1064,13 @@ fn no_workspace_repository_is_missing_from_the_curation_lists() {
 ///
 /// * a hidden directory is not a repository — `.git` and the workspace's own
 ///   `.github` are configuration *for* repositories;
-/// * a worktree is not a repository — `moon/cafaye` holds several, named
-///   `<service>-worker-<packet>`, and a manifest inside one is that service's
-///   manifest, already checked through its own checkout;
+/// * a worktree is not a repository — `moon/cafaye` holds one per in-flight
+///   packet, and a manifest inside one is its repository's manifest, already
+///   checked through that repository's own checkout. Which directories are
+///   worktrees is `worktree_verdict` above, and the third of its three clauses
+///   is the one that keeps this exclusion honest: only a worktree of a
+///   repository **this registry curates** is skipped, so a new service's first
+///   worktree cannot become the way it goes unregistered;
 /// * anything else in that directory is a cafaye repository the registry has an
 ///   opinion about, or it is a stray, and a stray is worth finding.
 #[test]
@@ -785,34 +1081,21 @@ fn every_directory_in_the_workspace_is_a_repository_the_registry_curates() {
     let index = registry::read_index(&dir).expect("registry/index.yml parses");
     let registry = Registry::load(&dir).expect("the official registry loads");
 
-    let is_worktree = |name: &str| name.contains("-worker-");
-
-    let mut uncurated: Vec<String> = Vec::new();
-
-    for entry in std::fs::read_dir(&root).expect("the cafaye root is readable") {
-        let Ok(entry) = entry else { continue };
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        if name.starts_with('.') || is_worktree(&name) {
-            continue;
-        }
-
-        let registered = registry.get(&name).is_some();
-        let excluded = index.excluded.iter().any(|excluded| excluded.name == name);
-
-        if !registered && !excluded {
-            let shape = if entry.path().join("cafaye.yml").is_file() {
+    let uncurated: Vec<String> = uncurated(&root, &registry, &index, Curation::Every)
+        .into_iter()
+        .map(|directory| {
+            let shape = if directory.carries_manifest {
                 "carries a cafaye.yml"
             } else {
                 "carries NO cafaye.yml — so it is a directory, not yet a repository"
             };
-            uncurated.push(format!("  {name} — {} {shape}", entry.path().display()));
-        }
-    }
+            format!(
+                "  {} — {} {shape}",
+                directory.name,
+                directory.path.display()
+            )
+        })
+        .collect();
 
     assert!(
         uncurated.is_empty(),
@@ -823,7 +1106,10 @@ fn every_directory_in_the_workspace_is_a_repository_the_registry_curates() {
          nobody registered is a member of the fleet this file does not describe, and \
          `no_workspace_repository_is_missing_from_the_curation_lists` above cannot see \
          it: that one looks for a cafaye.yml, so an empty directory — or a repository \
-         whose manifest was lost — passes it.\n\n\
+         whose manifest was lost — passes it. A `wt-` directory that is NOT a linked \
+         worktree of a curated repository is in this list on purpose: see \
+         `every_worktree_in_this_workspace_is_a_working_copy_of_a_curated_repository`, \
+         which says which of the two things it is.\n\n\
          Add each name to `known` in that test AND give it a row: registered, or \
          excluded with a `blockedBy` and a reason. If it should not be in the \
          workspace at all, delete it — but read the row's reason first, because \
@@ -838,6 +1124,373 @@ fn every_directory_in_the_workspace_is_a_repository_the_registry_curates() {
             "ies are"
         },
         uncurated.join("\n"),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// THE FIXTURES, and the three tests that pin the rule against them
+// ---------------------------------------------------------------------------
+
+/// A workspace root built to order, for the tests that pin the walk.
+///
+/// The names are this registry's own, because the thing under test is the
+/// CURATION decision and a name nothing curates cannot produce one: `identity`
+/// is registered, `kit` and `parlor` are in the exclusion record, and
+/// `not-a-service` is in neither. So a fixture directory can be checked against
+/// both answers without a stub registry, and the fixture is the same
+/// distinction the real workspace makes.
+struct WorkspaceFixture {
+    root: PathBuf,
+}
+
+impl WorkspaceFixture {
+    fn new(label: &str) -> Self {
+        let root = std::env::temp_dir().join(format!("pantry-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("the fixture root is creatable");
+        WorkspaceFixture { root }
+    }
+
+    /// A checked-out repository: a `.git` **directory** and, usually, a
+    /// manifest. This is what `git clone` leaves behind and what a new cafaye
+    /// service repository looks like the moment somebody writes it.
+    fn service(&self, name: &str, manifest: bool) -> &Self {
+        let path = self.root.join(name);
+        std::fs::create_dir_all(path.join(".git")).expect("mkdir");
+        if manifest {
+            write(&path.join("cafaye.yml"), b"name: fixture\n");
+        }
+        self
+    }
+
+    /// A linked working copy: a `.git` **file** naming an administrative
+    /// directory under the service's own `.git`, which is what
+    /// `git worktree add` writes and the only shape that says "worktree".
+    ///
+    /// `admin` is written too, because a real worktree has one — and its
+    /// ABSENCE is the case worth having, since `git worktree prune` removes the
+    /// administrative directory and leaves the working copy on disk eating
+    /// disk. The gate must not go red on the thing the cleanup exists for, so
+    /// `stale` is a first-class argument rather than something the rule has to
+    /// be lucky about.
+    fn worktree(&self, name: &str, of: &str, stale: bool) -> &Self {
+        let path = self.root.join(name);
+        std::fs::create_dir_all(&path).expect("mkdir");
+        let admin = self.root.join(of).join(".git").join("worktrees").join(name);
+        if !stale {
+            std::fs::create_dir_all(&admin).expect("mkdir");
+        }
+        write(
+            &path.join(".git"),
+            format!("gitdir: {}\n", admin.display()).as_bytes(),
+        );
+        write(&path.join("cafaye.yml"), b"name: fixture\n");
+        self
+    }
+
+    /// A directory that is not a repository at all: no git metadata, a manifest
+    /// or not. `cafaye-py` sat in the real workspace in this shape for four
+    /// packets and no test could see it.
+    fn directory(&self, name: &str, manifest: bool) -> &Self {
+        let path = self.root.join(name);
+        std::fs::create_dir_all(&path).expect("mkdir");
+        if manifest {
+            write(&path.join("cafaye.yml"), b"name: fixture\n");
+        }
+        self
+    }
+
+    /// The uncurated names the walk reports, for one of the two questions.
+    fn uncurated(&self, curation: Curation) -> Vec<String> {
+        let dir = registry_dir();
+        let index = registry::read_index(&dir).expect("registry/index.yml parses");
+        let registry = Registry::load(&dir).expect("the official registry loads");
+
+        uncurated(&self.root, &registry, &index, curation)
+            .into_iter()
+            .map(|directory| directory.name)
+            .collect()
+    }
+}
+
+impl Drop for WorkspaceFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn write(path: &Path, bytes: &[u8]) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("a parent directory");
+    }
+    std::fs::write(path, bytes).expect("the fixture is writable");
+}
+
+/// The rule, stated over a workspace built to contain both sides of it.
+///
+/// This is the test that says what a worktree is, and — the half that matters
+/// more — what it is **not**. The exclusion above is the only exemption either
+/// workspace walk has, so the test that pins it has to hold both directions at
+/// once: a real worktree of a curated repository is skipped, and five things
+/// wearing a worktree's name are not.
+#[test]
+fn a_worktree_is_a_working_copy_of_something_the_registry_already_curates() {
+    let fixture = WorkspaceFixture::new("worktree");
+
+    // Curated, in both directions: `identity` is registered, `kit` and `parlor`
+    // are in the exclusion record with a `blockedBy` and a reason.
+    fixture
+        .service("identity", true)
+        .service("kit", false)
+        .service("parlor", true)
+        .worktree("wt-identity-21", "identity", false)
+        // A worktree of a repository with no manifest is the awkward case, and
+        // it is the one that was in the real workspace twice: `wt-kit-cluster`
+        // and `wt-sell-backup` are both working copies of `kit`.
+        .worktree("wt-kit-cluster", "kit", false)
+        .worktree("wt-parlor-01", "parlor", false)
+        // Pruned by `git worktree prune`: the administrative directory is gone
+        // and the directory is still there. Stale is not the same as
+        // uncurated, and the gate must not confuse them.
+        .worktree("wt-stale-identity-21", "identity", true);
+
+    // Not a worktree, in five ways. Each of these is a directory the registry
+    // has no opinion about, and the rule has to say so.
+    fixture
+        // A plain directory wearing the prefix. No `.git` at all.
+        .directory("wt-whatever", true)
+        // A GENUINE new service repository called `wt-whatever`, which is the
+        // case a name-based exclusion would swallow: `git clone` leaves a
+        // `.git` DIRECTORY, which is the whole difference.
+        .service("wt-new-service", true)
+        // A worktree of a repository in this workspace that nothing curates.
+        // Its owner is in the fixture rather than conjured, because you cannot
+        // have a worktree of a repository without the repository — which is why
+        // `newthing` is in the `Every` list below, and why the exclusion being
+        // narrow about *which* repository does not change whether the finding
+        // is reported: the owner is reported instead.
+        .service("newthing", false)
+        .worktree("wt-uncurated-owner", "newthing", false);
+    // …and the two that are pointers somewhere this rule does not follow.
+    let outside = std::env::temp_dir().join(format!("pantry-outside-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(outside.join(".git")).expect("mkdir");
+    write(
+        &fixture.root.join("wt-foreign").join(".git"),
+        format!(
+            "gitdir: {}\n",
+            outside.join(".git/worktrees/wt-foreign").display()
+        )
+        .as_bytes(),
+    );
+    write(
+        &fixture.root.join("wt-foreign/cafaye.yml"),
+        b"name: fixture\n",
+    );
+    // A submodule's `.git` file has the same shape as a worktree's and points
+    // somewhere else entirely — `<super>/.git/modules/<name>`, not
+    // `<super>/.git/worktrees/<id>`.
+    write(
+        &fixture.root.join("wt-submodule").join(".git"),
+        format!(
+            "gitdir: {}\n",
+            fixture.root.join("kit/.git/modules/wt-submodule").display()
+        )
+        .as_bytes(),
+    );
+    write(
+        &fixture.root.join("wt-submodule/cafaye.yml"),
+        b"name: fixture\n",
+    );
+
+    assert_eq!(
+        fixture.uncurated(Curation::ManifestCarrying),
+        [
+            // Every one of these carries a cafaye.yml, so both walks see them.
+            "wt-foreign",
+            "wt-new-service",
+            "wt-submodule",
+            "wt-uncurated-owner",
+            "wt-whatever",
+        ],
+        "a `wt-` directory is skipped only when it is a linked worktree of a \
+         repository this registry curates. Everything here is named as if it \
+         were one and is not: wt-whatever is a plain directory, wt-new-service is \
+         a genuine repository with a .git DIRECTORY, wt-foreign is a worktree of \
+         a repository outside this workspace, wt-uncurated-owner is a worktree of \
+         `newthing`, which is in neither curation list, and wt-submodule's \
+         pointer is the shape a submodule has."
+    );
+
+    // A plain directory with no `.git` and no manifest. The `Every` walk's
+    // whole reason for existing, in fixture form: `cafaye-py` was invisible to
+    // the other walk for four packets.
+    fixture.directory("wt-empty", false);
+
+    assert_eq!(
+        fixture.uncurated(Curation::Every),
+        [
+            // The same five, plus two with no manifest: a repository whose
+            // manifest has not landed, and a directory that was never a
+            // repository. `newthing` is the first and `wt-empty` the second,
+            // which is the whole difference between these two walks.
+            "newthing",
+            "wt-empty",
+            "wt-foreign",
+            "wt-new-service",
+            "wt-submodule",
+            "wt-uncurated-owner",
+            "wt-whatever",
+        ],
+        "the same five, plus the two the manifest walk cannot see. This is the \
+         difference between the two walks: `newthing` is a repository whose \
+         cafaye.yml has not landed and `wt-empty` is a directory that was never \
+         one, and both would be invisible to a walk that looked for a manifest. \
+         If the two lists were equal, one of the two walks would not be doing \
+         its job."
+    );
+
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+/// The two walks' original reason for existing, held down after the exclusion.
+///
+/// The worktree rule removes an exemption from these tests, and an exemption is
+/// the only way a walk stops catching things. So this asserts the thing they
+/// were written to catch, in a workspace that has a worktree in it: a new
+/// service repository nobody registered, in both the shapes the two walks each
+/// exist for — one carrying a manifest, one that has lost it.
+#[test]
+fn an_unregistered_repository_is_still_reported_by_both_workspace_walks() {
+    let fixture = WorkspaceFixture::new("uncurated");
+
+    fixture
+        // Curated, in both directions. `docs` is in the exclusion record and
+        // carries a manifest, so a row in `excluded` is curation and not a
+        // second-class registration.
+        .service("identity", true)
+        .service("docs", true)
+        // A worktree, which is the exemption under test: this one carries a
+        // manifest, so without the rule the manifest walk reports it and the
+        // fleet cannot be gated while a worker runs.
+        .worktree("wt-identity-21", "identity", false)
+        // The finding. A new service repository, cloned and written, that
+        // nobody added to `registry/index.yml`.
+        .service("newthing", true)
+        // The same repository one merge too early: present, a repository, and
+        // no `cafaye.yml` because the manifest has not landed. Only the
+        // `Every` walk can see this one.
+        .service("newthing-two", false);
+
+    assert_eq!(
+        fixture.uncurated(Curation::ManifestCarrying),
+        ["newthing"],
+        "a repository carrying a cafaye.yml that registry/index.yml registers \
+         in neither direction. This is the failure `docs` and `cafaye-rb` were \
+         found by, and it is the whole purpose of \
+         `no_workspace_repository_is_missing_from_the_curation_lists`."
+    );
+
+    assert_eq!(
+        fixture.uncurated(Curation::Every),
+        ["newthing", "newthing-two"],
+        "the same one, plus a repository that has lost its manifest — which the \
+         walk above cannot see by construction, and which is why the second test \
+         exists at all. Neither `newthing` nor `newthing-two` is a worktree, and \
+         the worktree exclusion must not be the reason this list is short."
+    );
+}
+
+/// The real workspace, checked against the rule rather than against a fixture.
+///
+/// Every other test here that involves a worktree builds one, and that is
+/// deliberate: a fixture is the same on CI, in a clone and on this machine. It
+/// is also not evidence that the rule recognises the worktrees that are
+/// *actually* on this disk, and the packet this rule came from was found by
+/// exactly that gap — the rule was not wrong about a shape, it was wrong about
+/// every shape present. So this one walks the real thing and says what it saw.
+///
+/// The claim it can make is narrow on purpose, and is the only claim the
+/// exclusion is allowed to rest on: **every worktree-shaped directory in the
+/// workspace is a working copy of a repository this registry curates.** A
+/// `wt-` directory that is not is not a worktree, whatever it is called, and
+/// the two tests above will report it — this one exists so the finding says
+/// *why* it happened.
+#[test]
+fn every_worktree_in_this_workspace_is_a_working_copy_of_a_curated_repository() {
+    let root = require_workspace!("worktree provenance");
+
+    let dir = registry_dir();
+    let index = registry::read_index(&dir).expect("registry/index.yml parses");
+    let registry = Registry::load(&dir).expect("the official registry loads");
+
+    let mut explained: Vec<String> = Vec::new();
+    let mut unexplained: Vec<String> = Vec::new();
+
+    for directory in workspace_directories(&root) {
+        if !directory.name.starts_with(WORKTREE_PREFIX) {
+            continue;
+        }
+
+        match worktree_verdict(&root, &directory, &registry, &index) {
+            Ok(()) => {
+                let repository = worktree_repository(&directory.path)
+                    .expect("a directory the rule accepted is a worktree");
+                explained.push(format!(
+                    "  {} — a working copy of {}",
+                    directory.name,
+                    repository.display()
+                ));
+            }
+            Err(reason) => unexplained.push(format!("  {} — {reason}", directory.name)),
+        }
+    }
+
+    // A `wt-` directory the rule cannot explain is a finding, not a shrug. It
+    // is either a repository wearing a worktree's name — which the exclusion
+    // must never swallow — or the convention moved and this rule went stale
+    // with it, which is how the fleet became ungate-able once already.
+    assert!(
+        unexplained.is_empty(),
+        "{} worktree-shaped director{} in this workspace that {} not a working copy \
+         of a repository this registry curates:\n\n{}\n\n\
+         Each of them is one of exactly two things, and the difference is the whole \
+         reason the exclusion is narrower than its name.\n\n  \
+         * A cafaye repository nobody registered, named `wt-something`. The walk \
+         above reports it with a message about registering it; this one exists to \
+         say which of the two it is.\n  \
+         * A real worktree whose shape the rule no longer matches — a different \
+         name, a different git layout, or a repository this registry does not \
+         curate. Then the rule in this file is stale and pantry's gate cannot be \
+         run at all, which is worse than any single red it prevents.\n\n\
+         Do NOT answer this by widening the name test: `a_worktree_is_a_working_\
+         copy_of_something_the_registry_already_curates` is what holds the \
+         exclusion to three clauses, and it will fail if they are widened.",
+        unexplained.len(),
+        if unexplained.len() == 1 {
+            "y is"
+        } else {
+            "ies are"
+        },
+        if unexplained.len() == 1 { "is" } else { "are" },
+        unexplained.join("\n"),
+    );
+
+    // Reported, not asserted: what the walk skipped and why. The count is here
+    // because "this workspace has no worktrees" and "the rule matched nothing"
+    // print the same line of output otherwise, and only one of them means the
+    // exclusion is doing its job.
+    eprintln!(
+        "note: {} worktree(s) in this workspace, each a working copy of a directory the \
+         registry curates, and each skipped by the walk:\n{}",
+        explained.len(),
+        if explained.is_empty() {
+            "  (none — this workspace holds no wt-* directory, so the exclusion fired \
+             nowhere here and the rule is exercised by the fixtures in this file)"
+                .to_string()
+        } else {
+            explained.join("\n")
+        }
     );
 }
 

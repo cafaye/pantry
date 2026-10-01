@@ -634,3 +634,92 @@ and named in the commit message. Not a relaxation at the clause.
 **Related: D26.** `pin::published_head` still reads a mutable ref in a sibling
 clone, so "core HEAD's schema" is whatever the last `git fetch` left there. This
 ruling does not fix that and does not pretend to.
+
+---
+
+## D30 — a worktree is not a repository, and the gate now says so instead of going red — OPEN
+
+**The finding.** cafaye runs its work on `wt-*` worktrees under the workspace
+root, one per in-flight packet. `tests/drift.rs` walked that root and required
+every directory it found to be curated in `registry/index.yml`, so the gate went
+red the moment a worker started and stayed red until every worker had finished
+and the directory was removed. **A gate that cannot run while the work is in
+flight can only be run when there is nothing to decide**, which is the opposite
+of what a gate is for. Eight directories were reported uncurated on the
+workspace this was found in:
+
+```text
+9 directories are in the workspace that registry/index.yml curates in neither direction:
+  wt-core-21        — …/wt-core-21       carries a cafaye.yml
+  wt-kit-cluster    — …/wt-kit-cluster   carries NO cafaye.yml — so it is a directory, not yet a repository
+  wt-sell-backup    — …/wt-sell-backup   carries NO cafaye.yml — so it is a directory, not yet a repository
+  …and six more, one per active packet
+```
+
+The predicate that should have caught them read `name.contains("-worker-")`, and
+the convention is `wt-<service>-<packet>`. **The rule was not wrong about a
+shape; it was wrong about every shape present.** Four packets of `wt-` names
+went past it.
+
+**The ruling.** A directory is skipped by the walk when, and only when, all
+three hold — `worktree_repository` and `curation_covers` in `tests/drift.rs`:
+
+1. its name carries the `wt-` prefix — the convention, which is what lets
+   tomorrow's worktrees skip without this repository listing today's names;
+2. its `.git` is a **file** naming `<repository>/.git/worktrees/<id>` — the
+   proof, written by git, so a plain directory called `wt-whatever` and a
+   genuine new repository called `wt-whatever` both fail it, and so does a
+   submodule's `.git` file, which points at `.git/modules/<name>`;
+3. that `<repository>` is one **this registry curates** — the reason. A worktree
+   is a second working copy of a directory the registry already describes, and a
+   `cafaye.yml` inside it is that repository's manifest at that branch, already
+   checked through the repository's own checkout.
+
+**Clause 3 is the one that makes the exclusion a rule rather than a list.** A
+worktree of a repository pantry has no opinion about is a repository pantry has
+no opinion about, and it is reported like one. Without it the exclusion is a
+prefix in a trusted list, and the first worktree of a new service is exactly how
+a repository nobody registered would slip past.
+
+**Clause 2 does not require git's administrative directory to exist**, and that
+is deliberate: `git worktree prune` removes it and leaves the working copy on
+disk, which is the shape of a stale worktree. Failing on that would mean the
+cleanup the exclusion enables is what makes the gate unrunnable again.
+
+**Proven, not asserted.** Three mutations of the rule, each run and each
+observed to go red naming what it broke — name-only matching (5 tests red),
+dropping clause 3 (1 red: `wt-foreign` and `wt-uncurated-owner` stop being
+reported), and accepting any `.git` file without the `worktrees/` shape (1 red:
+`wt-submodule` stops being reported). The last two are caught by
+`a_worktree_is_a_working_copy_of_something_the_registry_already_curates` alone,
+which is why that fixture exists.
+
+**What is deliberately NOT built: a report of worktrees.** See below.
+
+> DECISION NEEDED (pantry): D30b — **should the gate report a worktree — its
+> branch, and whether that branch has been merged — separately from curating it?**
+> The manager raised this and asked for the narrow fix plus a view, which is what
+> this packet did. It is not blocked; nothing in the gate is waiting on it.
+> * *The branch* is a fact about the working copy itself. `git -C <worktree>
+>   rev-parse --abbrev-ref HEAD` reads a local file and is safe to state.
+> * *Whether the branch has been merged* is **not** safe to assert. It is a
+>   claim about a mutable ref in a **sibling clone** — the exact shape AGENTS.md
+>   rule 3 forbids, and D26 is that defect already open in this neighbourhood.
+>   So a version that FAILS on merge state would break the rule it lives under,
+>   and one that reports it must label it "as of this clone".
+> * The one unambiguous, non-merge signal: a `wt-` directory whose administrative
+>   directory `git worktree prune` already removed. Git does not know it; the
+>   bytes are still there. Stale by definition, and not a judgement call.
+> * Alternatives: (a) report branch + pruned-or-not, never fail — recommended;
+>   (b) also report merge state, labelled as of the local clone, never fail;
+>   (c) fail on a pruned worktree, on the grounds that git has disowned it.
+> * Recommended (a) or (a)+(b). A worker's branch is the handle the manager needs
+>   to land or discard a worktree, so it is the first thing a report should say.
+> * **What must not be built: a staleness threshold.** "A worktree older than N
+>   days is a failure" makes this gate depend on a clock and on a developer's
+>   machine, and a red that fires on a schedule rather than on a change is a red
+>   that gets disabled. A threshold is also a check whose truth is decided by
+>   time, which is the property `recordedAt` was introduced to remove.
+> * Cost of flipping: one function and one `eprintln!` in `tests/drift.rs`. No
+>   assertion, nothing in `src/`, no change to any HTTP contract, and no
+>   re-record of anything.
