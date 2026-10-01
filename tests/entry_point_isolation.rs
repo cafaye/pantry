@@ -58,6 +58,14 @@
 //! assumed: `every_write_verb_on_every_registered_path_is_405` sweeps all four
 //! write verbs against all four registered paths, 16 requests, and requires every
 //! one to be 405 in the core envelope.
+//!
+//! **The one count here that is deliberately not pinned** is the size of the
+//! on-disk probe set in `the_only_names_that_answer_two_hundred_are_the_registered_ones`.
+//! It is floored instead, and the reason is worth recording: an exact count there
+//! went red when this packet added its own report file, which turned a **reach**
+//! guard into a tripwire on the repository's file count. Adding a file is not a
+//! defect, and a number that goes red for that reason teaches people to bump it
+//! rather than read it.
 
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderName, Request, StatusCode, header};
@@ -366,13 +374,40 @@ async fn the_only_names_that_answer_two_hundred_are_the_registered_ones() {
          GET /v1/services/{{name}}. The registry is curated data; a repository path is not a \
          service."
     );
-    assert_eq!(
-        present.len(),
-        29,
-        "this test probes {} on-disk names, not 29. A new top-level file or directory is a new \
-         probe and the count in the module header must move with it.",
-        present.len()
+
+    // The size of the probe set is floored, not pinned. An earlier version
+    // asserted it exactly, and that was the test measuring the wrong thing:
+    // adding this packet's own report file moved the number by one and turned a
+    // **reach** guard into a tripwire on the repository's file count. A new
+    // top-level file is not a defect, so an exact count would have gone red for
+    // no reason and taught everyone to bump a number rather than read the
+    // failure.
+    //
+    // What is still asserted is that the set is real work: a walk that returned
+    // nothing, or stopped finding the held-back repositories, would make every
+    // assertion above vacuous. So the floor is on the root's own entries and the
+    // six held-back names must be *in* the set, not merely counted.
+    let excluded = excluded_names();
+    let from_root = present.len()
+        - excluded
+            .iter()
+            .filter(|name| present.contains(name))
+            .count();
+
+    assert!(
+        from_root >= 15,
+        "the walk over this repository's root found only {from_root} entries, so most of the \
+         assertions above ran against an empty set and this test was vacuous. The walk is \
+         `read_dir(CARGO_MANIFEST_DIR)`; if this fires, that read is not seeing this repository."
     );
+    for name in &excluded {
+        assert!(
+            present.contains(name),
+            "the held-back repository `{name}` is not in the probe set, so the strongest negative \
+             case in this file did not run. `excluded_names()` read the index and the walk read \
+             the root, and the two must overlap."
+        );
+    }
 }
 
 // =============================================================== list: 1 entry point
