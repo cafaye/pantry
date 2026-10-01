@@ -189,7 +189,49 @@ it is not today, because `blockedBy` is pantry-internal.
 
 ---
 
-## D3 — core's `examples/valid/` holds two document kinds, and pantry must classify rather than conflate — OPEN (core's to rule)
+## D3 — core's `examples/valid/` holds three document kinds, and pantry must classify rather than conflate — RULED (third kind arrived; consumer side closed here, producer side still core's)
+
+**The ruling, 2026-10-01 (manager).** Option **(3) consumers classify**, held as the
+interim, is now the standing answer on the consumer side, and this repository has
+paid the cost it was holding (3) at: core landed the third kind.
+
+**What arrived, and what it did.** `core-15` added
+`tenancy.account-scoped.yml` and `tenancy.honest-zero.yml` — the tenancy
+declaration format, governed by its own `tenant-isolation.schema.json`. Pantry's
+gate went red naming both files:
+
+```text
+2 file(s) in core/examples/valid/ match neither rule and neither row of NON_MANIFEST_EXAMPLES:
+  tenancy.account-scoped.yml
+  tenancy.honest-zero.yml
+```
+
+That is the mechanism **working**. D3 was opened precisely because a third kind
+would break a consumer, and this is the break it predicted, arriving with its
+file names in the message instead of as `"owner" is a required property`.
+
+**The part that would have been silently wrong.** The table inferred
+`GateDeclaration` for every row, because with two kinds that inference was always
+right. With three it is wrong twice. Left alone, the fix that "makes the test
+pass" is to add the two filenames to the table — at which point both tenancy
+documents are validated against `gate.schema.json`, a schema that governs none of
+their fields, and the green is meaningless. So the row now carries the **kind**
+(`(&str, DocumentKind, &str)`), and `every_non_manifest_kind_names_the_schema_that_governs_it`
+asserts the schema core actually ships for that kind exists at the ref under test.
+A row naming a schema that is not there now fails rather than validating nothing.
+
+**Still core's to make: option (1)**, splitting the directory by kind. It remains
+the right shape and this ruling does not pretend otherwise — it makes the fleet
+correct without waiting for it. What changed is that the cost of (3) is now
+measured rather than estimated: one enum variant, two table rows, one test that
+had to learn a third case. Every future consumer pays it too.
+
+**How this was found, which is the part worth keeping.** Not by the worker whose
+packet it blocked — that worker's gate was **green**. `pin::published_head` reads
+`refs/remotes/origin/master` of a *sibling clone*, so whether this suite is green
+depends on when someone last fetched core in that clone. See **D26**.
+
+---
 
 **The finding, measured.** `core/examples/valid/` today:
 
@@ -326,3 +368,99 @@ in each of three tests. The CI clone must stay non-shallow either way — assert
 was removed from `workspace-drift`: a shallow clone would make every recorded-ref
 check SKIP, naming the ref it could not read, which is honest but would mean CI
 verified nothing about any registry copy while looking green.
+
+---
+
+## D26 — this repository's gate result depends on a ref in a sibling clone, and nothing in it says so — OPEN (found while landing pantry-09)
+
+**The finding.** `pantry::pin::published_head` resolves, in order,
+`refs/remotes/origin/master`, `refs/remotes/origin/main`, `master`, `HEAD` of
+whatever checkout `core_checkout()` found — which is `$PANTRY_CAFAYE_ROOT/core`, or
+`CARGO_MANIFEST_DIR/../core`, i.e. **a sibling clone on the same disk**. So the
+suite's green/red is a function of *when someone last ran `git fetch` in that
+clone*, not of this repository's tree.
+
+**How it was caught, which is the only interesting part.** Landing
+`pantry-09-isolation`, its worker reported exit 0 on a full `cargo test`. My gate
+on the same branch — minutes later, same tree — failed
+`every_example_in_core_s_valid_examples_is_classified_by_this_table`. Same
+commits, same machine. The difference was that something had fetched core in
+between. The worker's green was not wrong about its own work (its two new targets
+were 25/25); it was **wrong about the suite**, and would have reported a passing
+gate for a repository that does not pass.
+
+**Why this is worse than an ordinary flaky test.** A flaky test fails
+intermittently and the failure is visible. This one produces a **confident,
+reproducible-looking green that is stale**, and it is stale in the direction that
+matters most: it hides a *new* document kind in a dependency's directory — exactly
+the D3 break. The worker's report even said "not 62 runs of flake"; the honest
+version is "green against a ref that was 2 commits behind."
+
+**What would close it**, in decreasing order of cost:
+
+1. `cargo test` fetches the core clone it is about to read, or fails naming the
+   ref it read and that it did not verify. Cheap, and makes the number in the
+   failure message attributable.
+2. The gate runs with `PANTRY_CAFAYE_ROOT` unset and CI supplies core by URL+sha,
+   so there is no ambient sibling at all. Correct, and more setup.
+3. `published_head` stops falling back to `master`/`HEAD` and only reads an
+   explicit ref. Reduces the ambiguity; does not remove it.
+
+**Not done here.** This is a change to `src/pin.rs` and to how the suite is
+invoked — a packet, not a drive-by, and the manager's rule is that the manager does
+not author. Recorded so it is a decision rather than a surprise. **Recommended (1)**:
+it is the smallest change that makes "green" mean "green at the ref I just read."
+
+---
+
+## D27 — six tests here asserted which service sat on which core pin, and said nothing about the thing they were named for — RULED (manager, 2026-10-01)
+
+**The finding.** `tests/api.rs` and `tests/filters.rs` hardcoded the fleet's core
+pins: `^0.1.0` for courier, guard and identity, `^0.2.0` for the other six. Six
+tests went red when core's version standard (core-17) raised every service to
+`^0.2.0`, and **not one of them was about pins.** What they were named for:
+
+| test | name promises | what it asserted |
+|---|---|---|
+| `a_service_object_carries_exactly_the_documented_keys` | the key set | that identity is on `^0.1.0` |
+| `a_document_at_the_repository_root_is_served_verbatim` | `openapi.yaml` is not normalised | that courier is on `^0.1.0` |
+| `every_filter_narrows_the_list` | filters narrow | which six services are on `^0.2.0` |
+| `a_filter_that_matches_nothing_is_an_empty_list` | empty is empty | two coincidences of placement |
+| `contract_filter_matches_by_range_intersection` | range intersection | a partition of the fleet |
+| `two_filters_are_both_applied` | the conjunction applies | two hardcoded disjoint pairs |
+
+**Why it stayed hidden, which is the worse half.** The registry copies were
+stale. `registry/services/*/cafaye.yml` still held the *old* manifests, so the
+served pins were `^0.1.0` and the hardcoded expectations matched them. The tests
+were passing **because the data was out of date**. Refreshing the copies — the
+ordinary, prescribed maintenance after any merge — turned six green tests red
+with nothing in them having changed. A suite that is only correct while its
+fixtures are stale is not a suite.
+
+**The ruling.** A test may assert a fact about *this build*. It may not assert a
+fact about *another repository's decisions*. Core's version standard is core's
+to move, and pantry has no vote in it, so no test here names a version again:
+
+* the two single-entry tests now compare the served `core` against the
+  registry copy **read off disk** — a real claim, because the value has been
+  through YAML parse, projection and JSON serialisation on the way out;
+* `every_filter_narrows_the_list` keeps its `kind` and `language` rows (those
+  are facts about the vocabulary) and the contract cases moved to a derived
+  test: every pin selects exactly its own members, and **the pins partition the
+  fleet**;
+* the two "matches nothing" cases are now **computed** — a language exactly one
+  service carries, paired with a pin one minor below it, which a caret on a
+  `0.x` makes disjoint by arithmetic. `checked > 0` is asserted, because a test
+  that proved nothing should fail rather than pass quietly.
+
+**What would have been cheaper and wrong.** Editing `^0.1.0` to `^0.2.0` and
+`^0.2.0` to `^0.3.0` in six places. It turns green, it costs four minutes, and it
+is the same six tests red again at the next core release — with a fleet that has
+now moved twice in a month.
+
+**Still open, and this ruling does not fix it.** `pantry::pin::published_head`
+reads a mutable ref in a sibling clone, so a green run is not attributable to a
+commit — **D26**. This ruling made the *tests* independent of the fleet; D26 is
+what makes the *ref* independent of whoever last ran `git fetch`. They are the
+same class of defect and were found the same afternoon, which is the argument for
+doing D26 next rather than later.

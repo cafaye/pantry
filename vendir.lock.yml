@@ -37,7 +37,7 @@
 # repository, and it is the only thing about core that should be able to turn this
 # gate red.
 #
-# The sha below is core's `71d01fd`, and `schemas/cafaye.manifest.schema.json` is
+# The sha below is core's `9d6bb87`, and `schemas/cafaye.manifest.schema.json` is
 # byte-identical to core's copy at that commit — which
 # `the_vendored_schema_is_core_s_schema_at_the_ref_this_repository_records`
 # asserts on every run, rather than this comment asking to be believed.
@@ -51,4 +51,4 @@ directories:
           url: git@github.com:cafaye/core.git
           # core's master at the moment these bytes were taken.
           ref: master
-          sha: 71d01fd90eae42d452db4431b999e4835949a548
+          sha: 9d6bb8794cba684619c0a3f0ddbd4739d5e64f21

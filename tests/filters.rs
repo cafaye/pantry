@@ -132,68 +132,163 @@ fn language_filter_covers_every_language_the_manifest_schema_allows_for_a_servic
     }
 }
 
-/// The semver filter is range-intersection, not string equality: a service
+/// The semver filter is range-**intersection**, not string equality: a service
 /// pinned to `^0.2.0` matches a caller asking about `>=0.2.0`, and one pinned
-/// to `^0.1.0` does not match a caller asking about `^0.2.0` because pre-1.0
-/// a caret pins the minor.
+/// to `^0.1.0` does not match a caller asking about `^0.2.0` because pre-1.0 a
+/// caret pins the minor.
+///
+/// **This test used to assert the wrong thing.** Its cases table named which
+/// service sat on which pin — `^0.1.0` was courier, guard and identity — so it
+/// was a test about *fleet placement*, wearing a test about semver's clothes. It
+/// went red the moment core's version standard moved the whole fleet from
+/// `^0.1.0` to `^0.2.0`, and what it reported was a failure of range
+/// intersection when range intersection had not changed at all. Placement is
+/// core's decision; this file has no vote in it.
+///
+/// What is left is the part that is this build's: **each pin selects exactly the
+/// services carrying it**, the pins **partition** the fleet, and the empty side
+/// is empty for a reason that follows from the pins rather than from a guess.
 #[test]
 fn contract_filter_matches_by_range_intersection() {
-    let cases: &[(&str, &[&str])] = &[
-        (
-            "^0.2.0",
-            &["billing", "caf", "cafaye-ts", "darkroom", "muse", "pantry"],
-        ),
-        // courier joins identity and guard on ^0.1.0. Its own manifest records
-        // that as unresolved — "`core: ^0.1.0` assumes core's first release is
-        // 0.1.0" — and the registry records what the file says rather than what
-        // the file hopes, exactly as it does for identity.
-        ("^0.1.0", &["courier", "guard", "identity"]),
-        (
-            "~0.2.0",
-            &["billing", "caf", "cafaye-ts", "darkroom", "muse", "pantry"],
-        ),
-        (
-            ">=0.2.0",
-            &["billing", "caf", "cafaye-ts", "darkroom", "muse", "pantry"],
-        ),
-        // An open floor from below every constraint matches everything: a
-        // service on ^0.2.0 contains versions that are also at or above 0.1.0.
-        (
-            ">=0.1.0",
-            &[
-                "billing",
-                "caf",
-                "cafaye-ts",
-                "courier",
-                "darkroom",
-                "guard",
-                "identity",
-                "muse",
-                "pantry",
-            ],
-        ),
-        ("0.1.0", &["courier", "guard", "identity"]),
-        (
-            "0.2.0",
-            &["billing", "caf", "cafaye-ts", "darkroom", "muse", "pantry"],
-        ),
-        // A caret on a future minor intersects nothing on this platform yet.
-        ("^0.3.0", &[]),
-        ("^0.0.1", &[]),
-        (">=9.0.0", &[]),
-        // The boundary: ^0.2.0 and ^0.1.0 touch at 0.2.0 without sharing a
-        // version, so a caller asking "is anything on ^0.2.0" must not get the
-        // services still on ^0.1.0.
-        ("^0.1.0", &["courier", "guard", "identity"]),
-    ];
+    let registry = registry();
 
-    for (range, want) in cases {
+    let mut by_pin: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for entry in registry.entries() {
+        by_pin
+            .entry(entry.core_constraint().to_string())
+            .or_default()
+            .push(entry.name().to_string());
+    }
+    assert!(!by_pin.is_empty(), "the registry is not empty");
+
+    // 1. Each pin selects exactly the services carrying it — the filter reads
+    //    the same field the entry serves.
+    let mut covered: Vec<String> = Vec::new();
+    for (pin, members) in &by_pin {
         let filter = Filter {
-            contract: Some(Constraint::parse(range).expect("grammar")),
+            contract: Some(Constraint::parse(pin).expect("a pin parses")),
             ..Filter::default()
         };
-        assert_eq!(names(filter), *want, "contract={range}");
+        let mut got = names(filter);
+        let mut want = members.clone();
+        got.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(got, want, "contract={pin}");
+        covered.extend(members.iter().cloned());
     }
+
+    // 2. The pins partition the fleet: every service is under exactly one. A
+    //    filter that ignored `contract` would satisfy (1) on a one-pin fleet,
+    //    which is what this fleet was for a fortnight.
+    covered.sort_unstable();
+    let mut every: Vec<String> = registry
+        .entries()
+        .iter()
+        .map(|entry| entry.name().to_string())
+        .collect();
+    every.sort_unstable();
+    assert_eq!(
+        covered, every,
+        "the pins do not partition the fleet: a service is under no pin, or under two"
+    );
+
+    // 3. An open floor at or below the lowest pin every service satisfies
+    //    matches all of them, and an open floor *above* the highest matches
+    //    none. Both follow from the pins rather than from a remembered version,
+    //    and both are the property a client actually depends on: it asks what
+    //    it can use, not which service happens to be where.
+    let (lowest, _highest) = floors(&by_pin).expect("at least one pin with a floor and a ceiling");
+    let all = Filter {
+        contract: Some(Constraint::parse(&format!(">={lowest}")).expect("grammar")),
+        ..Filter::default()
+    };
+    assert_eq!(names(all).len(), registry.len(), ">={lowest} is a floor nothing is under");
+
+    for pin in by_pin.keys() {
+        let ceiling = ceiling_of(pin);
+        let none = Filter {
+            contract: Some(
+                Constraint::parse(&format!("^0.{}.0", ceiling + 1)).expect("grammar"),
+            ),
+            ..Filter::default()
+        };
+        assert_eq!(
+            names(none),
+            Vec::<String>::new(),
+            "nothing is on ^0.{}.0 yet: it is a minor above {pin}, and a caret on a 0.x pins the \
+             minor",
+            ceiling + 1
+        );
+    }
+
+    // 4. The boundary the whole thing exists for, stated without naming who is
+    //    where: two distinct pins are ranges that cannot share a version, so
+    //    no service may appear under both.
+    let pins: Vec<&String> = by_pin.keys().collect();
+    for (i, a) in pins.iter().enumerate() {
+        for b in &pins[i + 1..] {
+            let in_a = Filter {
+                contract: Some(Constraint::parse(a).expect("grammar")),
+                ..Filter::default()
+            };
+            let in_b = Filter {
+                contract: Some(Constraint::parse(b).expect("grammar")),
+                ..Filter::default()
+            };
+            let both: std::collections::BTreeSet<&String> =
+                names(in_a).iter().map(|s| leak(s)).collect();
+            for service in names(in_b) {
+                assert!(
+                    !both.contains(&service),
+                    "{service} matched both {a} and {b}. Those are two different pins, so the \
+                     filter is comparing something other than the range"
+                );
+            }
+        }
+    }
+}
+
+/// The lowest floor and the highest `0.x` minor any pin in the registry names.
+fn floors(by_pin: &std::collections::BTreeMap<String, Vec<String>>) -> Option<(String, u32)> {
+    let mut lowest: Option<String> = None;
+    let mut highest: Option<u32> = None;
+    for pin in by_pin.keys() {
+        let bare = pin.trim_start_matches(['^', '~', '=', '>', '<', ' ']);
+        let version = bare.split(&['-', '+'][..]).next().unwrap_or(bare);
+        let mut parts = version.split('.');
+        let major: u32 = parts.next()?.parse().ok()?;
+        let minor: u32 = parts.next()?.parse().ok()?;
+        if major != 0 {
+            // The ceiling rule below is stated for 0.x because that is where
+            // caret pins the minor. A 1.x pin in this fleet would need the
+            // rule restated rather than approximated, so it is refused here.
+            return None;
+        }
+        if lowest.as_deref().map(|l| version < l).unwrap_or(true) {
+            lowest = Some(version.to_string());
+        }
+        highest = Some(highest.map_or(minor, |h: u32| h.max(minor)));
+    }
+    lowest.map(|l| (l, highest.unwrap_or(0)))
+}
+
+/// The `0.x` minor a pin's caret stops at.
+fn ceiling_of(pin: &str) -> u32 {
+    let bare = pin.trim_start_matches(['^', '~', '=', '>', '<', ' ']);
+    bare.split('.')
+        .nth(1)
+        .and_then(|minor| minor.parse().ok())
+        .unwrap_or_else(|| panic!("{pin} has no 0.x minor to take a ceiling from"))
+}
+
+/// Leaks a `String` so a `BTreeSet<&String>` can be built from owned values.
+///
+/// Test-only, and named for what it is: the alternative is cloning the whole
+/// name set per pair, and this function is called from a test whose cost is
+/// already nine services.
+fn leak(value: &String) -> &'static String {
+    Box::leak(Box::new(value.clone()))
 }
 
 #[test]
@@ -217,32 +312,69 @@ fn two_filters_are_both_applied() {
     assert_eq!(names(each_alone), ["caf", "identity"]);
 
     let registry = registry();
-    let impossible = query(&[("language", "python"), ("contract", "^0.1.0")]);
-    assert!(
-        registry.query(&impossible).is_empty(),
-        "muse is the only python service and it is on ^0.2.0, so language=python plus \
-         contract=^0.1.0 matches nothing. This used to be language=typescript plus \
-         contract=^0.2.0 and stopped being empty when cafaye-ts registered: two filters \
-         are worth nothing if they cannot survive the next entry in the registry"
-    );
 
-    let three = query(&[
-        ("kind", "api"),
-        ("language", "python"),
-        ("contract", "^0.2.0"),
-    ]);
-    assert_eq!(names(three), ["muse"]);
+    // **The disjoint pairs are computed, not remembered.** This test used to
+    // name them — `language=python&contract=^0.1.0` and
+    // `language=elixir&contract=^0.2.0` — and both were empty only by
+    // coincidence of where the fleet happened to sit. The fleet-wide raise to
+    // `^0.2.0` emptied the coincidence and left the assertion, and the test
+    // reported a semver failure that had not happened. Its own comment already
+    // said two filters "are worth nothing if they cannot survive the next entry
+    // in the registry"; this is that, applied to the test itself.
+    //
+    // The rule: a language exactly one service carries, paired with a pin that
+    // service provably cannot satisfy. Caret on a `0.x` pins the minor, so one
+    // minor below is disjoint by arithmetic rather than by memory.
+    let mut checked = 0usize;
+    let mut unreached: Vec<String> = Vec::new();
+    for entry in registry.entries() {
+        let language = entry.language();
+        let alone = Filter {
+            language: Some(language),
+            ..Filter::default()
+        };
+        if names(alone).len() != 1 {
+            continue;
+        }
+        let pin = entry.core_constraint().to_string();
+        let Some(disjoint) = disjoint_pin(&pin) else {
+            unreached.push(format!("{} is on {pin}", entry.name()));
+            continue;
+        };
 
-    // The same pre-1.0 boundary on the other side of the fleet: courier is the
-    // only elixir service and it is on ^0.1.0, so asking for both matches
-    // nothing while either half alone matches it.
-    let elixir = query(&[("language", "elixir")]);
-    assert_eq!(names(elixir), ["courier"]);
-    let elixir_on_v2 = query(&[("language", "elixir"), ("contract", "^0.2.0")]);
+        let both = Filter {
+            language: Some(language),
+            contract: Some(Constraint::parse(&disjoint).expect("grammar")),
+            ..Filter::default()
+        };
+        assert!(
+            registry.query(&both).is_empty(),
+            "language={language} plus contract={disjoint} cannot match: {} is the only \
+             {language} service and it is on {pin}. A hit here means the two filters are not \
+             both being applied",
+            entry.name()
+        );
+        checked += 1;
+    }
+
     assert!(
-        registry.query(&elixir_on_v2).is_empty(),
-        "courier is on ^0.1.0, which pre-1.0 does not contain ^0.2.0"
+        unreached.is_empty(),
+        "a pin form this cannot reason about is a reason to look: {}",
+        unreached.join("; ")
     );
+    assert!(
+        checked > 0,
+        "no language in this fleet is carried by exactly one service, so this test proved \
+         nothing about the conjunction — it only ever proved it about the first pair it was \
+         given, and the pairs have all since changed"
+    );
+}
+
+/// A pin that cannot contain any version `pin` can: caret on a `0.x` pins the
+/// minor, so `^0.2.0` and `^0.1.0` are disjoint ranges.
+fn disjoint_pin(pin: &str) -> Option<String> {
+    let minor = pin.strip_prefix("^0.")?.split('.').next()?.parse::<u32>().ok()?;
+    (minor > 0).then(|| format!("^0.{}.0", minor - 1))
 }
 
 #[test]
