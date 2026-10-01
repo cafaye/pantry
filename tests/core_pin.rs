@@ -36,12 +36,18 @@ use pantry::pin::{self, PinResolution, PinSource};
 // `39acaed6f1e25a895b0410e0689fe68d523b1b63` is core's `worker/core-08` merge —
 // the commit before `core-09` added the two gate declarations. It is pinned here
 // deliberately and for a reason that is checked below rather than assumed: it is
-// a ref where `examples/valid/` contains service manifests ONLY, and where
-// `schemas/cafaye.manifest.schema.json` is byte-identical to core HEAD's. So the
-// only thing the ref changes is the *examples*, which is what makes it the right
-// instrument for this test: a consumer pinned here must pass, and a consumer
-// reading the working tree must fail, and the difference between them is exactly
-// the bug.
+// a ref where `examples/valid/` contains service manifests ONLY, and every one
+// of them still validates against the manifest schema core publishes at HEAD.
+// So the only thing the ref changes is the *examples*, which is what makes it
+// the right instrument for this test: a consumer pinned here must pass, and a
+// consumer reading the working tree must fail, and the difference between them
+// is exactly the bug.
+//
+// The second half of that sentence was, until 2026-10-01, a claim of
+// *byte-identity* between the two schemas rather than of validity, and it was
+// unsatisfiable — see the long comment on clause (b) in
+// `the_ref_under_test_really_is_a_ref_before_the_gate_examples` for core's
+// `94f8d25` and `ec28365`, and `DECISIONS.md` D29.
 // -------------------------------------------------------------------------
 const PRE_GATE_EXAMPLES: &str = "39acaed6f1e25a895b0410e0689fe68d523b1b63";
 
@@ -344,6 +350,136 @@ fn examples_for(consumer: &Path, core: &Path) -> Resolved {
     }
 }
 
+/// Clause (b) of `the_ref_under_test_really_is_a_ref_before_the_gate_examples`,
+/// as a function — so the clause and the test that proves the clause can fail
+/// are the *same instrument* rather than two similar readings of the same idea.
+///
+/// `schema` is supplied by the caller, which is what lets the breakage test
+/// hand in a deliberately broken copy instead of reaching into core. Returns
+/// the number of examples that validated, so a caller can refuse a vacuous
+/// pass: `Ok(0)` means "the examples were not read", which is a different
+/// finding from "the examples are fine", and a clause that reports them the
+/// same way is a clause that can be satisfied by reading nothing.
+///
+/// `scratch_name` is a parameter because [`Scratch`] is a fixed path under
+/// `std::env::temp_dir()` and this suite runs its tests in parallel.
+fn pinned_examples_validating_against(
+    schema: &[u8],
+    core: &Path,
+    scratch_name: &str,
+) -> Result<usize, String> {
+    let consumer = Scratch::new(scratch_name);
+    consumer.write(
+        "vendir.lock.yml",
+        &format!("directories:\n  - contents:\n      - git:\n          sha: {PRE_GATE_EXAMPLES}\n"),
+    );
+
+    // The same resolver the positive test uses, and deliberately. Clause (b) is
+    // a claim about the *same* examples `a_consumer_pinned_to_an_older_ref_
+    // validates_that_refs_examples` validated, so reading them by a second
+    // route would make the two clauses statements about two different sets, and
+    // neither would be evidence about the other.
+    let examples = match examples_for(&consumer.0, core) {
+        Resolved::Examples { examples, .. } => examples,
+        Resolved::Skipped { reason } => return Err(reason),
+    };
+
+    let mut validated = 0usize;
+    let mut rejected: Vec<String> = Vec::new();
+    let mut misfiled: Vec<&str> = Vec::new();
+
+    for example in &examples {
+        // A non-manifest at the pin is not a validation failure and not this
+        // clause's business — it is what the `gate.*` clause exists to catch.
+        // Reporting it as a schema violation would quote a manifest rule at a
+        // document the manifest schema never governed, which is the exact
+        // conflation D3 exists to prevent, one level up.
+        if example.kind != DocumentKind::Manifest {
+            misfiled.push(example.name.as_str());
+            continue;
+        }
+        let at = format!("examples/valid/{}", example.name);
+        match manifest::validate_against(schema, &example.body, Path::new(&at)) {
+            Ok(_) => validated += 1,
+            Err(error) => rejected.push(format!("    {}: {error}", example.name)),
+        }
+    }
+
+    if !misfiled.is_empty() {
+        return Err(format!(
+            "{PRE_GATE_EXAMPLES} carries {} non-manifest example(s) — {}. That is the `gate.*` \
+             clause's finding, not a schema violation, and it is reported separately here so this \
+             clause does not blame the schema for a document it never governed.",
+            misfiled.len(),
+            misfiled.join(", ")
+        ));
+    }
+
+    if !rejected.is_empty() {
+        return Err(format!(
+            "{} of {} example(s) at {PRE_GATE_EXAMPLES} no longer satisfy the manifest schema \
+             core publishes at HEAD:\n{}\n\nThe pin still means \"before the gate declarations\" — \
+             clauses (a) and the `gate.*`-at-HEAD clause are untouched and still hold — but a \
+             schema change since then has stopped accepting the documents this ref is kept to \
+             exercise. That is this clause working. The fix is a PRE_GATE_EXAMPLES chosen for \
+             the property, named in the commit message; it is NOT a relaxation here. See \
+             DECISIONS.md D29 for why the byte-identity form of this clause was abandoned.",
+            rejected.len(),
+            examples.len(),
+            rejected.join("\n")
+        ));
+    }
+
+    if validated == 0 {
+        return Err(format!(
+            "no example at {PRE_GATE_EXAMPLES} was validated, so this clause proved nothing"
+        ));
+    }
+
+    Ok(validated)
+}
+
+/// A throwaway copy of `schema` in which `kind` is required.
+///
+/// `kind` is the field core added in `ec28365`, and no example at
+/// {PRE_GATE_EXAMPLES} declares it, so requiring it is the smallest change that
+/// makes the pinned examples stop validating — and it is the *realistic* one:
+/// it is exactly what a schema author does when a newly-added field becomes
+/// mandatory, which is the realistic way this clause ever went red.
+///
+/// Errors rather than guessing, on both counts, because each one would make the
+/// breakage test pass without testing anything: a schema with no `required`
+/// array has nothing to make mandatory, and a schema that already requires
+/// `kind` is a breakage that rejects every example whether or not this function
+/// ran.
+fn schema_requiring_kind(schema: &[u8]) -> Result<Vec<u8>, String> {
+    let mut document: serde_json::Value = serde_json::from_slice(schema).map_err(|error| {
+        format!("core's manifest schema is not JSON, so it cannot be broken on purpose: {error}")
+    })?;
+
+    let required = document
+        .get_mut("required")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| {
+            "core's manifest schema declares no `required` array, so there is nothing to make \
+             mandatory. Pick a different breakage rather than one that cannot fail."
+                .to_string()
+        })?;
+
+    if required.iter().any(|entry| entry == "kind") {
+        return Err(format!(
+            "core's manifest schema already requires `kind`, so requiring it again is a no-op: \
+             every example at {PRE_GATE_EXAMPLES} would already be rejected and this breakage \
+             would prove nothing."
+        ));
+    }
+
+    required.push(serde_json::Value::String("kind".to_string()));
+    serde_json::to_vec_pretty(&document).map_err(|error| {
+        format!("the deliberately-broken schema does not serialise back to JSON: {error}")
+    })
+}
+
 // -------------------------------------------------------------------------
 // The tests.
 // -------------------------------------------------------------------------
@@ -525,22 +661,195 @@ fn the_ref_under_test_really_is_a_ref_before_the_gate_examples() {
          message why — do not relax this."
     );
 
-    // And the schema is unchanged across the two refs, so the test above is
-    // isolating the EXAMPLES. If core had edited the schema in the same window,
-    // a pass at the old ref would be passing for the wrong reason.
-    let schema_at_pin = pin::show(
+    // ---------------------------------------------------------------------
+    // (b) THE SCHEMA CLAUSE. Re-aimed 2026-10-01.
+    //
+    // Read this before changing it. The reason it is no longer a byte
+    // comparison is arithmetic, not convenience, and the arithmetic is in
+    // core's history where it can be re-derived:
+    //
+    //     94f8d25  2026-09-30  gate: declare it, check the declaration
+    //     ec28365  2026-10-01  feat(manifest): kind and environments
+    //
+    // WHAT IT WAS, and what it was FOR. `assert_eq!(schema_at_pin,
+    // schema_at_head)`, under this comment:
+    //
+    //     "the schema is unchanged across the two refs, so the test above is
+    //      isolating the EXAMPLES. If core had edited the schema in the same
+    //      window, a pass at the old ref would be passing for the wrong
+    //      reason."
+    //
+    // That intent — **a schema change must not be able to make this test pass
+    // for the wrong reason** — is unchanged, and it is what this clause is
+    // still for. Byte-identity was one sufficient condition for it. It was not
+    // the condition.
+    //
+    // WHY BYTE-IDENTITY HAD TO GO. `git merge-base --is-ancestor 94f8d25
+    // ec28365` exits 0: the gate examples came FIRST. So every ref at or after
+    // `ec28365` carries HEAD's schema, and every one of those refs is also at
+    // or after `94f8d25` and therefore already carries the gate declarations.
+    // The set of refs whose schema is byte-identical to HEAD's and the set of
+    // refs carrying no `gate.*` are **disjoint**. There is no ref to pin to,
+    // and manufacturing one would mean rewriting core's history.
+    //
+    // It was not a scheduling accident either. `ec28365` added `kind` to the
+    // schema AND published `examples/valid/parlor.template.cafaye.yml` in the
+    // same change, because a `kind: template` manifest is not expressible
+    // before `kind` exists. The two halves of this contract became mutually
+    // exclusive inside one commit, and no re-pin restores them.
+    //
+    // A clause that can never be true is not a strict check. It is a deleted
+    // check wearing a disguise: every reader learns to skip it, and the red it
+    // prints gets reported against pantry — which is the entire history of
+    // this file, three times over.
+    //
+    // WHAT IT IS NOW. Every example at {PRE_GATE_EXAMPLES} still VALIDATES
+    // against core HEAD's current `schemas/cafaye.manifest.schema.json`. The
+    // intent, stated as the property itself rather than as a proxy for it.
+    //
+    // IS THAT WEAKER? Byte-identity was a *sufficient but not necessary*
+    // condition for this property, so as a bare proposition it is the strictly
+    // stronger claim, and it would be dishonest to describe the swap as
+    // strengthening it. What it was strictly stronger *about* is a proxy, and
+    // two things follow:
+    //
+    //   1. It fires on changes that cannot affect validation at all. `ec28365`
+    //      rewrote three `description` strings; the examples validated against
+    //      the new schema exactly as they had against the old. Byte-identity
+    //      called that a failure of the premise. A proxy that reports harmless
+    //      changes as violations teaches its readers to ignore it, and then
+    //      the one real violation goes unread too.
+    //   2. Byte-identity asks whether two blobs are the same document. This
+    //      clause asks whether the documents still validate. The second is
+    //      answerable when the first is not, and it is the question the comment
+    //      above was written to ask.
+    //
+    // So: a schema change that breaks nothing is now correctly silent. That is
+    // not a cost, it is the check working — and
+    // `the_pinned_example_clause_goes_red_when_the_schema_stops_accepting_an_
+    // example` below is the demonstration rather than the argument, because a
+    // boundary nobody has watched fail is not a boundary.
+    let schema_at_head = pin::show(&core, &head, "schemas/cafaye.manifest.schema.json")
+        .expect("core HEAD publishes a manifest schema");
+    pinned_examples_validating_against(&schema_at_head, &core, "fixture-clause-b")
+        .unwrap_or_else(|why| panic!("{why}"));
+}
+
+// -------------------------------------------------------------------------
+// The re-aimed schema clause, on its own: the positive case, and the proof
+// that it can fail.
+// -------------------------------------------------------------------------
+
+/// Clause (b) as a claim in its own name, with the count asserted non-zero so
+/// it cannot pass by reading nothing.
+///
+/// It calls the same function the clause in the test above calls, against the
+/// same schema. That is deliberate duplication and not an oversight: a property
+/// that exists only as a clause inside some other test is a property nobody can
+/// find by asking what this file guarantees. The clause is about *the pin
+/// still meaning what it says*; this is about *the examples still validating*,
+/// and both are worth a reader being able to point at.
+#[test]
+fn every_example_at_the_pinned_ref_still_validates_against_core_heads_schema() {
+    let Some(core) = core_checkout() else {
+        eprintln!(
+            "SKIP pinned examples vs core's current schema: no core checkout found. Set \
+             PANTRY_CAFAYE_ROOT. The ref under test is {PRE_GATE_EXAMPLES}."
+        );
+        return;
+    };
+
+    let head = pin::published_head(&core).expect("core resolves a published head");
+    let schema_at_head = pin::show(&core, &head, "schemas/cafaye.manifest.schema.json")
+        .expect("core HEAD publishes a manifest schema");
+
+    let validated = pinned_examples_validating_against(
+        &schema_at_head,
         &core,
-        PRE_GATE_EXAMPLES,
-        "schemas/cafaye.manifest.schema.json",
+        "positive-pinned-examples-vs-head",
     )
-    .expect("readable");
-    let schema_at_head =
-        pin::show(&core, &head, "schemas/cafaye.manifest.schema.json").expect("readable");
+    .unwrap_or_else(|why| panic!("{why}"));
+
+    assert!(
+        validated > 0,
+        "the clause returned Ok({validated}); the examples at {PRE_GATE_EXAMPLES} were not read, \
+         so this passed without checking anything"
+    );
+}
+
+/// The clause has teeth: a schema that stops accepting a pinned example must
+/// turn it red, and the failure must NAME the finding rather than merely
+/// disagreeing.
+///
+/// A boundary that has never been seen to fail is a comment. So the breakage is
+/// made the way `bin/gate-self-test` makes its breakages — a throwaway copy of
+/// the real artifact, changed in exactly one named way — and this runs the
+/// **control first**, unmodified, for the reason `bin/gate-self-test` runs both
+/// of its controls before any breakage: a red run against an already-red
+/// starting state proves nothing, and neither does a green one.
+#[test]
+fn the_pinned_example_clause_goes_red_when_the_schema_stops_accepting_an_example() {
+    let Some(core) = core_checkout() else {
+        eprintln!(
+            "SKIP pinned-example clause breakage: no core checkout found. Set \
+             PANTRY_CAFAYE_ROOT. The ref under test is {PRE_GATE_EXAMPLES}."
+        );
+        return;
+    };
+
+    let head = pin::published_head(&core).expect("core resolves a published head");
+    let schema_at_head = pin::show(&core, &head, "schemas/cafaye.manifest.schema.json")
+        .expect("core HEAD publishes a manifest schema");
+
+    // Control 1: the real schema, accepted. Also the positive case, measured in
+    // the same place as the red it is about to go, so the two runs differ in
+    // nothing but the schema bytes.
+    let accepted = pinned_examples_validating_against(&schema_at_head, &core, "breakage-control")
+        .unwrap_or_else(|why| {
+            panic!("the control went red, so a red below would prove nothing: {why}")
+        });
+    assert!(
+        accepted > 0,
+        "the control accepted {accepted} example(s), so there is nothing here to break"
+    );
+
+    // The breakage: one named change — `kind` becomes mandatory.
+    let broken = schema_requiring_kind(&schema_at_head).unwrap_or_else(|why| panic!("{why}"));
+    assert_ne!(
+        broken, schema_at_head,
+        "the throwaway schema came back byte-identical to core's, so nothing was broken and this \
+         test would pass without testing anything"
+    );
+
+    let why = pinned_examples_validating_against(&broken, &core, "breakage").expect_err(
+        "a schema that requires a field no example at the pin declares must reject them — \
+             this clause is the thing standing between a schema change and a test that passes for \
+             the wrong reason, and it just passed",
+    );
+    assert!(
+        why.contains("no longer satisfy the manifest schema"),
+        "the red names the finding rather than merely disagreeing: {why}"
+    );
+    assert!(
+        why.contains("kind"),
+        "the red names the field that was made mandatory: {why}"
+    );
+    assert!(
+        why.contains(PRE_GATE_EXAMPLES),
+        "the red names the ref whose examples were rejected: {why}"
+    );
+
+    // Control 2: the real schema, still accepted. Two runs of the same helper
+    // differing only in the schema proves the helper holds no state between
+    // them — and it would catch a helper that had quietly started ignoring the
+    // schema it was handed.
+    let accepted_again =
+        pinned_examples_validating_against(&schema_at_head, &core, "breakage-control-again")
+            .unwrap_or_else(|why| panic!("the control went red after the breakage: {why}"));
     assert_eq!(
-        String::from_utf8_lossy(&schema_at_pin),
-        String::from_utf8_lossy(&schema_at_head),
-        "the manifest schema changed between {PRE_GATE_EXAMPLES} and core HEAD, so a pass at \
-         the older ref would not be attributable to the examples"
+        accepted_again, accepted,
+        "the same schema and the same examples gave two different answers, so the red above was \
+         not caused by the breakage"
     );
 }
 

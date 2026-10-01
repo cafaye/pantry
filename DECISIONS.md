@@ -539,3 +539,98 @@ replacement was given the same name. The ledger shows the original at 18:21 and
 the replacement eight hours later. **A re-dispatch into the same packet name
 should check for a surviving branch first**, and if one exists, the replacement
 should be told what it is replacing rather than being left to redo it.
+
+---
+
+## D29 — the fixture pin's schema clause checks validity, not byte-identity — RULED (2026-10-01)
+
+**Numbering.** The brief for this work said "add a new entry (D3)". **D3 is
+already taken** — it is the document-kind decision, and `tests/core_pin.rs`
+cites it in three messages. This file's own header says a later packet "takes
+the next number rather than re-arguing an old one", so this is **D29**.
+
+**The finding, measured.** `tests/core_pin.rs` had a clause in
+`the_ref_under_test_really_is_a_ref_before_the_gate_examples` asserting that
+core's manifest schema at the fixture pin `39acaed` is byte-identical to the one
+at core HEAD. It has been red since `ec28365` landed, and it is red forever:
+
+```text
+94f8d25  2026-09-30  gate: declare it, check the declaration
+ec28365  2026-10-01  feat(manifest): kind and environments
+```
+
+`git merge-base --is-ancestor 94f8d25 ec28365` exits 0 — **the gate examples
+came first**. `git log -- schemas/cafaye.manifest.schema.json` returns three
+commits in core's entire history (`a6bbd28`, `a463e7c`, `ec28365`), so the
+refs carrying HEAD's schema are exactly `ec28365` and its descendants. Every one
+of those is also at or after `94f8d25` and therefore already carries
+`examples/valid/gate.external.yml` and `gate.self-contained.yml`. **The two sets
+are disjoint.** No ref satisfies both halves, and manufacturing one would mean
+rewriting core's history.
+
+It is structural, not a scheduling accident: `ec28365` added `kind` to the
+schema **and** published `parlor.template.cafaye.yml` in the same change,
+because a `kind: template` manifest is not expressible before `kind` exists. The
+halves became mutually exclusive inside one commit.
+
+**The ruling.** Clause (b) now asserts the property its own comment said it was
+for — *"a schema change must not be able to make this test pass for the wrong
+reason"* — as the property itself:
+
+> every example at `39acaed` still **validates** against core HEAD's current
+> `schemas/cafaye.manifest.schema.json`
+
+Clauses (a) (`no gate.*` at the pin) and the `gate.*`-at-HEAD clause are
+**untouched**. They are the load-bearing half and they are correct.
+
+**Is this weaker? Stated honestly, because it is a fair question and the
+flattering answer is the wrong one.** Byte-identity was a *sufficient but not
+necessary* condition for the new property, so **as a bare proposition it is the
+strictly stronger claim**, and this ruling does not claim to have strengthened
+anything. What it was strictly stronger *about* is a **proxy**, and that is the
+whole argument:
+
+1. **It fired on changes that cannot affect validation.** `ec28365` rewrote
+   three `description` strings. The examples validated against the new schema
+   exactly as against the old. Byte-identity called that a failure of the
+   premise. A proxy that reports harmless changes as violations teaches its
+   readers to ignore it — and then the one real violation goes unread too.
+2. **Same bytes implies same validation, so byte-identity could only ever be
+   sufficient, never necessary.** It asked "are these two blobs the same
+   document". The clause asks "do these documents still validate". The second
+   is answerable when the first is not.
+
+A clause that can never be true is not a strict check; it is a **deleted check
+wearing a disguise**. Every reader learns to skip it, and the red gets reported
+against pantry — which is the history of this file, three times over.
+
+**What it costs, plainly:** a schema change that breaks nothing is now correctly
+silent. That is not a cost. That is the check working.
+
+**The instrument.** `pantry::manifest::validate_against` — the function the
+test one screen above already uses on the same examples, backed by the `jsonschema`
+crate this repository already depends on. **No dependency was added.**
+`caf contract lint` is the platform's own CLI and was used to *cross-check* the
+ruling (all five pre-gate examples lint `OK` against core HEAD's schema, exit
+0), but it is **not** what the test calls: CI's `build` job is a pantry-only
+clone with no `caf/` and no Go toolchain, so a test shelling out to it would skip
+in CI and pass vacuously. `serde_json` — already used by four files in `tests/` —
+builds the deliberately-broken schema.
+
+**Proven, not asserted.** `the_pinned_example_clause_goes_red_when_the_schema_stops_accepting_an_example`
+mutates a throwaway copy of HEAD's schema to require `kind` — the field core
+added in `ec28365`, which no example at the pin declares — and requires the
+clause to go red **naming the finding**. It runs the control first, unmodified,
+for the reason `bin/gate-self-test` runs both of its controls before any breakage:
+a red run against an already-red starting state proves nothing. The mutation
+helper refuses both ways to be vacuous — no `required` array to break, or a
+schema that already requires `kind` — and the test asserts the broken bytes
+differ from core's.
+
+**If the property ever breaks,** the message names every rejected example, the
+ref, the field, and the fix: a new `PRE_GATE_EXAMPLES` chosen for the property
+and named in the commit message. Not a relaxation at the clause.
+
+**Related: D26.** `pin::published_head` still reads a mutable ref in a sibling
+clone, so "core HEAD's schema" is whatever the last `git fetch` left there. This
+ruling does not fix that and does not pretend to.

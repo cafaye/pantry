@@ -282,6 +282,28 @@ than on every CI run. See `CAFAYE_UNREADABLE` in `.github/workflows/ci.yml` and
 there is no repository to clone, so CI satisfies "the manifest is absent" with a
 directory that does not exist. That one is `DECISIONS.md` D2.
 
+**D29 — the fixture pin's schema clause checks validity, not byte-identity.**
+A pantry decision rather than an MD one (its reasoning is `DECISIONS.md` D29,
+and this is the cross-reference its header asks for). `tests/core_pin.rs` used to
+require core's manifest schema at the pin `39acaed` to be byte-identical to the
+one at core HEAD, so that a pass at the old ref could not be passing for the
+wrong reason. **That ref does not exist and never will:** `94f8d25` (the gate
+declarations) is an *ancestor* of `ec28365` (the schema), so every ref carrying
+HEAD's schema already carries the `gate.*` files, and the two sets are disjoint.
+Rewriting core's history to manufacture one is not available.
+
+The clause now asks the question its own comment was asking — do the pinned
+examples still **validate** against core HEAD's schema — instead of asking
+whether two blobs are equal. Byte-identity was the *strictly stronger* bare
+proposition and this does not pretend otherwise; what it was stronger *about*
+was a proxy, and a proxy that fired on `ec28365`'s three rewritten description
+strings had already trained its readers to skip it. **A clause that can never be
+true is not a strict check, it is a deleted check wearing a disguise.** Two
+tests hold the new one down, one of which mutates a throwaway copy of the
+schema and requires the clause to go red naming the finding. If you are about to
+re-pin or relax that clause, read D29 first — and note that the re-pin is not
+available.
+
 ## Git
 
 - Primary branch is `master` everywhere (PLAN.md §1).
