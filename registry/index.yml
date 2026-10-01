@@ -50,7 +50,7 @@ services:
     kind: api
     basePath: /v1
     # The commit of billing's own repository this copy was taken from.
-    recordedAt: 14f3cf643b587e0d5099eaf0776ecbe3e4dab53e
+    recordedAt: 80538f583e0687a695cba874a30f5c2381d4c358
 
   # muse serves HTTP; `consumes: []`, so `kind: api`.
   muse:
@@ -119,7 +119,7 @@ services:
     kind: api
     basePath: /v1
     # The commit of pantry's own repository this copy was taken from.
-    recordedAt: 92ca41ee98d97273be7fae58bb4e319f08ff86ea
+    recordedAt: 9ca35d4ec9b7d3fa3fd8353f999a810811fa35f4
 
   # guard serves HTTP and its own manifest records the gap: it declares no
   # `exposes` at all because its OpenAPI document has not been written (see the
