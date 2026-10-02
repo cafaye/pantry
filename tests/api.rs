@@ -144,7 +144,8 @@ async fn the_registry_is_the_whole_official_set_sorted_by_name() {
             "guard",
             "identity",
             "muse",
-            "pantry"
+            "pantry",
+            "parlor"
         ],
         "every official service, including pantry itself: a registry that cannot \
          describe the registry is one `caf dev` has to special-case"
@@ -330,10 +331,13 @@ async fn the_two_curated_kinds_are_distinguishable_from_outside() {
     assert_eq!(
         names(&api),
         [
-            "billing", "courier", "darkroom", "guard", "identity", "muse", "pantry"
+            "billing", "courier", "darkroom", "guard", "identity", "muse", "pantry", "parlor"
         ],
         "guard stays here: it serves HTTP and has not written the document yet, which is a \
-         gap rather than a false answer"
+         gap rather than a false answer. parlor is here for the opposite reason and is the \
+         same answer: it declares no `exposes` at all, so its row is curated `api` and its \
+         `basePath` is null — a document core's harness would want cannot be written \
+         honestly yet, which is a gap rather than a false `cli`"
     );
 }
 
@@ -423,7 +427,7 @@ async fn every_filter_narrows_the_list() {
         (
             "?kind=api",
             &[
-                "billing", "courier", "darkroom", "guard", "identity", "muse", "pantry",
+                "billing", "courier", "darkroom", "guard", "identity", "muse", "pantry", "parlor",
             ],
         ),
         // Neither `cli` is in the `api` list, and neither was ever honestly in
@@ -440,10 +444,12 @@ async fn every_filter_narrows_the_list() {
         ("?language=ruby", &["billing"]),
         ("?language=elixir", &["courier"]),
         ("?language=rust", &["darkroom", "pantry"]),
-        // Two `typescript` repositories and they are not the same thing, which
-        // is the point of asking by language: guard serves HTTP on ^0.1.0 and
-        // cafaye-ts is the client, on ^0.2.0, serving nothing.
-        ("?language=typescript", &["cafaye-ts", "guard"]),
+        // Three `typescript` repositories and they are not the same thing, which
+        // is the point of asking by language: guard serves HTTP on ^0.1.0,
+        // cafaye-ts is the client, on ^0.2.0, serving nothing, and parlor serves
+        // nothing either but is curated `api` rather than `cli`. `language` is
+        // read off the manifest and does not know about any of that.
+        ("?language=typescript", &["cafaye-ts", "guard", "parlor"]),
         ("?kind=api&language=python&contract=%5E0.2.0", &["muse"]),
     ];
 
@@ -668,35 +674,54 @@ async fn a_bad_filter_value_is_a_400_naming_the_vocabulary() {
 
 // ---------------------------------------------------------------- paging
 
+/// Ten registered services, paged three at a time.
+///
+/// The limit is 3 and not 2 on purpose. This test exists to pin two things about
+/// the final page: that it is SHORT, and that `has_more` is false on it. A
+/// length the limit divides exactly produces full pages all the way down and
+/// never reaches either claim — which is what a limit of 2 over a fleet of nine
+/// used to guarantee, and what it would still guarantee now that the fleet is
+/// ten. Choosing a limit that does not divide the registry length is what keeps
+/// the property under test instead of accidentally dropping it.
+const PAGE_LIMIT: usize = 3;
+
 #[tokio::test]
 async fn a_page_limit_slices_the_list_and_the_cursor_finishes_it() {
-    let first = call(app(), "/v1/services?limit=2").await;
-    assert_eq!(names(&first), ["billing", "caf"]);
+    let first = call(app(), &format!("/v1/services?limit={PAGE_LIMIT}")).await;
+    assert_eq!(names(&first), ["billing", "caf", "cafaye-ts"]);
     assert_eq!(first.body["page"]["has_more"], json!(true));
 
     let cursor = first.body["page"]["next_cursor"]
         .as_str()
         .expect("a next cursor")
         .to_string();
-    let second = call(app(), &format!("/v1/services?limit=2&cursor={cursor}")).await;
+    let second = call(
+        app(),
+        &format!("/v1/services?limit={PAGE_LIMIT}&cursor={cursor}"),
+    )
+    .await;
 
-    assert_eq!(names(&second), ["cafaye-ts", "courier"]);
+    assert_eq!(names(&second), ["courier", "darkroom", "guard"]);
     assert_eq!(
         second.body["page"]["has_more"],
         json!(true),
-        "four of nine returned means five are left"
+        "three of ten returned means seven are left"
     );
 
     let cursor = second.body["page"]["next_cursor"]
         .as_str()
         .expect("a next cursor")
         .to_string();
-    let third = call(app(), &format!("/v1/services?limit=2&cursor={cursor}")).await;
+    let third = call(
+        app(),
+        &format!("/v1/services?limit={PAGE_LIMIT}&cursor={cursor}"),
+    )
+    .await;
 
     assert_eq!(
         names(&third),
-        ["darkroom", "guard"],
-        "six of nine returned means three are left"
+        ["identity", "muse", "pantry"],
+        "six of ten returned means four are left"
     );
     assert_eq!(third.body["page"]["has_more"], json!(true));
 
@@ -704,23 +729,18 @@ async fn a_page_limit_slices_the_list_and_the_cursor_finishes_it() {
         .as_str()
         .expect("a next cursor")
         .to_string();
-    let fourth = call(app(), &format!("/v1/services?limit=2&cursor={cursor}")).await;
+    let fourth = call(
+        app(),
+        &format!("/v1/services?limit={PAGE_LIMIT}&cursor={cursor}"),
+    )
+    .await;
 
-    assert_eq!(names(&fourth), ["identity", "muse"]);
-    assert_eq!(fourth.body["page"]["has_more"], json!(true));
-
-    let cursor = fourth.body["page"]["next_cursor"]
-        .as_str()
-        .expect("a next cursor")
-        .to_string();
-    let fifth = call(app(), &format!("/v1/services?limit=2&cursor={cursor}")).await;
-
-    // One entry left, so one entry returned: the limit is a maximum and an odd
-    // length produces a short page. A client that assumed full pages would ask
-    // for a sixth and find nothing.
-    assert_eq!(names(&fifth), ["pantry"]);
-    assert_eq!(fifth.body["page"]["has_more"], json!(false));
-    assert_eq!(fifth.body["page"]["next_cursor"], Value::Null);
+    // One entry left, so one entry returned: the limit is a maximum and a length
+    // it does not divide produces a short page. A client that assumed full
+    // pages would ask for a fifth and find nothing.
+    assert_eq!(names(&fourth), ["parlor"]);
+    assert_eq!(fourth.body["page"]["has_more"], json!(false));
+    assert_eq!(fourth.body["page"]["next_cursor"], Value::Null);
 }
 
 #[tokio::test]
@@ -836,7 +856,7 @@ async fn readyz_reports_a_loaded_registry_and_refuses_an_unloaded_one() {
     assert_eq!(ready.body["status"], json!("ok"));
     assert_eq!(
         ready.body["services"],
-        json!(9),
+        json!(10),
         "readiness counts what it loaded"
     );
 

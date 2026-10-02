@@ -50,7 +50,8 @@ fn no_filter_returns_every_official_service_sorted_by_name() {
             "guard",
             "identity",
             "muse",
-            "pantry"
+            "pantry",
+            "parlor"
         ]
     );
     // Sorted, not filesystem order: a directory walk is not a contract, and a
@@ -73,7 +74,8 @@ fn kind_filter_accepts_every_kind_in_the_vocabulary() {
             ServiceKind::Api => assert_eq!(
                 matched,
                 [
-                    "billing", "courier", "darkroom", "guard", "identity", "muse", "pantry"
+                    "billing", "courier", "darkroom", "guard", "identity", "muse", "pantry",
+                    "parlor"
                 ]
             ),
             // The two artifacts a person installs, and the reason this arm
@@ -113,7 +115,13 @@ fn language_filter_covers_every_language_the_manifest_schema_allows_for_a_servic
     let expected: &[(Language, &[&str])] = &[
         (Language::Go, &["caf", "identity"]),
         (Language::Ruby, &["billing"]),
-        (Language::Typescript, &["cafaye-ts", "guard"]),
+        // Three typescript services, and the fact that they are three is the
+        // point: `language` is read off the manifest and knows nothing about
+        // kind. guard serves HTTP, cafaye-ts is a package serving nothing, and
+        // parlor serves nothing either but is curated `api` because it declares
+        // no `exposes` at all. Asking by language returns all three because
+        // that is what the manifest says, which is what the filter promises.
+        (Language::Typescript, &["cafaye-ts", "guard", "parlor"]),
         (Language::Python, &["muse"]),
         // The one Elixir service. This list used to read `&[]` and was the
         // honest answer while courier's events were two-segment and its manifest
@@ -451,57 +459,66 @@ fn an_unknown_query_parameter_is_rejected() {
 
 // ----------------------------------------------------------------- paging
 
+/// Three per page, and not two on purpose — the same reason as the sibling test
+/// `a_page_limit_slices_the_list_and_the_cursor_finishes_it` in `tests/api.rs`,
+/// which says so at length.
+///
+/// What this test asserts is that the final page is SHORT and that `has_more` is
+/// false on it. That is the claim "the limit is a maximum, not a size", and it is
+/// only observable when the limit does not divide the registry length. A limit of
+/// 2 over the nine services this registry held when the test was written produced
+/// a short last page by luck of the count; over the ten it holds now it produces
+/// five full pages and never reaches either assertion. Choosing 3 keeps the
+/// property under test rather than letting it lapse because a service was
+/// registered.
+const PAGE_LIMIT: usize = 3;
+
 #[test]
 fn a_page_limit_slices_the_filtered_list_and_says_whether_more_is_left() {
     let registry = registry();
     let filter = Filter::default();
 
-    let first = Page::new(2, None).expect("limit 2");
+    let first = Page::new(PAGE_LIMIT, None).expect("the limit");
     let page = registry.page(&filter, &first).expect("a page");
 
-    assert_eq!(page.items.len(), 2);
+    assert_eq!(page.items.len(), 3);
     assert_eq!(page.items[0].name(), "billing");
     assert_eq!(page.items[1].name(), "caf");
-    assert!(page.has_more, "two of nine returned means seven are left");
+    assert_eq!(page.items[2].name(), "cafaye-ts");
+    assert!(page.has_more, "three of ten returned means seven are left");
     assert!(
         page.next_cursor.is_some(),
         "a caller needs somewhere to go next"
     );
 
-    let second = Page::new(2, page.next_cursor).expect("the cursor pantry handed out");
+    let second = Page::new(PAGE_LIMIT, page.next_cursor).expect("the cursor pantry handed out");
     let page = registry.page(&filter, &second).expect("a page");
 
-    assert_eq!(page.items.len(), 2);
-    assert_eq!(page.items[0].name(), "cafaye-ts");
-    assert_eq!(page.items[1].name(), "courier");
+    assert_eq!(page.items.len(), 3);
+    assert_eq!(page.items[0].name(), "courier");
+    assert_eq!(page.items[1].name(), "darkroom");
+    assert_eq!(page.items[2].name(), "guard");
 
-    let third = Page::new(2, page.next_cursor).expect("still a cursor pantry issued");
+    let third = Page::new(PAGE_LIMIT, page.next_cursor).expect("still a cursor pantry issued");
     let page = registry.page(&filter, &third).expect("a page");
 
-    assert_eq!(page.items.len(), 2);
-    assert_eq!(page.items[0].name(), "darkroom");
-    assert_eq!(page.items[1].name(), "guard");
-    assert!(page.has_more, "six of nine returned means three are left");
-
-    let fourth = Page::new(2, page.next_cursor).expect("the fourth cursor pantry issued");
-    let page = registry.page(&filter, &fourth).expect("a page");
-
-    assert_eq!(page.items.len(), 2);
+    assert_eq!(page.items.len(), 3);
     assert_eq!(page.items[0].name(), "identity");
     assert_eq!(page.items[1].name(), "muse");
-    assert!(page.has_more, "eight of nine returned means one is left");
+    assert_eq!(page.items[2].name(), "pantry");
+    assert!(page.has_more, "six of ten returned means four are left");
 
-    // A short final page, which is what an odd length produces: the limit is a
-    // maximum, not a size. A caller that assumed two per page would ask for a
-    // fifth page and be told there is nothing there.
-    let fifth = Page::new(2, page.next_cursor).expect("the last cursor pantry issued");
-    let page = registry.page(&filter, &fifth).expect("a page");
+    // A short final page, which is what a length the limit does not divide
+    // produces: the limit is a maximum, not a size. A caller that assumed three
+    // per page would ask for a fifth page and be told there is nothing there.
+    let fourth = Page::new(PAGE_LIMIT, page.next_cursor).expect("the last cursor pantry issued");
+    let page = registry.page(&filter, &fourth).expect("a page");
 
     assert_eq!(page.items.len(), 1);
-    assert_eq!(page.items[0].name(), "pantry");
+    assert_eq!(page.items[0].name(), "parlor");
     assert!(
         !page.has_more,
-        "the list is nine long and all five pages are taken"
+        "the list is ten long and all four pages are taken"
     );
     assert_eq!(page.next_cursor, None);
 }
