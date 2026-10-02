@@ -306,12 +306,24 @@ pub enum BlockedBy {
     /// reason it is absent is machine-checked.
     ///
     /// The direction it can go stale is real. If `site` is made public, this row
-    /// must become a registered entry, and nothing else in this file will notice:
+    /// must become a registered entry, and nothing in this file will notice:
     /// `manifest_path.is_file()` and `validates` are both still true, so every
-    /// other arm would pass. That is the trade this value makes — it can go
-    /// quiet — and `tests/ci.rs` carries the other half, because it already has
-    /// to compare `CAFAYE_UNREADABLE` against this list and a repository that
-    /// leaves that list without being registered shows up there.
+    /// other arm here would pass.
+    ///
+    /// What catches it is `tests/schema.rs`, NOT `tests/ci.rs` — an attribution
+    /// worth being precise about, because the two files look interchangeable and
+    /// only one of them watches this direction. `ci.rs` compares the workflow's
+    /// two lists against `registry/index.yml`, and both of its checks fire the
+    /// OTHER way round: one refuses a name that is in both `CAFAYE_REPOS` and
+    /// `CAFAYE_UNREADABLE`, the other refuses a name that is in
+    /// `CAFAYE_UNREADABLE` but no longer in the index. Neither notices a
+    /// repository that LEAVES `CAFAYE_UNREADABLE` without becoming a registered
+    /// entry — it falls out of both lists at once and is described by neither.
+    ///
+    /// The check that does watch it asserts the manifest still declares itself
+    /// private, and its failure message carries the remedy. That is a stronger
+    /// guarantee than the one this comment used to claim, and it is worth
+    /// knowing it exists rather than assuming the shape of the hole around it.
     Private,
 }
 
