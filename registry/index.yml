@@ -318,6 +318,50 @@ services:
     # the ref now says what the bytes are rather than where they were read.
     recordedAt: 287ec76d2343aeab5191fbc8b51659c1e6693fcb
 
+  # parlor is the cafaye web app, and it is REGISTERED rather than excluded. That
+  # is not a preference; the exclusion record said "register it" and
+  # tests/schema.rs:every_exclusion_reason_is_still_true failed the suite with
+  # those words once the manifest validated. `caf` above was registered the same
+  # way, off the back of the same tripwire, which is what a tripwire is for.
+  #
+  # WHAT UNBLOCKED IT, and it is worth recording because the exclusion named
+  # three steps and all three had to happen:
+  #
+  #   1. quote the unquoted scalar. `description` carried `web app: App Router`,
+  #      and an unquoted YAML scalar may contain a colon only when no space
+  #      follows it — so YAML read the rest of the line as a nested mapping and
+  #      the document stopped there. `caf dev --dry-run` said
+  #      `invalid YAML: [21:14] mapping value is not allowed in this context`.
+  #      Fixed in parlor d86ec0a.
+  #   2. `kind: template` was CONSIDERED and not used, and the reason is core's
+  #      own wording rather than a preference. core-24 added
+  #      `enum: ["service", "template"]` and describes a template as "a thing
+  #      consumed at GENERATE time ... never a running process". parlor is a
+  #      running Next.js app with route handlers; the fact that its repository
+  #      is also what `caf init` renders from is a second thing, and labelling
+  #      the running thing `template` because of it would make the registry lie
+  #      about what runs.
+  #   3. so `kind: api`, which in this file already means "serves HTTP and has
+  #      not published its document yet" — guard is the other one, and for the
+  #      same reason. parlor serves `/healthz` and `/readyz` as route handlers and
+  #      ships no OpenAPI document, so `api` with `basePath: null` describes it
+  #      exactly. Nothing new was invented to hold it.
+  #
+  # The manifest omits `exposes` entirely and its own comments explain why: it
+  # publishes no events, and the OpenAPI document core's harness would want
+  # cannot be written honestly yet, because `openapi.paths-are-versioned`
+  # requires a `/vN` prefix and the health surfaces this platform mandates are
+  # deliberately unversioned. That collision is a real finding about the
+  # platform and belongs to its own packet, not to a manifest rewrite.
+  parlor:
+    kind: api
+    basePath: null
+    # The commit of parlor's own repository this copy was taken from: the merge
+    # of parlor-25, which is where the quoted description landed. The copy is
+    # byte-identical including its comments, and tests/drift.rs fails on a single
+    # moved byte, so this ref claims the bytes rather than a date.
+    recordedAt: 7fdafa20bc8635d2ea2d505ae289c6a5b7388ae0
+
 # Official cafaye repositories that are deliberately NOT registered, each with
 # the reason and the command that proves it. This is a curation record, not a
 # queue: an entry here means the repository is known, checked, and held back
@@ -423,68 +467,16 @@ services:
 excluded:
   # --- `schema`: the manifest does not parse, or would not validate ---------
   #
-  # `parlor` is the app-shell TEMPLATE and `site` is the fleet's own website,
-  # which is the same repository renamed — see `site`'s row for the rename commit
-  # and for why both rows exist. The pair is here rather than one row because
-  # they are two repositories with two remotes, two manifests and two lints, and
-  # a row is per repository.
+  # `site` is the fleet's own website, and it was `parlor` renamed. The pair used
+  # to be two rows because they are two repositories with two remotes, two
+  # manifests and two lints, and a row is per repository. There is ONE row now,
+  # because `parlor` validates and is registered (see the `parlor:` entry above)
+  # while `site`'s manifest still does not.
   #
-  # WHAT core's schema now has a word for, and what neither repository uses yet,
-  # because this packet measured it rather than assumed it. `core-24` (ec28365)
-  # added `kind: service | template` to `cafaye.manifest.schema.json` and added
-  # `examples/valid/parlor.template.cafaye.yml` — a worked example NAMED for
-  # this repository, declaring `kind: template`, no `exposes` and no `consumes`.
-  # So the vocabulary gap DECISIONS.md D1 and caf's row name is partly closed by
-  # core: "not a running process" is now expressible, and the thing it is
-  # expressed for is this repository.
-  #
-  # Neither `parlor/cafaye.yml` nor `site/cafaye.yml` declares `kind` yet, and
-  # this repository cannot make either do so. The consequence is stated rather
-  # than left to be discovered: pantry's `src/registry.rs` `check_kind` refuses
-  # anything but `api` or `cli` for a manifest that declares no contract surface
-  # at all, so if `parlor` declared `kind: template` and were copied into
-  # `registry/services/`, the load would fail on the word `template` before any
-  # curation judgement was reached. That is the honest reason `parlor` is
-  # `blockedBy: schema` rather than registered with a curated kind — not the
-  # syntax error, which is a separate and smaller thing. See the DECISION NEEDED
-  # on `site`'s row's successor: the honest removal path, in order.
-  - name: parlor
-    blockedBy: schema
-    # REWRITTEN BY pantry-22, and the rewrite is the point of the row: this
-    # reason was a lie before it and nothing could see it. It said "still the
-    # pre-core draft shape — `apiVersion: cafaye/v0-draft` with `metadata`/`spec`
-    # instead of `name`/`language`/`core`/`repository`/`owner`", and parlor's file
-    # has carried all five of those keys for several packets — it is a core-0.2
-    # manifest in everything but the YAML. `blockedBy: schema` stayed true
-    # through the rewrite, so the tripwire never fired, which is the shape of
-    # failure this file's own header warns about: "a green run is not a reason to
-    # believe this list". See the header's WHAT A GREEN RUN DOES NOT TELL YOU.
-    # Re-read by pantry-23 at 8e2f00c, and the reason still holds: one syntax
-    # error, at line 21, in the same `description` sentence, and the lint
-    # transcript below is the measured output.
-    reason: >-
-      The app-shell template every cafaye-built product starts from, and — since
-      `7a44310` — the repository cafaye's own website was renamed from rather
-      than a separate one; `site`'s row is the other half of that. The manifest
-      does not parse. `description` on line 21 is an unquoted YAML scalar
-      containing a colon-space — "The cafaye web app: App Router shell, …" — so
-      the document stops being a mapping there, and neither `caf contract lint`
-      nor pantry's own validator can read a manifest to validate. Note what this
-      row is NOT saying any more, because the sentence it used to carry was
-      false: the file is no longer "the pre-core draft shape", and `name`,
-      `language`, `core`, `repository` and `owner` are all present. Two further
-      reasons this row would still be correct after that one is fixed, and both
-      are measured rather than inherited: it declares no `exposes` and no
-      `consumes`, so it is not something `caf dev` brings up and there is no
-      prefix for `guard` to route to; and core-24 has since added a `kind` key
-      whose `template` value names this shape exactly, which this manifest does
-      not declare and which pantry's own `check_kind` would refuse. So the
-      honest removal path is a three-step one and every step belongs to another
-      repository: quote line 21, then declare `kind: template` if the schema's
-      new word is wanted, then register or leave excluded on that declared fact.
-    verify: "cd ../caf && go run ./cmd/caf contract lint ../parlor/cafaye.yml"
-    lint: 'INVALID ../parlor/cafaye.yml: invalid YAML: [21:14] mapping value is not allowed in this context'
-
+  # The two were not the same file, and the difference is why only one of them
+  # moved: `site`'s colon-space is in a DIFFERENT description sentence, so
+  # quoting parlor's line 21 did not quote site's line 47. That is the whole
+  # reason a rename does not carry a fix with it.
   # `site` is the fleet's own website, and it is `parlor` RENAMED. pantry-22
   # recorded that as a DECISION NEEDED because the two things that would have
   # settled it disagreed: the checkout remote said `cafaye/site` and the
@@ -497,10 +489,12 @@ excluded:
   #
   # pantry-22's own recommended path was "(a) delete this row and the `parlor`
   # row when the rename lands, and register the result if its manifest
-  # validates". The rename landed. The manifest does NOT validate, so the
-  # registration half is not available yet and BOTH rows stay — which is the
-  # honest state, and the state a reader gets to by running the `verify` below
-  # rather than by reading a previous packet's reasoning.
+  # validates". The rename landed. `parlor`'s manifest DID come to validate — the
+  # quoted `description` — so the `parlor` row is gone and `parlor` is registered
+  # above. THIS manifest still does not validate, so this row correctly stays,
+  # and it is now the only row describing this pair. That is the honest state,
+  # and the state a reader gets to by running the `verify` below rather than by
+  # reading a previous packet's reasoning.
   #
   # What changed in this row since pantry-22, and every one of the three claims
   # it made was false when this packet re-read the checkout:
