@@ -43,12 +43,23 @@ services:
     kind: api
     basePath: /v1
     # The commit of identity's own repository this copy was taken from.
-    # Re-recorded at 8db4eeb by pantry-23. `cafaye.yml` is byte-identical at
-    # 793977b and at 8db4eeb — identity-26 split the Mailer's link templates
-    # per purpose, which is Go, not the manifest — so nothing was re-copied and
-    # the ref moved because the copy IS this file at this commit, which is what
-    # the field claims and what tests/recorded_copy.rs checks.
-    recordedAt: 8db4eeb98ea7fe9b59860c405d2761a3199db618
+    # Re-recorded at 22a57f7 here, and this time the BYTES moved as well as the
+    # ref, which is the distinction the field is easy to blur. Every previous
+    # re-record in this file says "nothing was re-copied and the ref moved
+    # because the copy IS this file at this commit" — true of 793977b→8db4eeb,
+    # and the reason those bumps were cheap. This one is not: identity closed
+    # the twelve-operation OpenAPI gap, so `cafaye.yml` itself was rewritten
+    # (27 insertions, 21 deletions between 8db4eeb and 22a57f7, and the diff is
+    # the decision record moving from "DECISION NEEDED" to "DECIDED"). A ref
+    # bump alone would have claimed the copy was current when it was not, and
+    # tests/recorded_copy.rs reports distance in commits — which is why this
+    # tripped a budget of 9 at 12 without anybody reading the manifest.
+    #
+    # The lesson is that "how many commits behind" is a proxy, and this is where
+    # the proxy and the truth part company: a repository can be one commit behind
+    # and its contract file can have changed, or twelve commits behind and
+    # nothing else can have. Copy and ref together, or neither.
+    recordedAt: 22a57f72aed45a832594de7e0e437b2359564430
 
   # billing serves HTTP; `consumes: []`, so `kind: api` and not `both`.
   billing:
