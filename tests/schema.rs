@@ -370,6 +370,47 @@ fn every_exclusion_reason_is_still_true() {
                     excluded.name
                 );
             }
+            BlockedBy::Private => {
+                // The one arm whose assertion is about the repository rather
+                // than about its file. `site` used to sit here as `schema`,
+                // because its manifest carried an unquoted colon-space on line
+                // 47 and would not parse at all. That was true, and then it
+                // stopped being true — the manifest was fixed, it lints, and the
+                // `Schema` arm fired with "it must be REGISTERED, not excluded".
+                // The arm was right to fire. Registration is simply not
+                // available for this repository, and the reason is not a defect
+                // anyone can go and fix.
+                //
+                // So this arm asserts the thing that makes the row true, read
+                // from the file that records it: the manifest must still declare
+                // itself private. It is a weak-looking assertion for a strong
+                // claim, and deliberately so — the strong claim ("nobody outside
+                // cafaye can clone this") is NOT checked here, because it cannot
+                // be: from a developer machine it is unreadable and from inside
+                // it is readable, and a check that passes or fails depending on
+                // who runs it is not a check. `tests/ci.rs` carries the half that
+                // is machine-checkable, by refusing to let any repository in the
+                // workflow's `CAFAYE_UNREADABLE` list be registered at all.
+                assert!(
+                    manifest_path.is_file(),
+                    "{} is held back as private, so it must still carry a cafaye.yml — \
+                     a row with no file to read is not a checked row",
+                    excluded.name
+                );
+                let manifest = pantry::manifest::read(&manifest_path).expect("validates");
+                assert_eq!(
+                    manifest.repository.visibility.as_deref(),
+                    Some("private"),
+                    "{} is held back because its manifest declares `visibility: private`, and \
+                     that is the whole of the claim — `tests/ci.rs` will not let a repository the \
+                     drift job cannot clone be registered. If the manifest now says `public`, \
+                     this row must be DELETED and the repository REGISTERED: copy {} into \
+                     registry/services/, add a row to registry/index.yml, and take it out of \
+                     CAFAYE_UNREADABLE in .github/workflows/ci.yml.",
+                    excluded.name,
+                    manifest_path.display()
+                );
+            }
             BlockedBy::Library => {
                 // A row the job cannot read is not a row it checked, and saying
                 // so is the difference between a skip and a pass. `cafaye-rb` is

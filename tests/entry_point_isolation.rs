@@ -28,16 +28,18 @@
 //! why at length. The boundary that *is* real is **the registry, and nothing
 //! outside it**, and the names below are chosen to attack exactly that:
 //!
-//! * **The seven excluded repositories** — `core`, `docs`, `cafaye-rb`,
-//!   `cafaye-py`, `parlor`, `site`, `kit`. These are real cafaye repositories,
+//! * **The six excluded repositories** — `core`, `docs`, `cafaye-rb`,
+//!   `cafaye-py`, `site`, `kit`. These are real cafaye repositories,
 //!   three of which carry a valid `cafaye.yml` (`core`, `docs`, `cafaye-rb`) and
-//!   two more of which carry one that does not parse (`parlor`, `site`), and they
+//!   one more of which carries one that does not parse (`site`), and they
 //!   are held back with a stated reason. A registry that answered for one of
 //!   them would be publishing a service the platform cannot start. This is the
 //!   closest thing to "account B's data" that exists in this repository, and it
-//!   is the set most worth pinning. `site` is `parlor` renamed, so the two rows
-//!   describe one repository under two names — which is why this list is read
-//!   from the index rather than written here.
+//!   is the set most worth pinning. `site` was `parlor` renamed; `parlor` itself
+//!   used to be on this list and left it when its manifest came to validate and
+//!   it was registered, so this is a set of six now and the count of negative
+//!   names below moved with it. `site` is read from the index rather than written
+//!   here, so the set itself is not duplicated in this file.
 //! * **Path shapes** — `..`, `../courier`, `%2e%2e%2fetc%2fpasswd`. The `{name}`
 //!   segment is the only free text a caller controls, and these are the values
 //!   that would read a file if it reached a `Path::join`.
@@ -50,7 +52,7 @@
 //! | entry point                              | op      | negative cases |
 //! | ---------------------------------------- | ------- | -------------- |
 //! | `GET /v1/services`                       | list    | 19            |
-//! | `GET /v1/services/{name}`                | read    | 46            |
+//! | `GET /v1/services/{name}`                | read    | 45            |
 //! | `GET /healthz`                           | probe   | 6             |
 //! | `GET /readyz`                            | probe   | 6             |
 //! | fallback (`not_found`)                   | —       | 8             |
@@ -148,7 +150,26 @@ fn excluded_names() -> Vec<String> {
 /// The number of negative names `read_a_name_that_is_not_a_registry_entry…`
 /// sends. Named so the vacuity assertion above can say what the total would have
 /// been, rather than leaving a reader to count.
-const PROBED: usize = 46;
+///
+/// **45, not 46, and the 46 is the number to be careful about.** This count moved
+/// DOWN by one when `parlor` was registered, and it is worth being explicit about
+/// why that is not a lost probe.
+///
+/// The three sources are `excluded_names()` (read out of the index), the
+/// near-miss list and the path-shape list. Two of the three are written here and
+/// have not moved: 29 near misses, 10 path shapes. The third is DERIVED, and
+/// `parlor` leaving the exclusion record took it from seven rows to six. So 6 +
+/// 29 + 10 = 45, and the arithmetic is the argument — the count did not shrink
+/// because a class was dropped, it shrank because a curation row stopped being
+/// needed.
+///
+/// That is also why `parlor` must NOT be added to the near-miss list to "put the
+/// number back". It is a registered service now: it answers 200, and adding it
+/// to a negative sweep would assert that a registry entry is absent. The right
+/// place for the fact that `parlor` is reachable is
+/// `the_only_names_that_answer_two_hundred_are_the_registered_ones` below, which
+/// derives that set from the registry and so already contains it.
+const PROBED: usize = 45;
 
 struct Response {
     status: StatusCode,
@@ -261,7 +282,7 @@ async fn baseline_for_a_missing_name() -> (String, String) {
 
 // ================================================================ read: 1 entry point
 
-/// `GET /v1/services/{name}` — 46 negative names, one shape.
+/// `GET /v1/services/{name}` — 45 negative names, one shape.
 #[tokio::test]
 async fn read_a_name_that_is_not_a_registry_entry_answers_exactly_as_one_that_never_existed() {
     let (baseline, _) = baseline_for_a_missing_name().await;
@@ -380,9 +401,9 @@ async fn the_only_names_that_answer_two_hundred_are_the_registered_ones() {
         .collect();
     assert_eq!(
         registered.len(),
-        9,
-        "the registry holds {} entries, not 9. A tenth is a new reachable name and this test's \
-         baseline has moved.",
+        10,
+        "the registry holds {} entries, not 10. An eleventh is a new reachable name and this \
+         test's baseline has moved.",
         registered.len()
     );
 

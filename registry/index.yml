@@ -43,12 +43,23 @@ services:
     kind: api
     basePath: /v1
     # The commit of identity's own repository this copy was taken from.
-    # Re-recorded at 8db4eeb by pantry-23. `cafaye.yml` is byte-identical at
-    # 793977b and at 8db4eeb — identity-26 split the Mailer's link templates
-    # per purpose, which is Go, not the manifest — so nothing was re-copied and
-    # the ref moved because the copy IS this file at this commit, which is what
-    # the field claims and what tests/recorded_copy.rs checks.
-    recordedAt: 8db4eeb98ea7fe9b59860c405d2761a3199db618
+    # Re-recorded at 22a57f7 here, and this time the BYTES moved as well as the
+    # ref, which is the distinction the field is easy to blur. Every previous
+    # re-record in this file says "nothing was re-copied and the ref moved
+    # because the copy IS this file at this commit" — true of 793977b→8db4eeb,
+    # and the reason those bumps were cheap. This one is not: identity closed
+    # the twelve-operation OpenAPI gap, so `cafaye.yml` itself was rewritten
+    # (27 insertions, 21 deletions between 8db4eeb and 22a57f7, and the diff is
+    # the decision record moving from "DECISION NEEDED" to "DECIDED"). A ref
+    # bump alone would have claimed the copy was current when it was not, and
+    # tests/recorded_copy.rs reports distance in commits — which is why this
+    # tripped a budget of 9 at 12 without anybody reading the manifest.
+    #
+    # The lesson is that "how many commits behind" is a proxy, and this is where
+    # the proxy and the truth part company: a repository can be one commit behind
+    # and its contract file can have changed, or twelve commits behind and
+    # nothing else can have. Copy and ref together, or neither.
+    recordedAt: 22a57f72aed45a832594de7e0e437b2359564430
 
   # billing serves HTTP; `consumes: []`, so `kind: api` and not `both`.
   billing:
@@ -371,7 +382,7 @@ services:
 # prose. tests/schema.rs asserts the stated reason still holds, which makes the
 # list a tripwire in both directions: an entry that starts validating fails the
 # suite with "register it", and a reason that stops being true fails too. The
-# four values:
+# five values:
 #
 #   schema       — the repository's cafaye.yml does not validate against core's
 #                  schema. Registering it would put a service in the registry
@@ -386,12 +397,35 @@ services:
 #                  rather than something it brings up: a gem, a documentation
 #                  site. `language: spec` is only one way of not being a service,
 #                  and this value is the other. See the two rows at the bottom.
+#   private      — the manifest validates and the repository is plainly a
+#                  service, but nobody outside cafaye can clone it: an anonymous
+#                  clone is a 404, so the registry's own drift job cannot read
+#                  what it would be asked to check. See the `site` row.
 #
 # `library` exists because the three above had no honest row for two real
 # repositories, and the alternative was not a fourth value — it was teaching the
 # drift test that libraries are exempt. That is an exemption branch in a check
 # that has caught three real problems, and PLAN.md §1 forbids one. A vocabulary
 # is cheap; a check that can be made green by not checking is not.
+#
+# `private` is the same argument with one difference worth naming. The four above
+# each make a claim about WHAT a repository is — broken, missing, a spec, a
+# library — and every one of those is a property of files anyone can read. This
+# one makes a claim about WHO CAN SEE IT, and that is not checkable from inside
+# cafaye: from a developer's machine the repository is perfectly readable, so a
+# test that asserted the fact would pass or fail depending on who ran it. So this
+# row asserts the half that is checkable (the manifest declares
+# `visibility: private`) and leans on `tests/ci.rs` for the rest, which already
+# has to compare this list against the workflow's `CAFAYE_UNREADABLE` set and
+# refuses to let any repository in it be registered.
+#
+# It is therefore also the one value here that can go QUIET: if a private
+# repository is made public, every assertion in its arm still holds, because the
+# manifest still exists and still validates. Nothing in this test notices. That
+# is a real cost of the value and it is paid on purpose — the alternative was to
+# leave `site` claiming `schema`, which was a FALSE reason and which fired the
+# tripwire demanding a registration that `ci.rs` would then have refused. A row
+# that is honest and can go quiet beats a row that is precise and is wrong.
 #
 # caf and courier WERE here, and how they left is the reason to trust the list.
 #
@@ -509,40 +543,72 @@ excluded:
   #   * and its lint failure is at line 47, not line 21, because the colon-space
   #     is in a DIFFERENT description sentence than the one parlor still has.
   #
-  # The `lint` transcript below was stale for the same reason and is corrected to
+# The `lint` transcript below was stale for the same reason and is corrected to
   # the measured output. Nothing in this repository checks a `lint` transcript —
   # `every_exclusion_reason_is_still_true` asserts `blockedBy` semantics and
-  # never reads the field — so a transcript is prose that can rot, and this is
-  # the first time one was caught rather than found. It is why the transcript is
+  # never reads the field — so a transcript is prose that can rot, and this is the
+  # first time one was caught rather than found. It is why the transcript is
   # quoted and not paraphrased everywhere in this file.
+  #
+  # AND THEN THE THING IT WAS HOLDING BACK WENT AWAY, which is the second time
+  # this row's reason has been made false by a packet working in a repository
+  # this one does not own. It was filed as `blockedBy: schema` because
+  # `description` on line 47 was an unquoted YAML scalar holding a colon-space,
+  # so the document stopped being a mapping there and nothing could read it.
+  # `site` quoted that scalar. `caf contract lint ../site/cafaye.yml` now prints
+  # `OK`, the transcript below is the measured output, and the `Schema` arm
+  # correctly fired with "it now validates — it must be REGISTERED, not
+  # excluded".
+  #
+  # The tripwire was right and the fix was NOT to register it, because
+  # registration is unavailable for this repository and never was. `ci.rs` refuses
+  # to let any repository in `CAFAYE_UNREADABLE` be registered — an entry the
+  # drift job cannot clone is a claim nobody can check — and `site` is in that
+  # set because `site/cafaye.yml` declares `visibility: private`. So the row moved
+  # to `private`, which is the value that states the reason that is actually
+  # still true.
+  #
+  # A note on what was considered and rejected first: leaving it as `schema` with
+  # an updated reason. That is the move that keeps every check passing while the
+  # file says something untrue, and it is worse than the alternative because the
+  # row is a curation record — its whole job is to say why a repository is not
+  # here. A row whose stated reason has stopped being true but still reads true
+  # is the one failure this list cannot detect, and the `Schema` arm happened to
+  # catch it here only by accident.
   - name: site
-    blockedBy: schema
+    blockedBy: private
     reason: >-
       cafaye's own website, and `parlor` renamed: `origin` is
       git@github.com:cafaye/site.git, the manifest declares `name: site` and
       `git@github.com:cafaye/site.git`, and `7a44310` is the rename commit
-      whose first parent is the `parlor` 33d32e0 this row was written about. Held
-      back by one syntax error and nothing else: `description` on line 47 is an
-      unquoted YAML scalar containing a colon-space — "The cafaye website —
-      cafaye's own front door: sign-in, …" — so the document stops being a
-      mapping there and neither `caf contract lint` nor pantry's own validator
-      can read a manifest to validate. Quoting that one scalar is the whole of
-      what stands between this repository and a registered entry, and the fix
-      belongs in `site`'s own repository, which this packet does not own. Note
-      what the row is NOT saying: not that the manifest is the wrong shape, and
-      not that the site is a fork — it is the same repository under a new name.
-      THIS ROW IS NOT CHECKED IN CI, and the reason is a fact about the runner
-      rather than about the repository's health: `site/cafaye.yml` declares
-      `visibility: private`, so an anonymous clone is a 404 and the repository
-      is in `CAFAYE_UNREADABLE` beside `cafaye-rb`. `every_exclusion_reason_is_
-      still_true` prints a SKIP for this row saying so, and the reason below is
-      verified by a developer's run of it with PANTRY_CAFAYE_ROOT pointed at a
-      real workspace. pantry-23 first filed this row's claims as though `site`
-      were a public fork of a public template and put it in CAFAYE_REPOS
-      accordingly, which would have taken the drift job's clone step down; the
-      manifest is the record of its own visibility, and it says private.
+      whose first parent is the `parlor` 33d32e0 this row was written about. It
+      is a service, its manifest validates, and it is not here because it is
+      PRIVATE: `site/cafaye.yml` declares `visibility: private`, so an anonymous
+      clone of cafaye/site from a hosted runner is a 404 and the repository is in
+      `CAFAYE_UNREADABLE` beside `cafaye-rb`. `tests/ci.rs` refuses to let any
+      repository in that set be registered, because a registry entry the drift
+      job cannot clone is a claim rather than a fact — so for this repository
+      registration is not available at any moment, and no amount of fixing
+      anything in `site` changes it. Only making the repository public does.
+      When it is: delete this row, copy ../site/cafaye.yml into
+      registry/services/site/, add a row to registry/index.yml carrying the kind
+      that manifest derives, and take `site` out of `CAFAYE_UNREADABLE` in
+      .github/workflows/ci.yml. Note what this row is NOT saying: not that the
+      manifest is the wrong shape — it lints — and not that the site is a fork;
+      it is the same repository under a new name. pantry-23 first filed this
+      row's claims as though `site` were a public fork of a public template and
+      put it in `CAFAYE_REPOS` accordingly, which would have taken the drift
+      job's clone step down; the manifest is the record of its own visibility,
+      and it says private. Note also what the CI skip is and is not: from inside
+      cafaye the checkout is perfectly readable, so this row IS checked on a
+      developer's machine with PANTRY_CAFAYE_ROOT pointed at a real workspace,
+      and is not checked on a hosted runner. The `private` arm asserts the
+      manifest still declares `visibility: private` and nothing else, because the
+      stronger claim is not checkable from in here — a test for "nobody outside
+      can clone this" passes or fails depending on who runs it, which is the
+      same reason `ci.rs` reads `CAFAYE_UNREADABLE` instead of trying to clone.
     verify: "cd ../caf && go run ./cmd/caf contract lint ../site/cafaye.yml"
-    lint: 'INVALID ../site/cafaye.yml: invalid YAML: [47:14] mapping value is not allowed in this context'
+    lint: 'OK ../site/cafaye.yml'
 
   - name: kit
     blockedBy: no-manifest

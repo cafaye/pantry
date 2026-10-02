@@ -284,6 +284,47 @@ pub enum BlockedBy {
     /// beside the services would make `kind` mean two different things in one
     /// column.
     Library,
+    /// The manifest validates and the repository is plainly a service, but
+    /// nobody outside cafaye can read it: an anonymous clone is a 404.
+    ///
+    /// The fifth value exists because the other four all make a claim about
+    /// WHAT the repository is, and this one makes a claim about WHO CAN SEE IT.
+    /// `Schema` and `NoManifest` say the manifest is wrong; `NotAService` and
+    /// `Library` say the repository is not a process anyone starts. None of those
+    /// is true of a private service — it starts like any other, and its manifest
+    /// validates. What is true is that registering it would be a lie CI cannot
+    /// correct, because the registry's own drift job clones every registered
+    /// repository and this one is a 404 to it.
+    ///
+    /// So this value does not say "do not register it, for now, we are busy".
+    /// It says the registry's contract does not reach this repository: `site`'s
+    /// own manifest declares `visibility: private`, which is a fact about the
+    /// repository recorded in a file any reader can check. `tests/ci.rs` refuses
+    /// to let a private repository be registered, and that refusal is the point
+    /// — an entry nothing in CI can verify is a claim, not a fact. The row
+    /// exists so the repository is not merely forgotten: it is known, and the
+    /// reason it is absent is machine-checked.
+    ///
+    /// The direction it can go stale is real. If `site` is made public, this row
+    /// must become a registered entry, and nothing in this file will notice:
+    /// `manifest_path.is_file()` and `validates` are both still true, so every
+    /// other arm here would pass.
+    ///
+    /// What catches it is `tests/schema.rs`, NOT `tests/ci.rs` — an attribution
+    /// worth being precise about, because the two files look interchangeable and
+    /// only one of them watches this direction. `ci.rs` compares the workflow's
+    /// two lists against `registry/index.yml`, and both of its checks fire the
+    /// OTHER way round: one refuses a name that is in both `CAFAYE_REPOS` and
+    /// `CAFAYE_UNREADABLE`, the other refuses a name that is in
+    /// `CAFAYE_UNREADABLE` but no longer in the index. Neither notices a
+    /// repository that LEAVES `CAFAYE_UNREADABLE` without becoming a registered
+    /// entry — it falls out of both lists at once and is described by neither.
+    ///
+    /// The check that does watch it asserts the manifest still declares itself
+    /// private, and its failure message carries the remedy. That is a stronger
+    /// guarantee than the one this comment used to claim, and it is worth
+    /// knowing it exists rather than assuming the shape of the hole around it.
+    Private,
 }
 
 /// The loaded registry. Immutable once loaded, which is what lets a request
