@@ -7,6 +7,42 @@ bottom.
 
 ## [Unreleased]
 
+### Added
+
+- **`BlockedBy::Private`, and `site` moved onto it.** The exclusion record had
+  no honest row for a repository whose manifest validates, which is plainly a
+  service, and which nobody outside cafaye can clone.
+
+  `site` was filed as `blockedBy: schema` because its `description` was an
+  unquoted YAML scalar holding a colon-space, so nothing could parse the
+  manifest. That was true, and then it stopped being true — `site` quoted the
+  scalar, `caf contract lint ../site/cafaye.yml` prints `OK`, and the `Schema`
+  arm correctly fired with *"it now validates — it must be REGISTERED, not
+  excluded"*. The tripwire was right; registration is simply unavailable, and
+  never was. `tests/ci.rs` refuses to let any repository in the workflow's
+  `CAFAYE_UNREADABLE` set be registered, because a registry entry the drift job
+  cannot clone is a claim rather than a fact, and `site/cafaye.yml` declares
+  `visibility: private`, so it is in that set.
+
+  So `BlockedBy` gains a fifth value, and it is a different KIND of claim from
+  the other four: those say what a repository **is** (broken, missing, a spec, a
+  library) and every one is a property of files any reader can check. This one
+  says who can **see** it, and that is not checkable from inside cafaye — from a
+  developer's machine the checkout is perfectly readable, so a test for "nobody
+  outside can clone this" would pass or fail depending on who ran it. The arm
+  therefore asserts the half that *is* checkable (the manifest still declares
+  `visibility: private`) and leaves the rest to `ci.rs`, which already has to
+  compare this list against `CAFAYE_UNREADABLE`.
+
+  The cost is stated in the row rather than hidden: this is the one value in the
+  list that can go **quiet**. If `site` is made public every assertion in its arm
+  still holds, because the manifest still exists and still validates, so nothing
+  in `schema.rs` notices. That is paid on purpose. The alternative was leaving
+  the row as `schema` with a reason that had stopped being true — a row whose
+  stated reason is wrong but still reads true is precisely the failure this list
+  cannot detect, and the `Schema` arm happened to catch it here only by accident.
+  A row that is honest and can go quiet beats a row that is precise and is wrong.
+
 ### Fixed
 
 - **`bin/prime` under-reported the suite total on a red gate.** It printed
