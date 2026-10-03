@@ -109,6 +109,8 @@ as_service()   { printf "set role pantry;\n%s" "$1"; }
 as_public()    { printf "set role pantry_public;\n%s" "$1"; }
 
 A1='00000000-0000-4000-8000-0000000000a1'
+A2='00000000-0000-4000-8000-0000000000a2'
+A4='00000000-0000-4000-8000-0000000000a4'
 B1='00000000-0000-4000-8000-0000000000b1'
 B3='00000000-0000-4000-8000-0000000000b3'
 
@@ -393,6 +395,82 @@ deny "D17 publisher write: may NOT INSERT a publisher row (no self-registration)
   "$(as_publisher "$A1" "insert into pantry.publishers (github_id, github_login) values (555, 'selfreg');")"
 
 # ===========================================================================
+# D18..D23 — A PUBLISHER MAY NOT REWRITE THE IDENTITY OF ITS OWN ACCOUNT
+#
+# These six are one rule and they are separated because they are the six ways it
+# was open. `publishers_publisher_update`'s `with check` said
+# `id = current_publisher_id()` and nothing else, which pins the primary key and
+# lets every column that *identifies* the account through: `github_id`,
+# `github_login`, `is_first_party`, `verified` and `claimed_at`.
+#
+# WHY SIX ASSERTIONS AND NOT ONE. A single "may not change its identity" check
+# would have to be written as one statement touching all five columns, and then
+# only the FIRST refusal it hits would ever be observed — a barrier that pinned
+# four of the five would pass it. Each check moves exactly one column to exactly
+# one value nothing else in this schema forbids, so each one is a separate hole
+# with a separate name and each one has to be closed.
+#
+# AND THE ONE THAT MATTERS MOST IS D18, because it is the only one that no
+# CONSTRAINT can close. `github_id = 999` is unclaimed, so
+# `publishers_github_id_key` has nothing to collide with and is satisfied. The
+# same statement against another publisher's id is refused with SQLSTATE 23505,
+# which is Postgres arithmetic about uniqueness and says nothing about who may
+# own what. 999 is the statement a real account-takeover attempt makes: point
+# your row at an identity you do not control, so that when that account signs in
+# it lands on your rows. Only a policy can refuse it, and D18 is the check that
+# says one is there.
+# ===========================================================================
+
+# CHECK D18 publisher write: may NOT move github_id to an unclaimed value
+deny "D18 publisher write: may NOT move its own github_id to an UNCLAIMED id" \
+  "$SHAPE1" "42501" "row-level security" \
+  "$(as_publisher "$A1" "update pantry.publishers set github_id = 999 where id = '$A1';")"
+
+# CHECK D19 publisher write: may not rename github_login to a free value
+deny "D19 publisher write: may NOT rename its own github_login to a FREE login" \
+  "$SHAPE1" "42501" "row-level security" \
+  "$(as_publisher "$A1" "update pantry.publishers set github_login = 'alpha-renamed' where id = '$A1';")"
+
+# CHECK D20 publisher write: may not claim is_first_party
+deny "D20 publisher write: may NOT claim is_first_party on its own row" \
+  "$SHAPE1" "42501" "row-level security" \
+  "$(as_publisher "$A1" "update pantry.publishers set is_first_party = true where id = '$A1';")"
+
+# CHECK D21 publisher write: may not self-verify
+# `a4`, not `a1`, and the choice is the whole point. `publishers_public_read` is
+# `using (not is_first_party and verified)`, so a publisher that can set
+# `verified` on its own row decides its own public visibility. That is the
+# failure `00002_publishers.sql` names in its own words — "a policy that branches
+# on a column the publisher can set is a policy the publisher controls" — applied
+# to the column it wrote that sentence about, which was `verified`.
+deny "D21 publisher write: may NOT verify ITSELF into the public read policy" \
+  "$SHAPE1" "42501" "row-level security" \
+  "$(as_publisher "$A4" "update pantry.publishers set verified = true where id = '$A4';")"
+
+# CHECK D22 publisher write: may not restamp claimed_at
+# Not a takeover, and included deliberately. `claimed_at` is documented as "the
+# fact that the identity first claimed the name … the one value in this table a
+# later row can be checked against". A publisher that can rewrite it is editing
+# the only evidence. The pin is not three columns, and this is the check that
+# says so rather than leaving the width of the pin implicit in a `false`.
+deny "D22 publisher write: may NOT restamp its own claimed_at" \
+  "$SHAPE1" "42501" "row-level security" \
+  "$(as_publisher "$A1" "update pantry.publishers set claimed_at = timestamptz '1999-01-01 00:00:00+00' where id = '$A1';")"
+
+# CHECK D23 publisher write: the five refusals changed no column of either row
+# The negative cases are the point, in both directions. `deny` proves each
+# statement was refused; this proves the refusals were refusals rather than
+# partial writes, and it reads BOTH rows — `a1` because it is the account every
+# other check moves, `a4` because D21's is the only write that would change what
+# the PUBLIC can read, and `unverified|false` in the expectation is C2's
+# precondition still holding after the tier that tried to break it.
+rowset "D23 publisher write: the refused writes changed no column of either identity" "$SHAPE1" \
+  "set role pantry_admin;
+   select github_id || '|' || github_login || '|' || is_first_party || '|' || verified
+     from pantry.publishers where id in ('$A1', '$A4') order by github_id;" \
+  "101|alpha|false|true,404|unverified|false|false"
+
+# ===========================================================================
 say ""
 say "-- pantry_admin: the decision-maker, and the first-party ingest"
 # ===========================================================================
@@ -443,6 +521,43 @@ deny "E11 admin limits: pantry_admin has no CREATE on schema pantry" \
 deny "E12 admin limits: pantry_admin cannot create in the cluster's public schema" \
   "$SHAPE1" "42501" "permission denied for schema public" \
   "$(as_admin "create table public.rls_admin_probe (id int);")"
+
+# ===========================================================================
+# E13..E15 — THE FLOWS THE PIN MUST NOT BREAK
+#
+# These three are GREEN BEFORE THE PUBLISHER PIN AND GREEN AFTER IT, and that is
+# their whole job. A security fix that stops the attack and also stops the
+# fleet's legitimate writes is green on the checks that assert the attack and red
+# in production, so the checks that hold the legitimate path open belong next to
+# the checks that close the hole — not in a separate document nobody runs.
+#
+# None of these three flows is hypothetical; each is named by the schema:
+#   rename       a GitHub login is renamed upstream and the registry follows.
+#                `00002` keeps `github_login` precisely because "a login can be
+#                renamed" — a registry that cannot follow a rename is wrong.
+#   verify       `verified` is "whether the OAuth flow proved control of the
+#                account", and the OAuth callback is a privileged server-side
+#                action, which is `pantry_admin` and not the account holder.
+#   promote      `is_first_party` is "a fact about the cafaye fleet's own
+#                manifests, decided by a reviewed commit to registry/index.yml".
+#
+# ONE ROW EACH, so no single value is load-bearing for two checks and a reader
+# can tell which flow broke from which row. `pantry_admin` reaches these through
+# `publishers_admin_update ... with check (true)`, which `00008` does not touch —
+# and the mutation that widens the pin to `pantry_admin` is what proves these are
+# checks rather than decoration.
+# ===========================================================================
+
+# CHECK E13 admin write: may follow a login rename
+ok "E13 admin write: may RENAME a publisher's github_login (the rename flow)" "$SHAPE1" \
+  "$(as_admin "update pantry.publishers set github_login = 'alpha-renamed-by-fleet' where id = '$A1';")" \
+  "UPDATE 1"
+# CHECK E14 admin write: may record proof of control
+ok "E14 admin write: may set verified — the OAuth callback's only writer" "$SHAPE1" \
+  "$(as_admin "update pantry.publishers set verified = true where id = '$A4';")" "UPDATE 1"
+# CHECK E15 admin write: may promote a publisher to first-party
+ok "E15 admin write: may set is_first_party (the reviewed-commit flow)" "$SHAPE1" \
+  "$(as_admin "update pantry.publishers set is_first_party = true where id = '$A2';")" "UPDATE 1"
 
 # ===========================================================================
 say ""
@@ -505,6 +620,33 @@ ok "F8  force: the owner's refused DELETE left the row in place" "$SHAPE1" \
 deny "F9  service role: pantry may NOT set trust = first_party either" \
   "$SHAPE1" "42501" "row-level security" \
   "$(as_service "select pantry.begin_publisher('$A1'); update pantry.services set trust = 'first_party' where name = 'alpha-own';")"
+
+# CHECK F10 force: the OWNER is held by the same policy, not only by its grant
+# THIS CHECK IS HERE BECAUSE D CANNOT SEE IT, and the reason is structural rather
+# than an oversight. D impersonates `pantry_publisher` with `set role`; this
+# impersonates `pantry`, which in shape 1 OWNS all four tables (`tests/rls.sh`
+# hands them over). `set role` from the suite's superuser session is subject to
+# RLS for both roles — D1 asserts that for the publisher — so the two statements
+# look identical in shape, and only the tier they were filed under knows which
+# exemption each one is testing.
+#
+# `publishers_publisher_update` names BOTH roles, so a barrier added to it for
+# `pantry_publisher` reaches the owner for free, and nothing in the D tier would
+# notice if it stopped doing so. Dropping `force row level security` from
+# `publishers` is the breakage that isolates this check: with FORCE gone the
+# owner is exempt from every policy on the table, so D18..D23 stay green and this
+# one goes red. A publisher-role tier that cannot tell the two worlds apart has
+# not measured the one that matters more.
+#
+# The refusal is the POLICY and not the grant, and that is the other half of the
+# claim. `pantry` holds no table grant on `publishers` in shape 1, so BEFORE the
+# ownership handover this statement died in `aclcheck_error` — the grant-boundary
+# refusal D13 asserts for the publisher role, reached for a different reason and
+# meaning something weaker. Owning the table is what puts it inside the policy.
+deny "F10 force: the table OWNER is held by the policy too, not only by its grant" \
+  "$SHAPE1" "42501" "row-level security" \
+  "$(as_service "select pantry.begin_publisher('$A1');
+                 update pantry.publishers set github_id = 999 where id = '$A1';")"
 
 # ===========================================================================
 say ""
