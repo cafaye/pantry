@@ -671,6 +671,24 @@ drop policy if exists service_versions_publisher_no_delete on pantry.service_ver
 drop policy if exists service_versions_publisher_update   on pantry.service_versions;
 drop policy if exists service_versions_publisher_insert   on pantry.service_versions;
 drop policy if exists service_versions_publisher_select   on pantry.service_versions;
+-- `service_versions_public_read` WAS MISSING HERE, and this line is the only
+-- record of that. It was created at line 255 above and never dropped, so a
+-- rollback stopped one step later with
+--
+--   2BP01: cannot drop function pantry.service_is_visible(pantry.services)
+--          because other objects depend on it
+--
+-- — that policy is the last thing standing on the function, and `00005`'s Down is
+-- what tries to drop the function. So the rollback was not merely incomplete, it
+-- was ARRESTED, and nothing in this repository could see it: `tests/rls.sh`
+-- applied only the Up sections, and no CI job ran `goose down`.
+--
+-- Found by the rollback tier added in `registry-migdown-04` (CHECK J1). The
+-- lesson is in the comment at the top of that tier and the short form is this:
+-- **a Down section is code that has never run until something runs it.** It sits
+-- beside an Up that is exercised on every gate run, reads like it was exercised
+-- too, and is a paragraph of guessed `drop` statements.
+drop policy if exists service_versions_public_read      on pantry.service_versions;
 
 drop policy if exists services_admin_delete               on pantry.services;
 drop policy if exists services_admin_update                on pantry.services;

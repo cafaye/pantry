@@ -7,6 +7,53 @@ bottom.
 
 ## [Unreleased]
 
+### Added
+
+- **The rollback is a check now, and it found a migration that could not be
+  rolled back.** `tests/rls.sh` applied only the `-- +goose Up` sections; the
+  `-- +goose Down` half was never applied by anything in this repository, since
+  the tier that used to assert it (`bin/prime-db`, on the superseded
+  `worker/reg-schema-01`) was replaced without the replacement carrying the
+  property across.
+
+  Two new shapes: **shape 3** applies Up, then every Down in reverse, then Up
+  again — failing loudly at each step, because "a Down that stops" and "a Down
+  that succeeds and forgets" are different failures and only one is worth
+  stopping for. **`$DOWNSTATE`** is a second database left in the rolled-back
+  state so the emptiness assertion can be queried live rather than captured into
+  a variable by the file that built it. Check group **J** is five assertions:
+  nothing left behind, the schema survives, and the re-applied table set,
+  policy count and `FORCE` flags each match a fresh migrate.
+
+  **`00001` is held back out of the Down chain on purpose.** Its Down is
+  `drop schema … cascade`, and a cascade would remove every object any other
+  migration's Down forgot — so the obvious version of this check is green over a
+  database where six of six Downs did nothing. Verified, not assumed: putting
+  `00001` back leaves the emptiness check green and trips only its complement.
+
+  Not `goose reset`, because goose is not in `gate.yml`'s `external.requirements`
+  and on this machine is a `go install` artefact rather than something `mise
+  install` provides. Not `dblink`, for the same reason in the other direction:
+  the suite's claim is that it needs nothing but PostgreSQL server binaries.
+
+### Fixed
+
+- **`migrations/00006_rls.sql` could not be rolled back.** Its Down dropped 32 of
+  the 33 policies its Up creates; `service_versions_public_read` was missing, and
+  because that policy is the last thing standing on
+  `pantry.service_is_visible()`, `00005`'s Down then failed with `2BP01` and the
+  rollback stopped there — `00003` and `00002` never ran. One line, plus the
+  comment explaining why it survived: a Down section is code that has not run
+  until something runs it, and it sits beside an Up that is exercised on every
+  gate run and reads like it was exercised too.
+
+### Changed
+
+- `tests/rls.sh` now runs **89** checks, up from 84. `gate.yml`'s `rls` floor
+  moves with it, margin still zero, and every document that states the count
+  follows. Entries in `DECISIONS.md` and `CHANGELOG.md` that say 84 are left
+  alone — they record what was true when they were written.
+
 ### Removed
 
 - **The Rust implementation, entirely.** `src/` (ten modules), `Cargo.toml`,

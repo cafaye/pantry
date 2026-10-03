@@ -237,6 +237,82 @@ MIGRATIONS="$(ls "$REPO"/migrations/[0-9]*.sql | wc -l | tr -d ' ')"
 say "migrations: $MIGRATIONS files, Up sections only"
 
 # ---------------------------------------------------------------------------
+# THE DOWN SECTIONS — AND WHY THEY ARE NOT SIMPLY "THE OTHER HALF OF $UP"
+#
+# This suite has always applied only the Up half, and the Down half had no check
+# at all anywhere in the repository. The tier that used to check it,
+# `bin/prime-db`, was superseded by this file and the property went with it
+# without anybody deciding it should. The property is worth having: **a Down that
+# does not name what its Up created is a deploy nobody can undo**, and the way it
+# usually goes wrong is silently — an `Up` gains a constraint in a later commit
+# and its `Down` keeps dropping the table as it was before the constraint.
+#
+# WHY 00001 IS EXCLUDED, and this is the whole reason the naive version of this
+# check is vacuous:
+#
+#     00001_roles.sql's Down is `drop schema if exists pantry cascade;`
+#
+# That is a CASCADE. Run it and every object any earlier Down forgot is removed
+# anyway, so "the schema is empty afterwards" would be true whether or not
+# 00002 through 00007's Downs named their own objects. A check that cannot fail
+# on the defect it exists for is a comment, and the suite's header already says
+# `migrations/assertions/isolation.sql` was retired for printing `FAIL` and
+# exiting 0 — the same disease, smaller.
+#
+# So `DOWN` is 00007 down to 00002, in reverse, and the schema 00001 created is
+# left standing. **If that leaves anything behind, this check is red**, which is
+# the only version of it worth running. The cascade is still 00001's Down and
+# still correct — this is about whether the check can see, not about whether the
+# rollback works. Both are asked: `reapply` below puts the schema back from
+# `00002` upward, which is the question an operator actually has.
+#
+# WHY PSQL AND NOT `goose reset`. The old tier shelled out to goose, which makes
+# the fleet's migration runner a declared dependency of a gate whose `external`
+# block does not name it — and goose on this machine is a `go install` artefact in
+# mise's Go bin directory, NOT something `mise install` provides, so a clean
+# machine would go red for a reason the declaration had disclaimed. The property
+# under test is the SECTIONS, not the runner: given these Down sections in this
+# order, does the schema come back empty? psql answers that and adds no
+# requirement.
+# ---------------------------------------------------------------------------
+DOWN="$WORK/down.sql"
+{
+  # Reverse order, and derived from the filenames so an eighth migration is
+  # covered the day it lands. `ls -r` rather than a glob, because the shell does
+  # not reverse globs and a file that is silently omitted here is a Down that is
+  # silently never checked.
+  for f in $(ls -r "$REPO"/migrations/[0-9]*.sql | grep -v '/00001_'); do
+    echo "-- ===== $(basename "$f") (Down) ====="
+    awk '
+      /^-- \+goose Up/        { up = 0 }
+      /^-- \+goose Down/      { up = 1; next }
+      /^-- \+goose Statement/ { next }
+      up                     { print }
+    ' "$f"
+  done
+} >"$DOWN"
+say "down:       $(grep -c '^-- ===== ' "$DOWN") migrations, 00001 excluded (its Down is a CASCADE)"
+
+REUP="$WORK/reapply.sql"
+{
+  # 00001 IS back in this one, and it can be: its Up is guarded
+  # (`create schema if not exists`, and every `create role` inside an exception
+  # block that skips an existing role), so running it twice is a no-op rather
+  # than an error. That guard is now load-bearing for this check, which is
+  # worth stating here because the day somebody removes it, this file goes red
+  # with `role "pantry" already exists` and the cause is three migrations back.
+  for f in "$REPO"/migrations/[0-9]*.sql; do
+    echo "-- ===== $(basename "$f") (re-apply) ====="
+    awk '
+      /^-- \+goose Up/        { up = 1; next }
+      /^-- \+goose Down/      { up = 0 }
+      /^-- \+goose Statement/ { next }
+      up                     { print }
+    ' "$f"
+  done
+} >"$REUP"
+
+# ---------------------------------------------------------------------------
 # `--print-pg-bin`: ONE PLACE THAT KNOWS WHERE POSTGRES IS ON THIS MACHINE
 #
 # The Go suites need a PostgreSQL and they do not get to have their own idea of
@@ -410,6 +486,137 @@ sql "$SHAPE2" "alter schema pantry owner to pantry;
                alter table pantry.service_versions owner to pantry;
                alter table pantry.service_compat owner to pantry;" >/dev/null
 say "applied: $MIGRATIONS migrations as pantry_migrator, objects handed to pantry (exit 0)"
+
+# ---------------------------------------------------------------------------
+# SHAPE 3 — the round trip: up, all the way down, and up again
+#
+# Three applies and two questions. The applies are allowed to fail LOUDLY here,
+# before any check runs, because a Down section that raises is a different
+# failure from a Down section that succeeds and forgets something, and the first
+# is worth stopping for.
+#
+#   1. UP      -> the schema as a fresh deployment gets it
+#   2. DOWN    -> 00007..00002 in reverse, 00001 held back (see above)
+#   3. RE-UP   -> every migration again, 00001 included
+#
+# Step 3 is not redundant with step 2. It is the question an operator has: after
+# a rollback, does the next deploy work? A Down that leaves one constraint behind
+# passes step 2 without complaint and fails step 3 with `already exists`, and
+# that is the shape of the bug worth catching.
+#
+# ONE HAZARD, STATED BECAUSE IT IS REAL AND IT IS NOT CONTAINED HERE:
+# **`00007`'s Down is `revoke pantry_public from pantry`, and role membership is
+# CLUSTER-WIDE, not per-database.** Running this shape therefore mutates state
+# that shapes 1 and 2 also depend on. It is restored by the re-apply in step 3,
+# which is why the whole shape is built before `tests/rls_checks.sh` is sourced
+# and every check runs against the restored cluster. If step 3 ever fails, the
+# membership checks I1-I3 will go red underneath it with a message about roles
+# rather than about a migration — so step 3's failure exits here, loudly, and
+# does not get to be confusing.
+# ---------------------------------------------------------------------------
+SHAPE3=regshape3
+db "drop database if exists $SHAPE3;" >/dev/null 2>&1
+db "create database $SHAPE3 owner pantry_migrator;" >/dev/null 2>&1
+
+UP3="$WORK/apply-$SHAPE3-up.log"
+if ! timeout 180 "${PSQL[@]}" -U pantry_migrator -d "$SHAPE3" -f "$UP" >"$UP3" 2>&1; then
+  say ""
+  say "FAIL  migrations do not apply to an empty database (shape 3)"
+  grep -E "ERROR|FATAL" "$UP3" | head -5 | sed 's/^/      /'
+  exit 1
+fi
+
+DOWN3="$WORK/apply-$SHAPE3-down.log"
+if ! timeout 180 "${PSQL[@]}" -U pantry_migrator -d "$SHAPE3" -f "$DOWN" >"$DOWN3" 2>&1; then
+  say ""
+  say "FAIL  a -- +goose Down section does not run (shape 3)"
+  grep -E "ERROR|FATAL" "$DOWN3" | head -5 | sed 's/^/      /'
+  exit 1
+fi
+say "down:      00007..00002 in reverse, exit 0"
+
+REUP3="$WORK/apply-$SHAPE3-reup.log"
+if ! timeout 180 "${PSQL[@]}" -U pantry_migrator -d "$SHAPE3" -f "$REUP" >"$REUP3" 2>&1; then
+  say ""
+  say "FAIL  the migrations do not re-apply after a full rollback (shape 3)"
+  grep -E "ERROR|FATAL" "$REUP3" | head -5 | sed 's/^/      /'
+  exit 1
+fi
+say "re-applied: $MIGRATIONS migrations after the rollback (exit 0)"
+
+# ---------------------------------------------------------------------------
+# THE POST-DOWN STATE, FROZEN — because the emptiness assertion has to be taken
+# WHILE IT IS TRUE, and shape 3 is three applies later by the time a check runs.
+#
+# The alternative was to capture the observation into a variable and compare it
+# in `rls_checks.sh`, which reads the same and is worse: the value would have
+# been formatted by this file and asserted by that one, so a change to either
+# half's idea of the answer could not fail. A second database costs two applies
+# and lets the checks query the real catalog while it is in the state they are
+# about.
+#
+# It is the SAME applies shape 3 does — deliberately, not by sharing a variable:
+# if these two ever diverge, one of them is testing something else and the
+# difference should be visible as a green check with the wrong subject rather
+# than as a shared fixture that quietly changed meaning.
+# ---------------------------------------------------------------------------
+DOWNSTATE=regdown
+db "drop database if exists $DOWNSTATE;" >/dev/null 2>&1
+db "create database $DOWNSTATE owner pantry_migrator;" >/dev/null 2>&1
+
+if ! timeout 180 "${PSQL[@]}" -U pantry_migrator -d "$DOWNSTATE" -f "$UP" >"$WORK/apply-$DOWNSTATE-up.log" 2>&1; then
+  say ""
+  say "FAIL  migrations do not apply to an empty database (post-down state)"
+  grep -E "ERROR|FATAL" "$WORK/apply-$DOWNSTATE-up.log" | head -5 | sed 's/^/      /'
+  exit 1
+fi
+if ! timeout 180 "${PSQL[@]}" -U pantry_migrator -d "$DOWNSTATE" -f "$DOWN" >"$WORK/apply-$DOWNSTATE-down.log" 2>&1; then
+  say ""
+  say "FAIL  a -- +goose Down section does not run (post-down state)"
+  grep -E "ERROR|FATAL" "$WORK/apply-$DOWNSTATE-down.log" | head -5 | sed 's/^/      /'
+  exit 1
+fi
+say "post-down: $DOWNSTATE, frozen after 00007..00002 and before the re-apply"
+
+# THE ONE THING PUT BACK BY HAND, AND IT IS NOT THE SCHEMA.
+#
+# `00007`'s Down is `revoke pantry_public from pantry`, and role membership is
+# CLUSTER-WIDE. So building `$DOWNSTATE` revoked a grant that every check below —
+# and every check against shapes 1 and 2 — depends on, and the first version of
+# this file took I1 and I2 down with it, correctly reporting `0 members` against
+# a cluster the harness itself had broken.
+#
+# Shape 3 does not have this problem: its re-apply puts the grant back. This one
+# cannot, because staying rolled back IS the state the J checks are about.
+#
+# So the grant goes back here, immediately, and **only the grant** — the schema
+# stays exactly as the Down sections left it, which is the whole point of the
+# database. Membership and schema are different scopes and the fix respects that:
+# one cluster-wide statement, no DDL, nothing that J1 can see.
+#
+# That the repair is a hand-written grant is itself the finding, and it is the
+# same one `00001` already recorded: **a grant the test suite must perform is a
+# step missing from the thing that defines the database.** Here it is missing
+# from the ROLLBACK rather than from the provisioning, which is a smaller
+# version of the same disease and is now named rather than absorbed.
+db "grant pantry_public to pantry;" >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
+# WHAT A FRESH MIGRATE LOOKS LIKE, MEASURED — so J3 and J4 compare against a
+# baseline rather than against a list somebody wrote down.
+#
+# NOT `dblink`. Comparing two databases from inside one is the obvious tool and
+# it costs an extension this harness does not have and does not want: the RLS
+# suite's entire claim is that it needs nothing but PostgreSQL server binaries.
+# So the baseline is measured here, in this file, and interpolated into the
+# checks as a literal — derived at run time from a real migration rather than
+# typed into a test, which is the property that actually matters. An eighth
+# migration lands and both sides move together.
+# ---------------------------------------------------------------------------
+BASE_TABLES="$(sql "$SHAPE1" "select coalesce(string_agg(tablename, ',' order by tablename), '<none>')
+                                from pg_tables where schemaname = 'pantry';")"
+BASE_POLICIES="$(sql "$SHAPE1" "select count(*) from pg_policies where schemaname = 'pantry';")"
+say "baseline:  $BASE_POLICIES policies over $(printf '%s' "$BASE_TABLES" | tr ',' '\n' | wc -l | tr -d ' ') tables, from a fresh migrate"
 
 # ===========================================================================
 # THE CHECK RUNNER

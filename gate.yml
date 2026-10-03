@@ -29,7 +29,7 @@
 #     trusting the job name.
 #   * `bin/prime` has THREE tiers and one language. `bin/prime-go` runs the Go
 #     service's own checks (gofmt, build, vet, test, and a generated-code check);
-#     `tests/rls.sh` runs 84 SQL checks against a scratch PostgreSQL with
+#     `tests/rls.sh` runs 89 SQL checks against a scratch PostgreSQL with
 #     `migrations/` applied and `tests/seed.sql` loaded; the last tier shells into
 #     `../caf` and runs `caf contract lint` over this repository's own `cafaye.yml`
 #     and every entry in `registry/services`. There is no Rust tier and no second
@@ -46,7 +46,7 @@
 #
 #       suite: 30 passed, 0 failed
 #       packages: 2 with tests
-#       rls: 84 of 84 checks passed, 0 tier skipped
+#       rls: 89 of 89 checks passed, 0 tier skipped
 #
 #     and measured again on a machine with no PostgreSQL at all, which is the
 #     measurement that decided what the floors below could be:
@@ -99,7 +99,7 @@ gate:
   entrypoint: bin/prime
   # Deliberately generous, for the same reason every other adopter's is. A warm
   # run is ~20s on this host; the first one on a cold checkout also fetches the
-  # module graph named in `go.sum`, and the RLS tier's 84 checks stand a scratch
+  # module graph named in `go.sum`, and the RLS tier's 89 checks stand a scratch
   # cluster up and tear it down. A budget tight enough to be a bug detector is
   # tight enough to be a flake generator on somebody's first run, and a timeout
   # that fires on a cold clone reports a red that is not the suite's answer. This
@@ -174,7 +174,7 @@ gate:
     # THE RLS TIER, which the declaration this file replaces said NOTHING about.
     #
     # That is the largest gap the rewrite closes, and it is worth naming plainly:
-    # `tests/rls.sh` ran 84 checks on every `./bin/prime` and not one of them was
+    # `tests/rls.sh` ran 89 checks on every `./bin/prime` and not one of them was
     # in `proof`. A tier can be deleted outright — `rm tests/rls.sh` — and this
     # declaration would have stayed green, because everything it asserted lived in
     # a language that is no longer here.
@@ -187,13 +187,13 @@ gate:
     # the better-shaped failure and it reads 0 on that machine.
     - id: rls
       match: '^rls: ([0-9]+) of [0-9]+ checks passed, [0-9]+ tier skipped$'
-      # 84 against a measured 84: 84 run, 84 passed, 0 failed, 0 skipped, on
+      # 89 against a measured 89: 89 run, 89 passed, 0 failed, 0 skipped, on
       # PostgreSQL 18.4. Margin zero, for the same reason `suite` has one.
       #
       # `tests/rls.sh` counts a skipped CHECK as neither a pass nor a fail, so
       # this number drops when a check stands down rather than when one fails —
       # which is the direction a floor wants to catch.
-      minimum: 84
+      minimum: 89
     # ---------------------------------------------------------------------
     # THE DATA PATH, in words, and the proof that replaces a floor of zero.
     #
@@ -288,7 +288,7 @@ gate:
 external:
   # NOT self-contained, and saying so is the point. `bin/prime` needs a Go
   # toolchain this repository pins rather than ships, a module fetch on a cold
-  # checkout, a PostgreSQL server to run 84 SQL checks and 12 database-backed Go
+  # checkout, a PostgreSQL server to run 89 SQL checks and 12 database-backed Go
   # gates against, and — for the manifest step — a checkout of `caf`. A
   # declaration that called this self-contained would be describing a gate nobody
   # has ever run on a clean machine, which is the same defect as identity's gate
@@ -336,7 +336,7 @@ external:
     # THE NEW ONE, and the reason this requirement exists at all: pantry's tests
     # are about ROW-LEVEL SECURITY, and row-level security cannot be checked
     # without a database. There is no mock for it, there is not a fake for it, and
-    # 84 of the checks in `tests/rls.sh` plus 12 of the 30 Go tests open a real
+    # 89 of the checks in `tests/rls.sh` plus 12 of the 30 Go tests open a real
     # connection to a real server with `migrations/` applied.
     #
     # Both scripts find one themselves — `tests/rls.sh` starts a scratch cluster
