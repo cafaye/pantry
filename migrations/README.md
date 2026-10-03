@@ -18,7 +18,8 @@ out.
 | 4 | `00004_service_compat.sql` | `service_compat`, the compatibility graph, indexed both ways | a version scheme — core's four-form grammar is stored verbatim |
 | 5 | `00005_functions.sql` | `current_publisher_id()`, `begin_publisher/1`, `service_is_visible()`, the touch trigger, the `compat_closure` view | anything that decides trust |
 | 6 | `00006_rls.sql` | enable + FORCE + policies + grants on all four tables | a `for all` policy — one policy per command, always |
-| — | `../tests/rls.sh` | **the denials, run against a real cluster** — 77 checks over every role, every table and every command | a skip that counts as a pass |
+| 7 | `00007_roles_and_compat_read.sql` | the **membership** `pantry` needs to become `pantry_public`, and the public read policy on the compatibility graph | `pantry_admin` — the one membership deliberately NOT granted |
+| — | `../tests/rls.sh` | **the denials, run against a real cluster** — 84 checks over every role, every table and every command | a skip that counts as a pass |
 
 ## Two goose things that will bite you
 
@@ -79,6 +80,27 @@ DATABASE_URL=postgres://postgres@127.0.0.1:5432/pantry_dev \
   goose -dir migrations postgres "$DATABASE_URL" up
 goose -dir migrations postgres "$DATABASE_URL" status
 ```
+
+## The seventh migration is late on purpose
+
+`00006_rls.sql` ends with a section headed "NO PUBLIC READ POLICY, and this is
+a decision worth defending because it looks like an omission and it is not". It
+then argues for exactly the policy it declines to write — "an edge is visible
+exactly when its `target_id` service is visible" — and grants `pantry_public`
+SELECT on the table without one. The table was therefore reachable and silent:
+four rows, zero readable by the role the catalog reads as.
+
+`00007` writes the statement the argument implies, and requires **both**
+endpoints to be visible, which is strictly more than `00006` said. It also
+carries the `grant pantry_public to pantry` that the directory had never
+contained — see the migration's own header, which is the longer version of this.
+
+It is a new file rather than an edit to `00006` for two reasons, both of which
+are about reaching people who already have a database: goose records versions
+rather than checksums, so an amended `00006` is silently skipped everywhere it
+has been applied, and a Down that revokes a grant made by its own Up leaves state
+behind. A new file reaches all of them on the next `up`, and its Down is a true
+inverse.
 
 ## The `down` order is not reversible on its own
 
