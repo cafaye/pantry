@@ -1,32 +1,30 @@
 # Toolchain pins for this repository.
 #
 #   mise install     # install the pinned toolchains
-#   mise run prime   # the gate — both tiers
+#   mise run prime   # the gate
 #   mise run prime-go # the Go tier alone
 #
-# TWO TOOLCHAINS, because pantry is mid-rewrite: `rust` is the tier serving
-# traffic from `src/`, `go` is the tier standing beside it in `cmd/` and
-# `internal/`. pantry-02 removes the Rust pin with `src/`.
+# ONE TOOLCHAIN. `src/` is gone and with it the Rust tier, so the `rust` pin
+# went with the code it pinned — the comment above this line used to say
+# "pantry-02 removes the Rust pin with src/", and this is pantry-03.
 #
-# kit/templates/mise.toml carries `rust = "1.84"` as an explicit PLACEHOLDER and
-# says so: "a service is pinned to the version it deploys on". The rust pin here
-# is 1.95, the toolchain this service builds and tests on, and the same number is
-# the RUST_VERSION build-arg in docker/Dockerfile.
+# `bin/prime-go` asserts this pin against `go.mod`'s own `go` directive before it
+# runs anything, because nothing else makes the go command enforce either file.
+# The pattern came from a Rust gate that had the same hole: three files naming a
+# toolchain and a gate that checked none of them, so a developer on a newer
+# compiler read the difference as a defect in the code under test (the cafaye-rb
+# lesson, and it cost a debugging session).
 #
-# THE GO PIN IS THREE FILES AND bin/prime-go CHECKS TWO OF THEM, which is the
-# pattern above applied to a second language. 1.26.1 is the toolchain identity
-# builds and tests on; Dockerfile's ARG GO_VERSION is 1.26, the tag
-# the image builds with, the same way RUST_VERSION names an image rather than a
-# patch. go.mod's own `go` directive is the third copy and is the one the
-# compiler enforces — bin/prime-go fails at step zero if it and this file
-# disagree, because the alternative is a developer on a newer Go reading the
-# difference as a defect in the code under test (the cafaye-rb lesson).
+# The Go pin is TWO files and the gate checks both. 1.26.1 is the toolchain
+# identity builds and tests on; the root Dockerfile's ARG GO_VERSION is 1.26,
+# the tag the image builds with — the same way RUST_VERSION used to name an
+# image rather than a patch. go.mod's `go` directive is the second copy and is
+# the one the compiler enforces.
 [tools]
-rust = "1.95"
 go = "1.26.1"
 
 [tasks.prime]
-description = "The gate: the Rust tier, then the Go tier"
+description = "The gate"
 run = "./bin/prime"
 
 [tasks.prime-go]
@@ -34,39 +32,21 @@ description = "The Go tier of the gate: gofmt, build, vet, test"
 run = "./bin/prime-go"
 
 [tasks.build]
-description = "Build both binaries: cargo into ./target/debug, go into ./build"
-run = """
-cargo build && mkdir -p build && go build -o build/pantry ./cmd/pantry
-"""
+description = "Build the binary into ./build"
+run = "mkdir -p build && go build -o build/pantry ./cmd/pantry"
 
 [tasks.run]
-description = "Serve the Rust registry from ./registry on 0.0.0.0:8080"
-run = "cargo run"
-
-[tasks.run-go]
-description = "Serve the Go rewrite on 0.0.0.0:8080 — 503 on the data routes until pantry-02"
+description = "Serve the registry on 0.0.0.0:8080"
 run = "go run ./cmd/pantry"
 
 [tasks.fmt]
-description = "Fail if anything needs rustfmt"
-run = "cargo fmt --check"
-
-[tasks.lint]
-description = "Clippy, warnings are errors"
-run = "cargo clippy --all-targets -- -D warnings"
-
-[tasks.test]
-description = "The whole suite. No network, no database."
-run = "cargo test --no-fail-fast"
-
-[tasks.fmt-go]
 description = "Fail if anything under ./cmd or ./internal needs gofmt"
 run = "gofmt -l ./cmd ./internal"
 
-[tasks.lint-go]
-description = "go vet, which is what the Go tier treats as the linter"
+[tasks.lint]
+description = "go vet, which is what this gate treats as the linter"
 run = "go vet ./..."
 
-[tasks.test-go]
-description = "The Go suite. No network, no database, no sleeps."
-run = "go test -count=1 ./..."
+[tasks.test]
+description = "The whole suite. No network; the data-path packages bring their own PostgreSQL."
+run = "./bin/prime-go"

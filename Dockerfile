@@ -13,12 +13,16 @@
 #      go.mod — and fails in any Go module. Measured, not assumed: `go build
 #      ./...` printed `docker/Dockerfile.go:1:1: illegal character U+0023 '#'`.
 #   2. identity's Go image is `./Dockerfile` at the root, and `docker/Dockerfile`
-#      in this repository is the RUST image, which stays until pantry-02 gives
-#      the Go service a read path. So the two images have two homes, each named
-#      the way its own ecosystem expects.
+#      in this repository WAS the RUST image. It is deleted, along with `src/`,
+#      so there is one image in one file here now and this comment records what
+#      the second home was for.
 #
-# `docker/Dockerfile` (Rust) is deleted in the packet that deletes `src/`, not
-# before.
+# WHAT HAPPENED TO `docker/Dockerfile`. It built the Rust service that used to be
+# the whole of `src/`, and it was deleted in the same packet that deleted `src/`
+# rather than before it, so there was never a commit in which the file existed
+# with nothing to build. If you are reading this in a history that still has that
+# file: it is not stale documentation, it is a deleted artifact, and the image it
+# described has no source to build from.
 #
 # THE ARRANGEMENT is kit's Go template (kit/docker/Dockerfile.go), with the two
 # deviations identity documents, and both are consequences of nothing in this

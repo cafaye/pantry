@@ -1,5 +1,22 @@
 # HANDOFF — pantry-go-01
 
+> **RESOLVED. Nothing below is a current instruction.** This file was written
+> while the Go service and the Rust service were both in the tree and the gate
+> ran two tiers, and it describes that state: the Rust tier red, `/readyz` 503,
+> data arriving in pantry-02. All of that has since happened.
+>
+> What came of it: `cmd/pantry` serves all four operations from PostgreSQL with
+> row-level security in front of it; `internal/catalog` is mounted to
+> `internal/catalog/postgres.go` rather than being a guess at a seam; CI calls
+> `./bin/prime` and nothing else; and **the Rust implementation, `src/`,
+> `Cargo.toml`, `Cargo.lock` and `docker/Dockerfile` have all been deleted** —
+> see `REPORT-registry-norust-03.md` and `DECISIONS.md` D33.
+>
+> It is kept rather than deleted because the reasoning below is the reasoning
+> those outcomes were made from, and a packet that deletes the reasoning while
+> keeping the outcome leaves the next reader unable to tell which part was
+> reversible.
+
 ## What the packet was for
 
 Rewrite pantry in Go as a real HTTP service with an OpenAPI contract, a

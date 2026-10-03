@@ -23,8 +23,8 @@ $ curl -s localhost:8080/v1/services | jq '.data[].name'
 
 This is the contract. `openapi/v1.yaml` is the same contract in machine form and
 is what a client should be generated from; the two are held against each other by
-`tests/api.rs`, which fails when the router and the document disagree in either
-direction.
+`internal/httpapi/routes_test.go`, which fails when the router and the document
+disagree in either direction.
 
 ### `GET /v1/services`
 
@@ -261,18 +261,40 @@ OK ../pantry/registry/services/darkroom/cafaye.yml
 `<name>.cafaye.yml` looks tidier and is a directory the canonical validator walks
 straight past.
 
-**There is no database.** Phase 1 has none, and that is a property rather than an
-omission: a registry whose entries can be written at runtime is a registry that
-can be given a new service by anything that can reach the process. Adding a
-service is a commit and a reviewed pull request — that is the entire trust model.
+**The database is the only read source, and `registry/` is a SEED rather than the
+service's configuration.** `cmd/pantry` opens `PANTRY_DATABASE_URL` and answers
+every request with SQL; it reads no YAML from disk and holds no second copy of
+the catalog in memory. What `registry/` is for now is loading that database —
+`migrations/` and `tests/seed.sql` are what put rows in it — and for a reader
+diffing what this repository claims about other services against what those
+services actually say.
+
+That is a change from the design this file used to describe, where the service
+read `./registry` at startup and there was no database at all. The reason is on
+record in DECISIONS.md (the read model is the database, and trust is enforced by
+row-level security rather than by the fact that nobody can write the files), and
+the consequence is stated here rather than left to be found: **a registry whose
+rows can be written at runtime is a registry that can be given a new service by
+anyone holding the `pantry_admin` role.** The grant boundary is the trust model
+now, and `tests/rls.sh` holds it to 84 checks over four roles.
 
 **Why a copy at all.** A container has no sibling checkouts, so the registry has
-to be self-contained; but a copy nobody checks is a copy that rots. So
-`tests/recorded_copy.rs` verifies every copy against the service **at the commit
-this registry records** on every run — **byte for byte**, and also field by field
-— and `tests/drift.rs` checks the two registry-side facts against the service's
-own OpenAPI document and git remote. That test is the mechanism. Discipline is
-not.
+to be self-contained; but a copy nobody checks is a copy that rots. So there
+used to be `tests/recorded_copy.rs`, which verified every copy against the
+service **at the commit this registry records** on every run — **byte for byte**,
+and also field by field — and `tests/drift.rs`, which checked the two
+registry-side facts against the service's own OpenAPI document and git remote.
+
+**Both were Rust, both were deleted with `src/`, and nothing replaced them.** So
+every copy under `registry/services/` is now a copy that rots silently, and the
+twelve-repository `workspace-drift` CI job that ran them is gone rather than
+left as a slow green over checks no compiled code makes. This is a real coverage
+gap with a real consequence — a service that renames itself stays in this
+registry under its old name until a human notices — and it is written down
+rather than papered over, because a written-down gap is recoverable and a job
+that clones repositories nobody reads is not. DECISIONS.md D33 and
+REPORT-registry-norust-03.md carry the specifics and the name the replacement
+will have.
 
 **And the copy records where it came from.** Every row in `registry/index.yml`
 carries a `recordedAt`: the commit of that service's own repository the copy was
@@ -330,24 +352,37 @@ byte-equality is the check that catches a copy nobody has refreshed.
    saying why those two values are what they are. They are the only facts
    pantry states that a manifest cannot state for itself, so they are the only
    facts a reader cannot get from the service's own file.
-4. `cargo test --test drift`. If `basePath` is wrong the test says what the real
-   document says instead; if the copy is stale it says which service, which
-   line, whether fields moved too, and the `cp` to run.
+4. ~~Run the drift check.~~ **There is no step 4.** It was
+   `cargo test --test drift`, a Rust test, and it was deleted with `src/`; the
+   replacement is owed work rather than a command to type. If you are adding a
+   service today, the step you can still perform is step 2's `cp`, and then
+   reading the copy back against the service yourself, because nothing in this
+   repository will do it for you.
 
-`Registry::load` refuses, with a message saying what to do: a file misnamed for
-its service, a manifest with no index row, an index row with no manifest, a
-`language: spec` manifest, an unparseable `core` constraint, and a `kind` that
-the manifest contradicts.
+**None of that validation is here any more.** `Registry::load` was the Rust
+service's loader and it went with `src/`. The Go service does not load
+`registry/` at all — it opens a database — so a file misnamed for its service, a
+manifest with no index row, an index row with no manifest and a `kind` the
+manifest contradicts are all now load-time questions with nothing loading. That is
+the honest reading of what the rewrite traded away, and it is listed in
+REPORT-registry-norust-03.md as coverage the deleted suite used to provide and
+nothing currently does.
 
 ### Not registered, and why
 
 `registry/index.yml` carries an exclusion record: a known repository, a reason, a
 command that proves it, and a machine-checked `blockedBy` — `schema`,
-`no-manifest`, `not-a-service` or `library`. `tests/schema.rs` asserts each
-reason still holds, so the record is a tripwire in one direction: the day
-courier's events gained the three-segment prefix core requires, its row failed
-with *"now validates — register it"* instead of the registry quietly going stale.
-courier-03 renamed them, and pantry-03 registered it.
+`no-manifest`, `not-a-service` or `library`. The `command` column is the proof,
+and it is a command a reader runs; `tests/schema.rs` used to run it for them and
+assert the reason still holds, so the record was a tripwire in one direction: the
+day courier's events gained the three-segment prefix core requires, its row
+failed with *"now validates — register it"* instead of the registry quietly going
+stale. courier-03 renamed them, and pantry-03 registered it.
+
+**That tripwire is gone.** It was Rust and it was deleted, so every reason in
+the table below now holds on the strength of the date in its last column and
+nothing else. The commands are still written out, which is what makes this
+table maintainable by a reader — but a row going stale is now silent.
 
 | repository | held back because | re-verified against the checkout on |
 | --- | --- | --- |
@@ -375,16 +410,13 @@ So the mechanism's limit is worth stating next to its strength: it fires when a
 reason stops holding, and it cannot fire when a reason is a correct description
 of a thing that has since been renamed or written. Only re-reading covers that.
 
-**Two rows are not checked on every CI run, and both say so on their face.**
-`cafaye-rb` and `site` are **private** repositories, so the `workspace-drift`
-job's anonymous clone is a 404 and `every_exclusion_reason_is_still_true` cannot
-read their manifests. Each row's reason is verified by a developer's run of
-`tests/schema.rs` with `PANTRY_CAFAYE_ROOT` set, and by nothing else;
-`tests/schema.rs` prints a `SKIP` for each saying exactly that. Both are named
-in `CAFAYE_UNREADABLE` in `.github/workflows/ci.yml`, which `tests/ci.rs` keeps
-honest in both directions via
-`an_unreadable_repository_is_neither_cloned_nor_registered` — so the day either
-becomes public, that is a red rather than a silent loss of coverage.
+**No row in this table is checked on any CI run any more.** `cafaye-rb` and
+`site` are **private** repositories and could not be checked anonymously even
+before; every other row was checked by `tests/schema.rs` and `tests/drift.rs`,
+which were deleted with `src/`. `CAFAYE_UNREADABLE` and the `tests/ci.rs` check
+that kept it honest in both directions went with them. So this table is now
+maintained by reading, and nothing will tell you when a row's reason has stopped
+being true.
 
 `site` is the one that is easy to get wrong. It is `parlor` **renamed**, and
 `parlor` is public, so "a fork of a public template is public" is a reasonable
@@ -435,8 +467,10 @@ where an undecided repository needs no reason is a check that can be made green
 by not checking. Both have a row and a machine-checked claim now, and the claim
 goes stale in the same direction as every other row's — a `library` whose
 manifest declares `exposes` or a non-empty `consumes` is something `caf dev`
-brings up and `guard` routes to, so `tests/schema.rs` fails it with *"now
-declares `exposes` … it must be REGISTERED"*.
+brings up and `guard` routes to. That used to be a red — `tests/schema.rs`
+failed such a row with *"now declares `exposes` … it must be REGISTERED"* — and
+it is now nothing at all, which is the clearest single example of what this
+packet's coverage gap looks like from the outside.
 
 **Neither is registered**, and that is a decision rather than a gap.
 Registration claims `caf dev` can bring the thing up and gives it a base path to
@@ -458,11 +492,11 @@ which would be the actual rot.
 
 ### A green run does not mean this table is accurate
 
-`every_exclusion_reason_is_still_true` reports exclusions that have gone
-**stale**. It says nothing about whether the six reasons still **hold**. Those
-are different questions and only one of them is machine-checked, so a green run
-is not evidence that this list is right — it is a reason to go and read the
-checkouts. That has been necessary on four consecutive packets (darkroom, caf,
+`every_exclusion_reason_is_still_true` reported exclusions that have gone
+**stale**. It said nothing about whether the six reasons still **hold**. Those
+are different questions and only one of them was machine-checked, so a green run
+was never evidence that this list is right — it was a reason to go and read the
+checkouts. That was necessary on four consecutive packets (darkroom, caf,
 courier, and pantry-05), and each time it was: every one of the first three
 exclusions had a reason that another repository's packet made false. One of the
 six is not checkable at all, and its row says which and why.
@@ -471,12 +505,11 @@ Two rows are checked in fewer places than the other four, for two different
 reasons. **`cafaye-rb` is a private repository**, so an anonymous runner cannot
 clone it — the GitHub API
 answers `404` for it without a credential, which reads as "does not exist" rather
-than "not yours". The `workspace-drift` job names it in `CAFAYE_UNREADABLE`, its
-reason is verified by a developer's run of `tests/schema.rs` and by nothing else,
-and `tests/schema.rs` prints a `SKIP` line saying so rather than passing quietly.
-`tests/ci.rs` keeps that list honest in both directions: a registered service may
-never be on it, a name the registry has stopped curating may not be on it, and
-nothing on it may also be cloned. The other answer — a credential in the
+than "not yours". It used to be named in `CAFAYE_UNREADABLE`, with
+`tests/schema.rs` printing a `SKIP` line saying so rather than passing quietly,
+and `tests/ci.rs` keeping that list honest in both directions. All of those were
+Rust and all of them are gone, so this row is now unverified for the same reason
+as every other row and for one more. The other answer — a credential in the
 workflow — is what pantry-04 removed on the grounds that the fleet is public, and
 adding it back for one gem would be worse than the gap.
 
@@ -493,10 +526,17 @@ routes to it.
 
 ## The Go service
 
-`cmd/pantry` serves the same four operations as `src/`, from the same
+`cmd/pantry` serves the four declared operations, from the committed
 `openapi/v1.yaml` — oapi-codegen generates the router and the types, and
 `internal/httpapi` implements the document's server interface. There is no second
 contract and no hand-written route table.
+
+**This is the whole service now.** `src/` was a second implementation of the same
+document, in Rust, reading the registry out of YAML; it was deleted in the packet
+recorded as REPORT-registry-norust-03.md and DECISIONS.md D33. There is no
+`--registry-dir` fallback, no in-memory catalog, and no environment variable that
+selects a YAML directory, because the database is the read model and admitting a
+second one back would put the trust model in two places.
 
 What it answers today:
 
@@ -543,74 +583,79 @@ Phase 5 ever wants one.
 ## Running it
 
 ```console
-$ cargo run                     # reads ./registry, binds 0.0.0.0:8080
-$ PANTRY_BIND=127.0.0.1:9000 PANTRY_REGISTRY_DIR=./registry cargo run
-$ docker build -f docker/Dockerfile -t pantry .
+$ PANTRY_DATABASE_URL=postgres://… go run ./cmd/pantry    # binds 0.0.0.0:8080
+$ PANTRY_BIND=127.0.0.1:9000 PANTRY_DATABASE_URL=postgres://… go run ./cmd/pantry
+$ docker build -t pantry .
 ```
 
-Two variables, both in `.env.example`: `PANTRY_REGISTRY_DIR` and `PANTRY_BIND`.
-Logs are JSON, filtered by `RUST_LOG`.
+`PANTRY_DATABASE_URL` is this service's whole connection surface; `PANTRY_BIND`
+and `PANTRY_LOG_LEVEL` are the rest. **`PANTRY_REGISTRY_DIR` is gone** — it
+selected the YAML directory the deleted Rust service read, and the Go service
+reads a database.
 
 ```console
-$ ./bin/prime                   # fmt, build, clippy -D warnings, test, contract lint
-$ PANTRY_CAFAYE_ROOT=/Users/kaka/Code/any/moon/cafaye ./bin/prime
+$ ./bin/prime                   # gofmt, build, vet, test, RLS suite, contract lint
 ```
 
 ### The gate
 
-`cargo fmt --check`, `cargo build --all-targets`,
-`cargo clippy --all-targets -- -D warnings`, `cargo test --no-fail-fast`, and
-`caf contract lint` on this repository's own manifest when `../caf` is present.
+`gofmt -l`, `go build ./...`, `go vet ./...`, `go test -count=1 -v ./...`,
+`tests/rls.sh` (84 SQL checks against a scratch PostgreSQL it stands up and
+removes itself), and `caf contract lint` on this repository's own manifest when
+`../caf` is present. A warm run is about twelve seconds; under Rust this same
+script took about four minutes.
 
-**No test touches the network or a database.** `tower::ServiceExt::oneshot`
-drives the axum router in-process, and `jsonschema` is built with
-`default-features = false` so it has no HTTP fetcher to reach out with.
+**No test reaches the network, and the database ones bring their own.** The Go
+packages drive the router in-process with `httptest`. `tests/rls.sh` runs
+`initdb` itself and picks a free port, so it needs PostgreSQL's *binaries* and
+no server and no service container — which is also why the CI workflow proves
+those binaries exist before running anything rather than after.
 
-### The drift test needs a workspace, and CI builds one
+### The drift checks are gone, and that is what a green badge means now
 
 **Read this before reading a green badge on this repository.**
 
-`registry/` is a set of copies of other repositories' files, and it is
-`tests/recorded_copy.rs` that makes those copies true. It reads a cafaye
+**A green badge on `main` now means: the Go service builds, its 30 tests pass,
+its 84 SQL checks pass against a real PostgreSQL, its OpenAPI document and its
+generated router agree, and this repository's manifests validate.** It does not
+mean `registry/` is accurate — that was four Rust tests reading a twelve-repository
+workspace and comparing every copy byte for byte, and it is gone.
+
+Everything below this line describes what that suite did. It is kept because the
+gap is real and a gap nobody can reconstruct is a gap nobody will close.
+
+`registry/` is a set of copies of other repositories' files, and
+`tests/recorded_copy.rs` is what made those copies true. It read a cafaye
 workspace — a directory holding `core/`, `identity/` and the rest — next to this
 checkout, or at `PANTRY_CAFAYE_ROOT`. Those are sibling checkouts under
-`moon/cafaye/`. `tests/drift.rs` does the same for the curated `kind` and
-`basePath` facts.
+`moon/cafaye/`. `tests/drift.rs` did the same for the curated `kind` and
+`basePath` facts, and `tests/schema.rs` and `tests/ci.rs` held the exclusion
+table and the readable-repository list to account.
 
-The clones must be **non-shallow**, and CI's is: `git show <sha>:<path>` cannot
-reach a commit a `--depth 1` clone does not have, so a shallow clone would turn
-every recorded-ref check into a skip. `tests/ci.rs` fails if `--depth` comes
-back.
+The clones had to be **non-shallow**: `git show <sha>:<path>` cannot reach a
+commit a `--depth 1` clone does not have, so a shallow clone turned every
+recorded-ref check into a skip.
 
-With a workspace, these tests run and compare. Without one, **25 of them print
-`SKIP …` on stderr naming the directory that would make them run**, and return. A
-skip is reported, never hidden. The full gate, run by hand:
+With a workspace, those tests ran and compared. Without one, 25 of them printed
+`SKIP …` on stderr naming the directory that would have made them run, and
+returned. That was the shape of the problem, and it is worth keeping here
+because the Go rewrite replaced it rather than inheriting it: **a pantry-only
+clone and a real workspace printed the same 146 passing tests and the same exit
+code 0**, and the only difference between them was those 25 lines. Nothing in a
+green run distinguished "verified the fleet" from "verified itself".
 
-```console
-$ PANTRY_CAFAYE_ROOT=/Users/kaka/Code/any/moon/cafaye ./bin/prime
-```
+**The Go gate does not have that shape, which is not an accident.** Its two
+external requirements are checked explicitly — PostgreSQL server binaries via
+`tests/rls.sh --print-pg-bin`, and a `caf` checkout at `../caf` — and
+`gate.yml`'s `data-path` proof matches only the line that says every check ran
+against a real database. The count of what stood down is printed by the gate, in
+words, and `PANTRY_DB_REQUIRED=1` in CI turns it into a red rather than a skip.
+The lesson this repository learned the hard way about skip counting survived the
+language change; only the test runner did not.
 
-The shape of the problem is that a pantry-only clone and a real workspace print
-**the same 146 passing tests and the same exit code 0**. The only difference
-between them is those 25 `SKIP` lines — and, since pantry-05, one more for the
-private repository this job cannot clone (see "Not registered, and why" below).
-Nothing in a green run distinguishes
-"verified the fleet" from "verified itself" — which is why the job that has the
-fleet has to be a separate job with a name that says so.
-
-**Count them, do not eyeball them.** Both numbers above were measured by running
-the suite in a clone with no siblings beside it and comparing:
-
-```console
-$ git clone --no-hardlinks --no-local ../pantry /tmp/lonely/repo && cd /tmp/lonely/repo
-$ cargo test --no-fail-fast -- --nocapture 2>&1 | grep -c '^SKIP'
-25
-```
-
-`cargo test` prints skips on stderr, which a terminal shows but a captured
-pipeline does not. A gate that reports "146 passed" without also reporting how
-many of those 146 verified nothing is the defect this repository has been
-reporting against itself three times, so the count is part of the claim.
+**What did not survive it is the fleet check itself.** There is no Go equivalent
+of `recorded_copy.rs` yet, and until one exists the honest sentence about this
+repository's registry is the one at the top of this section.
 
 **The `wt-*` worktree rule is deliberately in the half that does not skip.** Two
 of pantry's worktree tests build their own workspace and never ask for a real
@@ -681,44 +726,41 @@ also fails if the drift job is disabled, if a secret reference reappears, or if
 
 ## Layout
 
-pantry is mid-rewrite: `src/` is the Rust service that serves today, `cmd/` and
-`internal/` are the Go rewrite standing beside it. Both tiers are gated. The Go
-service mounts no data source yet — see "The Go service" below.
+pantry is Go. There was a Rust service here, and it is gone: `src/`,
+`Cargo.toml`, `Cargo.lock` and `docker/Dockerfile` were deleted together, so
+there is never a commit in which a second implementation of the same contract
+could still be started. One service, one contract, one gate tier.
 
 ```
 pantry/
-├── bin/prime                  # the gate: the Rust tier, then bin/prime-go
-├── bin/prime-go               # the Go tier: gofmt, build, vet, test
+├── bin/prime                  # the gate: the RLS tier, the manifest tier, then the Go tier
+├── bin/prime-go               # the Go tier: gofmt, build, vet, test, the counted suite
+├── bin/gate-self-test         # the gate declaration's own proof that it can fail
 ├── cafaye.yml                 # this service's own manifest
-├── cmd/pantry/                # the Go binary: configuration, timeouts, shutdown
+├── cmd/pantry/                # the binary: configuration, timeouts, shutdown
 ├── DECISIONS.md               # this repository's open decisions, D1, D2, …
-├── Dockerfile                 # the Go image, distroless nonroot
-├── docker/Dockerfile          # the Rust image — still what a deployment runs
+├── Dockerfile                 # the image, distroless nonroot
+├── gate.yml                   # what this gate PROVES, in core's gate declaration format
 ├── go.mod, go.sum             # module github.com/cafaye/pantry, Go 1.26.1
 ├── internal/
 │   ├── api/                   # oapi-codegen output, generated from openapi/v1.yaml
-│   ├── catalog/               # the read seam; unmounted in pantry-01
-│   └── httpapi/               # chi router (generated), problems, trace ids, probes
+│   ├── catalog/               # the read seam, and its PostgreSQL implementation
+│   ├── httpapi/               # the generated router, problems, trace ids, probes
+│   └── pantrydb/              # pool, per-connection role, sqlc output
+├── migrations/                # six goose migrations, the schema and its RLS policies
 ├── openapi/v1.yaml            # the HTTP contract, machine half of the table above
-├── registry/                  # the official service set, as data
+├── registry/                  # the official service set, as data and seed
 ├── schemas/                   # core's manifest schema, vendored
-├── src/
-│   ├── contract.rs            # the constraint grammar, ported from caf
-│   ├── filter.rs              # ?kind, ?language, ?contract, ?limit, ?cursor
-│   ├── http.rs                # the four routes and the two probes
-│   ├── manifest.rs            # a parsed cafaye.yml, core's fields only
-│   ├── problem.rs             # RFC 9457 with core's extensions
-│   ├── registry.rs            # load, validate, index, exclusions
-│   └── view.rs                # the response shape, and its provenance
-└── tests/                     # manifest, schema, contract, filters, api, drift, ci
+└── tests/                     # rls.sh, rls_checks.sh, seed.sql — 84 SQL checks
 ```
 
 Read `AGENTS.md` before changing anything here.
 
 ## License
 
-MIT. See [LICENSE](LICENSE). `Cargo.toml` declares the same thing in its
-`license` field.
+MIT. See [LICENSE](LICENSE). `go.mod` declares no licence of its own — Go has
+no `license` field — so [LICENSE](LICENSE) is the statement, and it is the only
+one.
 
 pantry is the registry the fleet is consumed through, so the licence a
 dependency arrives under is the licence the dependency graph hands on. MIT

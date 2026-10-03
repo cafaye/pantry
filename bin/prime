@@ -1,20 +1,36 @@
 #!/usr/bin/env bash
 # bin/prime — the gate. Everything that must pass before a commit lands.
 #
-#   ./bin/prime   fmt, build, clippy, test, then bin/prime-go
+#   ./bin/prime   the Go tier, the RLS suite, then the manifest lint
 #
-# TWO TIERS, because pantry is mid-rewrite: the Rust service in `src/` still
-# serves and the Go service in `cmd/`+`internal/` stands beside it. Both run
-# here. Neither is allowed to be skipped because the other is green — that is the
-# one thing a mid-rewrite gate must not do. (no network, no database)
+# THREE TIERS, and they are three subjects rather than three languages. The Go
+# tier builds and tests the service; the RLS tier is about the migrations and is
+# the only one that starts a database; the manifest lint is about this
+# repository's own `cafaye.yml` and every registry entry in it.
 #
-# Green on a bare machine, with no cafaye sibling checkouts: the drift tests
-# report themselves as skipped on stderr and say exactly which directory would
-# make them run. That is deliberate — a gate that needs a whole workspace to
-# produce a red is a gate nobody runs.
+# ONE LANGUAGE NOW. This script used to assert a Rust toolchain against
+# `mise.toml`, exit 127 on a mismatch, and then run `cargo fmt`, `cargo build`,
+# `cargo clippy` and `cargo test` across ~110 crates for the `src/` service that
+# stood beside the Go one. `src/` is gone. The toolchain assertion moved to
+# `bin/prime-go`, which already had the same check for Go against the same two
+# files, so nothing was lost by not repeating it here — a second assertion of the
+# same pin in a second script is a second thing to forget.
 #
-# In the moon/cafaye workspace, the drift tests are the point of this
-# repository and they DO run:
+# THE RUST TIER WAS NOT DELETED, IT WAS REPLACED, and the difference is worth
+# being exact about. `tests/rls.sh` and `tests/rls_checks.sh` (84 checks) and
+# `tests/seed.sql` already existed in shell and Go, and they are what the
+# migrations are actually verified by. The Rust suite that went with `src/` was
+# 146 tests over the registry manifest format, the vendored core schema pin and
+# workspace drift. Some of that is genuinely gone and is named in
+# REPORT-registry-norust-03.md rather than rounded away.
+#
+# Green on a bare machine, with no cafaye sibling checkouts and no PostgreSQL:
+# the tiers that need either report themselves as COUNTED SKIPS naming the
+# reason. That is deliberate — a gate that needs a whole workspace to produce a
+# red is a gate nobody runs, and a gate whose silence reads as a pass is the
+# failure this repository has been bitten by more than once.
+#
+# In the moon/cafaye workspace, the manifest lint runs for real:
 #
 #   PANTRY_CAFAYE_ROOT=/Users/kaka/Code/any/moon/cafaye ./bin/prime
 set -euo pipefail
@@ -31,69 +47,14 @@ cd "$(dirname "$0")/.."
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
 # ---------------------------------------------------------------------------
-# THE TOOLCHAIN, ASSERTED BEFORE ANYTHING ELSE RUNS
+# THE GO TIER
 # ---------------------------------------------------------------------------
-#
-# WHY THIS IS HERE, because it is not in the other two gates of this repository
-# and it is the whole lesson of the cafaye-rb packet.
-#
-# This repository pins its toolchain in THREE files — `mise.toml`'s
-# `[tools] rust = "1.95"`, `Cargo.toml`'s `rust-version = "1.95"`, and
-# `docker/Dockerfile`'s `ARG RUST_VERSION=1.95` — and has NO
-# `rust-toolchain.toml`. So nothing here makes cargo enforce the pin: whatever
-# `rustc` answers on PATH is what formats, builds, lints and tests this gate.
-# Run this on a machine with a system rustc and the gate does not say "the wrong
-# toolchain answered" — it says whatever cargo says, which on a mismatched
-# edition or a stale resolver is a wall of text about features and dependency
-# versions that reads as a defect in the code under test.
-#
-# cafaye-rb had exactly this shape and it cost a debugging session: its gate
-# picked up macOS system Ruby 2.6.10 while its own `external` requirement named
-# the pinned 4.0.1, and every failure was a gem error about a language feature
-# that the project had legitimately stopped supporting. The `external` block in
-# gate.yml said 4.0.1 the whole time. **A requirement the gate does not check is
-# a comment**, and a loud refusal at step zero is worth more than the correct
-# answer three steps later.
-#
-# So: read the pin out of `mise.toml` — the file that owns it — rather than
-# hardcoding a second copy here, because a hardcoded number is a fourth place to
-# forget and would still be right on the day the pin moved. Exit 127, the
-# conventional "dependency missing" code, with a sentence that names the number
-# it wanted and the command that fixes it.
-if ! command -v rustc >/dev/null 2>&1; then
-  echo "bin/prime: rustc is not on PATH — run 'mise install' in this worktree" >&2
-  exit 127
-fi
-
-pinned_rust="$(sed -n 's/^rust *= *"\(.*\)"/\1/p' mise.toml)"
-if [ -z "$pinned_rust" ]; then
-  echo "bin/prime: mise.toml pins no rust toolchain, so this gate cannot check the" >&2
-  echo "  toolchain it is about to run. Either restore the pin or stop claiming one." >&2
-  exit 127
-fi
-
-actual_rust="$(rustc --version | awk '{print $2}')"
-if [ "$actual_rust" != "$pinned_rust" ] && [ "${actual_rust#"$pinned_rust."}" = "$actual_rust" ]; then
-  echo "bin/prime: rustc is $actual_rust, and mise.toml pins $pinned_rust." >&2
-  echo "  Run 'mise install' in this worktree. Continuing would report cargo" >&2
-  echo "  errors about features and dependency versions as if they were" >&2
-  echo "  defects in the code under test." >&2
-  exit 127
-fi
-
-step "toolchain: rustc $actual_rust (mise.toml pins $pinned_rust)"
-rustc --version
-
-# THE GO TIER, FIRST, and the ordering is the point. pantry is mid-rewrite:
-# `src/` and `cmd/`+`internal/` are two implementations of one document, and
-# `set -e` means a red tier stops the run. With the Go tier last, a red Rust tier
-# would make this gate never check the Go one — which is a gate that verifies half
-# the repository and says nothing about it. Cheap tier first, expensive tier
-# second: the one that is fastest to be wrong is the one that gets to complain
-# first. The tier is a script rather than six steps here so that working on the Go
-# service does not mean compiling 110 crates to learn whether `go vet` is happy.
-# See bin/prime-go, which asserts the Go toolchain against mise.toml for the same
-# reason this script asserts rustc.
+# gofmt, build, vet, test, the generated-server check, and the two counted skip
+# reports (the data path's own gates, and the suite's pass count). It is a script
+# rather than five more steps here so that a developer working on one thing does
+# not have to run all three tiers to learn whether it is happy, and so that
+# "which tier is red" is a question with an answer. See bin/prime-go, which also
+# owns the toolchain assertion.
 step "the Go tier: gofmt, build, vet, test"
 ./bin/prime-go
 
@@ -105,14 +66,13 @@ step "the RLS suite, against a real postgres"
 #
 # THE SKIP IS COUNTED, not absent. `tests/rls.sh` prints one `skip:` line naming
 # the reason when it cannot find `pg_ctl`, and the count is printed below and
-# asserted on, for the reason the rest of this script counts `SKIP ` lines: a tier
-# that quietly did not run is indistinguishable from a tier that passed, and this
-# repository has a red for exactly that — `cargo test` reporting `114 passed` on a
-# machine with no cafaye workspace. `PANTRY_RLS_REQUIRED=1` turns the skip into an
-# exit 3, and that is how CI should run it: a CI job that has a postgres service
-# should be red when it does not, and a developer with no postgres should still be
-# able to run the gate.
+# asserted on, for the reason this script counts everything: a tier that quietly
+# did not run is indistinguishable from a tier that passed. `PANTRY_RLS_REQUIRED=1`
+# turns the skip into an exit 3, and that is how CI should run it — a CI job that
+# has a postgres service should be red when it does not, and a developer with no
+# postgres should still be able to run the gate.
 rls_log="$(mktemp "${TMPDIR:-/tmp}/pantry-prime-rls.XXXXXX")"
+trap 'rm -f "$rls_log"' EXIT
 set +e
 ./tests/rls.sh 2>&1 | tee "$rls_log"
 rls_status="${PIPESTATUS[0]}"
@@ -123,128 +83,15 @@ rls_passed="$(printf '%s' "$rls_line" | awk '{print $4}')"
 rls_skipped="$(grep -c '^skip: ' "$rls_log" || true)"
 echo "rls: ${rls_passed:-0} of ${rls_checks:-0} checks passed, ${rls_skipped} tier skipped"
 if [[ "$rls_skipped" -ne 0 ]]; then
-  # Named, for the same reason the cargo skip count above names its tiers: a count
-  # with no variable is a number nobody can act on.
+  # Named, for the same reason every other count here is named: a count with no
+  # variable is a number nobody can act on.
   echo "  the RLS tier did not run, and those counted as nothing. Install a"
   echo "  PostgreSQL server or set PANTRY_PG_BIN to its bin directory."
   grep '^skip: ' "$rls_log" | sort -u | sed 's/^/  /'
 fi
 if [[ "$rls_status" -ne 0 ]]; then
   echo "bin/prime: tests/rls.sh exited ${rls_status}" >&2
-  rm -f "$rls_log"
   exit "$rls_status"
-fi
-rm -f "$rls_log"
-
-step "cargo fmt --check"
-cargo fmt --check
-
-step "cargo build"
-cargo build --all-targets
-
-step "cargo clippy -D warnings"
-cargo clippy --all-targets -- -D warnings
-
-step "cargo test (no network, no database)"
-# `--nocapture`, and the reason is measured rather than preferred.
-#
-# THIS SUITE HAS NO `#[ignore]`. Every environment-gated tier — drift, schema,
-# core-pin, recorded-copy — prints `SKIP …` on stderr and RETURNS EARLY from the
-# test body, which libtest scores as a PASS. So the skip is a `return` and the
-# count does not move: a run on a machine with no cafaye workspace reports the
-# same `114 passed; 0 failed; 0 ignored` as a run that compared every registry
-# copy against the real services. That is the `cafaye-rb` defect — 1430 tests
-# green against an empty schema — wearing a Rust hat.
-#
-# `--nocapture` is what makes the SKIP lines reach the terminal. libtest captures
-# a passing test's output and DISCARDS it, so without this flag the one signal
-# that a tier did not run is captured and thrown away, and `bin/prime` reports a
-# clean green over a suite that verified pantry against itself. Verified
-# directly: `cargo test --test drift` on a bare clone prints 8 `SKIP` lines with
-# `--nocapture` and none without it, while both runs report
-# `test result: ok. 12 passed`.
-#
-# So the tier reports itself, and the gate says so at the end rather than leaving
-# it to be inferred. `set -o pipefail` is above, so `cargo_status` below is the
-# exit code of `cargo` and not of `tee` — which is the whole reason this
-# file is a script and the reason PLAN.md §1 exists.
-test_log="$(mktemp "${TMPDIR:-/tmp}/pantry-prime-test.XXXXXX")"
-trap 'rm -f "$test_log"' EXIT
-set +e
-cargo test --no-fail-fast -- --nocapture 2>&1 | tee "$test_log"
-cargo_status="${PIPESTATUS[0]}"
-set -e
-
-# The count, reported ALWAYS and not only when it is zero. A gate whose skip
-# report only appears when something went wrong is a report nobody learns to
-# read, which is the same defect as the report being absent.
-#
-# THE COUNTING IS FROM EVERY RESULT LINE, `ok.` AND `FAILED.`, and that is a
-# correction rather than a preference. It used to match `^test result: ok\.` on
-# the reasoning stated here — that counting only the `ok.` lines "makes this the
-# number of tests that PASSED rather than the number that ran". The reasoning
-# was right and the implementation did the opposite, which is the worst kind of
-# both.
-#
-# A test binary that fails prints `test result: FAILED. 13 passed; 2 failed; …`
-# — it still reports its passes. Matching `ok\.` therefore DROPPED every passing
-# test in every failing binary, so the number on a red gate was not the passing
-# count either: it was the passing count MINUS the failures' binary. Measured on
-# pantry-23: a run whose true total was 144 reported `suite: 131 passed`, and
-# 131 is 144 minus the 13 that passed inside the one failing target.
-#
-# That is not a cosmetic wrong number, because `gate.yml`'s `total` proof is a
-# FLOOR on exactly this line, currently 144. Under-reporting by a whole binary on
-# a red run means a run that has lost tests AND has failures can still satisfy a
-# floor derived from a green run's count — which is guard's near-smell
-# reproduced in a third direction, and the same failure `gate.yml` raises its own
-# floor to 144 to avoid. A decrease-detector that under-reports on the runs it
-# most needs to report on is not a decrease-detector.
-#
-# So the number is now the true passing count whatever the outcome. The residual
-# is stated rather than papered over: on a red gate this line can read high
-# (`suite: 144 passed`) and must be read WITH the `error: N target(s) failed`
-# block and this script's exit status, which are what say the gate is red. That
-# is why the line says `passed` and not `ok`.
-suite_passed="$(awk '/^test result:/ { for (i = 1; i <= NF; i++) if ($i == "passed;") total += $(i - 1) } END { print total + 0 }' "$test_log")"
-suite_skipped="$(grep -c '^SKIP ' "$test_log" || true)"
-
-# The number of test binaries, COUNTED rather than written down, because the
-# literal it replaced said 11 while `tests/` held thirteen files.
-#
-# It drifted silently for several packets — `scoping.rs` and
-# `entry_point_isolation.rs` were added and the summary line was never updated —
-# and nothing noticed, because `gate.yml`'s `total` proof matches this line's
-# SHAPE (`^suite: (\d+) passed across \d+ test binaries$`) rather than its
-# numbers. A floor on the test-file count is not expressible in that proof at
-# all, which `gate.yml` already records at length; this is the other half of the
-# same hole, and counting here closes it for the one number this line prints.
-#
-# Counted by file rather than by counting `Running tests/` lines, because a
-# build that reuses a target directory can print a stale binary's path and the
-# two must not be able to disagree.
-test_binaries="$(find tests -maxdepth 1 -name '*.rs' | wc -l | tr -d ' ')"
-
-echo
-echo "suite: ${suite_passed} passed across ${test_binaries} test binaries"
-if [[ "$suite_skipped" -eq 0 ]]; then
-  echo "skips: 0 — every tier ran"
-else
-  # Named, because a skip count with no variable is a number nobody can act on.
-  # `PANTRY_CAFAYE_ROOT` must point at the directory holding
-  # `core/schemas/cafaye.manifest.schema.json`; that one file is what
-  # `cafaye_root()` looks for. The first few are echoed so the reader does not
-  # have to open the log to learn WHICH tier stood down.
-  echo "skips: ${suite_skipped} — a tier did not run. These counted as PASSES."
-  echo "  set PANTRY_CAFAYE_ROOT to the cafaye workspace (the directory holding"
-  echo "  core/, identity/, billing/, guard/ and muse/) and re-run. Without it"
-  echo "  this gate verified pantry against ITSELF, not against the fleet."
-  grep '^SKIP ' "$test_log" | sort -u | head -5 | sed 's/^/  /'
-fi
-
-if [[ "$cargo_status" -ne 0 ]]; then
-  echo "bin/prime: cargo test exited ${cargo_status}" >&2
-  exit "$cargo_status"
 fi
 
 step "the manifest validates against core's schema"

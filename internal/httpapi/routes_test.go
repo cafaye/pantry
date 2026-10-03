@@ -22,8 +22,10 @@ import (
 // it is asserted here: the document is the contract, and a route outside it is
 // an endpoint this service publishes and does not own.
 //
-// The Rust service asserts the same pair in tests/api.rs. Two implementations of
-// one document need two assertions of it, and this file is the Go one.
+// The Rust service asserted the same pair in `tests/api.rs`, which was deleted
+// with `src/`. There is one implementation of this document now, so this file is
+// the only place either direction is asserted — which is exactly why it cannot be
+// deleted along with a refactor that made the check look obvious.
 
 // openAPIDocument is the document, read at the path relative to this package.
 // Embedding it with go:embed would pin a COPY of the file into this binary, and
@@ -102,8 +104,9 @@ func TestEveryPathInTheDocumentIsMounted(t *testing.T) {
 }
 
 // The document declares four operations and every one is a GET. This is
-// pantry's rule as much as the document's — tests/scoping.rs asserts the same
-// about the Rust service — and a write verb appearing here is a new capability
+// pantry's rule as much as the document's — the deleted `tests/scoping.rs`
+// asserted the same about the Rust service — and a write verb appearing here is a
+// new capability
 // in a rewrite, which is a reviewable decision and not a refactor.
 func TestEveryMountedRouteIsARead(t *testing.T) {
 	for _, route := range mountedRoutes(t) {

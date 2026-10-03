@@ -11,8 +11,12 @@
   developers have one source of truth instead of hardcoded endpoints.
 - **Scope:** official cafaye services only, curated in this repository. Phase 1.
   See "Out of scope" below; it is not a preference.
-- **Contains:** a Rust service, its committed OpenAPI document, and the registry
-  as data.
+- **Contains:** a Go service, its committed OpenAPI document, a PostgreSQL
+  schema with row-level security in front of it, and the registry as data and
+  as seed.
+- **Language:** Go, chosen for this service and not for fleet consistency. It
+  reads a database, speaks HTTP, and its gate stands a scratch PostgreSQL up on
+  every run; see DECISIONS.md D33 for why that settled it and for what it cost.
 
 ## The four rules that matter more than the rest
 
@@ -26,31 +30,42 @@
 2. **A copy nobody checks is a copy that rots.** `registry/services/*/cafaye.yml`
    are copies of other repositories' files, kept **verbatim, comments
    included**, and each row in `registry/index.yml` records the commit the copy
-   was taken from — see "The registry is a copy" and `tests/recorded_copy.rs` for
-   the byte-equality check that enforces it. A stale comment in one of these
+   was taken from. `tests/recorded_copy.rs` enforced that byte for byte on every
+   run and **was deleted with the Rust service; nothing enforces it now.** The
+   rule is unchanged and the enforcement is not, which is the most important
+   thing in this file for a new reader to know. A stale comment in one of these
    files is not cosmetic: it is usually a missing `DECISION NEEDED`, and a
    registry copy missing one is a service with open questions that looks settled.
+   DECISIONS.md D33 carries the gap and the name the replacement has.
 3. **A merge in another repository is not a failure in this one.** Any check that
    reads a sibling checkout must read it at a *recorded ref*, and any distance
    from that ref must be reported by name rather than asserted. This is MD15
    applied twice — to `core` (via `vendir.lock.yml`) and to every registered
    service (via `recordedAt`) — and it is the rule that stops this repository
-   being reported as broken because `identity` merged.
+   being reported as broken because `identity` merged. **Every check that did
+   this was Rust and every one of them is gone**, so the rule currently has no
+   enforcement; it is kept because the next person to write those checks in Go
+   needs it, and a rule with a reason beats a rule with a test.
 4. **Tests first.** Per PLAN.md §3. Add the test, run it, watch it fail, then make
    it green by changing the implementation — not by loosening the assertion.
 
 ## Order of work
 
-1. Write the test in `tests/`.
+1. Write the test beside the code — `internal/<pkg>/…_test.go` for Go, or
+   `tests/rls_checks.sh` for SQL.
 2. Run it and **show it failing**. A test that has never failed has never been
    proven to test anything.
-3. Make it green by changing `src/`.
+3. Make it green by changing the implementation.
 4. If the failure is the wrong failure, the test is wrong. Fix the test first.
 5. `./bin/prime` before every commit.
 
-There are no sleeps in this suite because there is nothing to wait for: the HTTP
-tests drive the router with `tower::ServiceExt::oneshot` in-process, and the
-registry is read from disk at startup.
+There are no sleeps in this suite because there is nothing to wait for. The HTTP
+tests drive the router with `net/http/httptest` in-process, and the
+database-backed tests bring their own PostgreSQL: they run `tests/rls.sh --serve`,
+which does `initdb`, picks a free port, applies `migrations/`, seeds
+`tests/seed.sql`, and removes the directory on exit. That is why the gate needs
+PostgreSQL's **binaries** and not a server, and why `gate.yml` declares that as
+an external requirement rather than assuming one.
 
 ## Registering or changing a service
 
@@ -76,15 +91,13 @@ Adding or removing an entry is the change most likely to be wrong, so:
    ```
 3. Add or edit the row in `registry/index.yml`, with a comment saying *why* that
    `kind` and that `basePath` are what they are.
-4. `cargo test --test recorded_copy`. If `basePath` is wrong the test in
-   `tests/drift.rs` prints what the real OpenAPI document says; if the copy is
-   stale it prints which service, which line, whether the fields also moved, and
-   the `cp` to run.
+4. ~~`cargo test --test recorded_copy`.~~ **There is no step 4.** That test
+   and `tests/drift.rs` were Rust and were deleted with `src/`; see DECISIONS.md
+   D33. Diff the copy against the service by hand until they exist again.
 5. If you are *removing* a service, add an `excluded` row with a `blockedBy`, a
-   reason and a `verify` command. `tests/schema.rs` asserts the reason still
-   holds, so a row cannot rot into a fiction. It asserts a row that has gone
-   **stale**; it does not tell you a reason that is still **true** — re-read
-   each row against its checkout before trusting a green run.
+   reason and a `verify` command. `tests/schema.rs` used to run that command and
+   assert the reason still holds, so a row could not rot into a fiction, and it
+   was Rust and it is gone. Run the `verify` command yourself.
 
 Never edit a service's real `cafaye.yml` from this worktree. This repository
 reads them; it does not own them.
@@ -96,10 +109,12 @@ from it. A change is:
 
 1. `openapi/v1.yaml` — the machine half.
 2. `README.md` — "The response shape", the human half.
-3. `src/view.rs` — the code.
-4. A test in `tests/api.rs` that names the field, so the three above cannot
-   disagree. `a_service_object_carries_exactly_the_documented_keys` lists every
-   key; if you add one, that list is the first thing that should fail.
+3. `internal/catalog/catalog.go` (and `postgres.go`) — the code. `internal/api/
+   api.gen.go` is generated from (1) by `go generate ./internal/api/`; do not
+   hand-edit it, and `bin/prime-go` checks its generator header.
+4. A test in `internal/httpapi/httpapi_test.go` that names the field, so the
+   three above cannot disagree. The test that lists every documented key is the
+   first thing that should fail when a key is added.
 
 A **breaking** change also needs `info.version` bumped and a CHANGELOG entry
 under "Unreleased". Adding an optional field does not.
@@ -191,10 +206,13 @@ them now is how a registry becomes an unaudited code-execution surface:
 - **No marketplace, no third-party submissions, no registration webhook.** No
   untrusted manifest is ever accepted at runtime. Adding a service is a commit
   and a reviewed pull request.
-- **No plugin loader.** pantry reads YAML from a directory this repository owns.
+- **No plugin loader.** pantry reads rows from a database whose policies are
+  fixed by `migrations/`, and YAML from a directory this repository owns.
 - **No UI.**
-- **No database**, and no cross-service database access. pantry owns nothing
-  persistent.
+- **No cross-service database access.** pantry owns its own tables and reads
+  nothing else. The database is not optional any more — it is the read model —
+  but it is pantry's alone, and `tests/rls.sh` holds the four roles' grants to
+  84 checks.
 - **No health polling of other services.** pantry describes how to reach a service
   and never calls one — not a probe, not a metrics scrape. If pantry could become
   a load-bearing dependency of platform availability, that would be a fact about
@@ -219,7 +237,7 @@ Four are open. Two are the HTTP contract's, and both are recorded in
 
 1. **`method_not_allowed` (405)** is not in core's reserved code list. Recorded
    here for a core amendment rather than invented quietly. The cost of flipping:
-   one slug in `src/problem.rs` and one in the document.
+   one slug in `internal/httpapi/problem.go` and one in the document.
 2. **Cursors do not expire.** core says a cursor older than 24 hours answers
    `cursor_expired`; the registry is repository data that does not change between
    deploys, so there is nothing for a stale cursor to mis-read. The cost of
@@ -302,7 +320,7 @@ meaning does not depend on the thing being temporary.** `no-manifest` means "no
 `cafaye.yml` on master", which was true before the repository existed and is
 true after it. The fifth value D2 considered — `planned`, meaning "no repository
 exists" — would have been true once, false forever, and would have cost a
-variant in `src/registry.rs`, an arm in `every_exclusion_reason_is_still_true`,
+variant in the registry loader, an arm in `every_exclusion_reason_is_still_true`,
 a row in the table, a README section and a published meaning in `openapi/v1.yaml`,
 none of which could ever be deleted.
 
@@ -311,7 +329,9 @@ A pantry decision rather than an MD one (its reasoning is `DECISIONS.md` D29,
 and this is the cross-reference its header asks for). `tests/core_pin.rs` used to
 require core's manifest schema at the pin `39acaed` to be byte-identical to the
 one at core HEAD, so that a pass at the old ref could not be passing for the
-wrong reason. **That ref does not exist and never will:** `94f8d25` (the gate
+wrong reason — **and it was Rust, and it is gone**, which makes it the second
+place this packet leaves the vendored pin unverified (the first is
+`vendir.lock.yml`'s own header). **That ref does not exist and never will:** `94f8d25` (the gate
 declarations) is an *ancestor* of `ec28365` (the schema), so every ref carrying
 HEAD's schema already carries the `gate.*` files, and the two sets are disjoint.
 Rewriting core's history to manufacture one is not available.
