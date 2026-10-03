@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # bin/prime — the gate. Everything that must pass before a commit lands.
 #
-#   ./bin/prime   fmt, build, clippy, test        (no network, no database)
+#   ./bin/prime   fmt, build, clippy, test, then bin/prime-go
+#
+# TWO TIERS, because pantry is mid-rewrite: the Rust service in `src/` still
+# serves and the Go service in `cmd/`+`internal/` stands beside it. Both run
+# here. Neither is allowed to be skipped because the other is green — that is the
+# one thing a mid-rewrite gate must not do. (no network, no database)
 #
 # Green on a bare machine, with no cafaye sibling checkouts: the drift tests
 # report themselves as skipped on stderr and say exactly which directory would
@@ -78,6 +83,19 @@ fi
 
 step "toolchain: rustc $actual_rust (mise.toml pins $pinned_rust)"
 rustc --version
+
+# THE GO TIER, FIRST, and the ordering is the point. pantry is mid-rewrite:
+# `src/` and `cmd/`+`internal/` are two implementations of one document, and
+# `set -e` means a red tier stops the run. With the Go tier last, a red Rust tier
+# would make this gate never check the Go one — which is a gate that verifies half
+# the repository and says nothing about it. Cheap tier first, expensive tier
+# second: the one that is fastest to be wrong is the one that gets to complain
+# first. The tier is a script rather than six steps here so that working on the Go
+# service does not mean compiling 110 crates to learn whether `go vet` is happy.
+# See bin/prime-go, which asserts the Go toolchain against mise.toml for the same
+# reason this script asserts rustc.
+step "the Go tier: gofmt, build, vet, test"
+./bin/prime-go
 
 step "cargo fmt --check"
 cargo fmt --check
