@@ -1,290 +1,163 @@
 name: ci
 
-on:
-  push:
-    branches: [master]
-  pull_request:
-
 # PLAN.md §1: the gate runs under `set -o pipefail`, and a gate whose exit code
 # was not observed is treated as unrun, not as green.
 env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
+  # THE TWO FLAGS THAT MAKE A MISSING DATABASE A RED INSTEAD OF A SKIP.
+  #
+  # Both scripts here will happily stand down and exit 0 when they cannot find a
+  # PostgreSQL, and that is the right behaviour for a developer on a laptop with
+  # no database: the run says which gates did not run, in words, and the rest of
+  # the gate still means something. It is the WRONG behaviour for CI, where a
+  # green badge over a database that was never stood up is precisely the
+  # "green over nothing" failure this repository has been bitten by three times.
+  # So CI asks for the hard form and provides the thing it asks for.
+  #
+  # `PANTRY_RLS_REQUIRED` is read by `tests/rls.sh` (the 84 SQL checks) and
+  # `PANTRY_DB_REQUIRED` by `bin/prime-go` (the 12 database-backed Go gates).
+  # Both turn "no server binaries" into exit 3.
+  PANTRY_RLS_REQUIRED: "1"
+  PANTRY_DB_REQUIRED: "1"
 
 jobs:
-  build:
-    name: build, test, clippy, fmt
+  gate:
+    name: the gate (one command, as a developer runs it)
     runs-on: ubuntu-latest
+    # The scratch cluster `tests/rls.sh` stands up needs no service container:
+    # the suite runs `initdb` itself, picks a free port, and removes the data
+    # directory on exit. What it needs from the runner is the three BINARIES, and
+    # the step below says so out loud rather than letting their absence turn into
+    # a skip. A `postgres` service container would not help — there is nothing to
+    # connect to, because nothing is listening before the suite starts.
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
 
-      - name: fmt
-        run: cargo fmt --check
-
-      - name: build
-        run: cargo build --all-targets
-
-      - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      # This job alone is a pantry-only clone, so the drift tests in
-      # tests/drift.rs and three in tests/schema.rs find no cafaye workspace,
-      # print `SKIP …` on stderr and return. That is not a defect in them and
-      # it is not hidden: a skip is reported, never swallowed. But the
-      # consequence has to stay written down rather than left to be inferred
-      # from a green badge, so:
-      #
-      #   A GREEN RUN OF THIS JOB HAS VERIFIED PANTRY AGAINST ITSELF, NOT
-      #   AGAINST REALITY. It has checked that the registry is internally
-      #   consistent, that every entry satisfies core's vendored schema, and
-      #   that the filter and paging contracts hold. It has NOT checked that
-      #   any entry still says what its service says.
-      #
-      # The job below is what answers that, and it is the one that makes the
-      # badge mean something. This job is a fast inner loop; it is not the gate
-      # on the registry.
-      - name: test
-        run: cargo test --no-fail-fast
-
-  # ---------------------------------------------------------------------
-  # THE JOB THAT ACTUALLY CHECKS THE REGISTRY. It runs.
-  #
-  # pantry's tests verify the registry against the LIVE filesystem: for every
-  # registered name they open the sibling checkout and compare bytes, fields
-  # and OpenAPI documents. On a clone of pantry alone there is nothing to open,
-  # so `workspace-drift` exists to build the workspace first and then run the
-  # ordinary gate against it. Nothing here is pantry-specific: it fetches the
-  # fleet and calls ./bin/prime, which is the same command a developer runs.
-  #
-  # WHY NO CREDENTIAL. Every cafaye repository is public, so a hosted runner
-  # clones all of them over anonymous HTTPS and no secret of any kind is
-  # involved. An earlier version of this job cloned over SSH with a deploy key
-  # passed in from this repository's settings, on the assumption that the
-  # repositories were private. They are not, and that key was a long-lived
-  # private key created to work around a problem that did not exist.
-  # `tests/ci.rs::the_drift_job_clones_anonymously_and_needs_no_credential`
-  # fails this file — on a pantry-only clone, in a minute — if a secret
-  # reference, an SSH-form remote, an install of a key or a credential-bearing
-  # URL reappears anywhere in it, so the next person who reaches for one finds
-  # out in CI rather than in a merge review. That test is why this comment does
-  # not name the old secret: naming it would trip the check that exists to keep
-  # it gone.
-  #
-  # WHAT A GREEN RUN OF THIS JOB PROVES. That, as of this run, every registered
-  # entry is a verbatim byte copy of the service's own `cafaye.yml`, that every
-  # field pantry publishes about a service is a field the service publishes,
-  # that each curated `kind` and `basePath` agrees with the service's own
-  # manifest and OpenAPI document, that the vendored schema is core's, and that
-  # every exclusion row's stated reason is still true. That is the fleet-facing
-  # check, and it is the only one in this repository that reads the fleet.
-  #
-  # WHAT IT STILL DOES NOT PROVE, said out loud rather than left to a green
-  # badge:
-  #
-  #   1. It reads each sibling's DEFAULT BRANCH as of this run. A change in
-  #      `identity` that has not reached `identity`'s master is invisible here,
-  #      so a red in this job is a finding about what has already landed, and
-  #      the absence of a red is not evidence about a pending pull request.
-  #   2. It proves the registry is TRUE, not that it is COMPLETE. Completeness is
-  #      the curation tests' claim, and they are bounded by CAFAYE_REPOS below:
-  #      a cafaye repository nobody has added to that list is not cloned, not
-  #      registered and not noticed. The list is the honest limit of this job
-  #      and the next one is a DECISION NEEDED, not something to paper over.
-  #   3. A red in this job is almost always a finding about ANOTHER repository.
-  #      `registry/` here is a copy of somebody else's file, and this repository
-  #      does not own it — so the fix is to report the finding and open the
-  #      change where the file lives, never to edit the copy to make the badge
-  #      green. A copy quietly edited to match the thing it is supposed to
-  #      check is a registry that cannot be audited.
-  #   4. One curated repository is not in this workspace at all: `cafaye-rb`,
-  #      which is private. Its exclusion row's reason is therefore checked by a
-  #      developer's run of tests/schema.rs and not by this job. The row is
-  #      still there, still machine-checked, and still fails when its manifest
-  #      stops looking like a library — but only where the checkout exists. See
-  #      CAFAYE_UNREADABLE below for the fact and tests/ci.rs for the check.
-  #
-  # WHAT A PANTRY-ONLY CLONE WOULD HAVE PROVEN, which is the failure mode this
-  # job was disabled for and the one to reintroduce by accident: nothing about
-  # the fleet at all. Without a workspace, `cafaye_root()` misses, every drift
-  # test prints `SKIP …` and returns green, and the run looks identical to a
-  # pass. The guard below exists because of exactly that — it is the difference
-  # between a workspace that is present and one that only looks present.
-  workspace-drift:
-    name: registry drift (the fleet, cloned anonymously)
-    runs-on: ubuntu-latest
-    # The repositories to fetch, as one value rather than a shell array so that
-    # tests/ci.rs and this job read the same list instead of two spellings of
-    # it that can drift apart.
-    #
-    # THIS LIST IS DELIBERATE AND IT IS THE ONE THING TO UPDATE BY HAND. It is
-    # the whole cafaye organisation, not the subset the registry happens to
-    # name: the optimisation of cloning only what the registry registers is a
-    # trap, because it makes coverage a function of the registry, so the moment
-    # a ninth service is registered this job is silently wrong in the direction
-    # that matters — the repository nobody remembered is the one nobody checks.
-    #
-    # What breaks when you forget to add a repository here: no drift test ever
-    # compares the registry against it, no coverage test ever asks whether it
-    # should be registered, and nothing goes red — for a repository that has
-    # never been written down anywhere, that is the whole failure. The reverse
-    # direction is enforced: `tests/ci.rs` fails the `build` job when
-    # registry/index.yml curates a repository this list does not name, so adding
-    # a service to the registry and forgetting this list is a red within a
-    # minute. `docs` is here because the coverage test in tests/drift.rs asks
-    # about it by name. `pantry` is absent because it is the checkout above.
-    #
-    # `cafaye-py` was moved here by pantry-23: it was declared unreadable and is
-    # a written PUBLIC repository (pyproject.toml, CHANGELOG, its own gate, 948
-    # tests) whose exclusion row called it "a directory, not yet a repository".
-    # Cloning it is what ends the vacuous pass the row had to confess to —
-    # `no-manifest` is now asserted against real bytes on every CI run.
-    #
-    # CAFAYE_UNREADABLE is the curated names this job cannot clone, and why. It
-    # is a fact about the runner, not an exemption from coverage, and after
-    # pantry-23 it carries ONE claim across both of its entries:
-    #
-    #   cafaye-rb  a private repository. `site` a private repository, seeded
-    #              from the public `parlor` template. Both are anonymous 404s
-    #              and for the same reason, so the list means one thing again —
-    #              which is what DECISIONS.md D2's ruling needed and could not
-    #              have had while `cafaye-py` sat here for a different reason.
-    #
-    #   A 404 is named here rather than left to fail the clone step because a
-    #   404 reads as "this repository does not exist", not as "this repository
-    #   is not yours", and the second reading is the true one. The credential
-    #   that would fix it is exactly what pantry-04 deleted from this workflow —
-    #   a long-lived key in repository settings, for two private repositories
-    #   that are a gem and a website, neither of which is a service.
-    #
-    #   `site` is here for a reason worth stating, because pantry-23 got it
-    #   wrong first. `site` is `parlor` renamed (`7a44310 rename: this
-    #   repository is site, not parlor`) and was added to CAFAYE_REPOS on the
-    #   reasoning that a fork of a public template would be public. It is not:
-    #   `site/cafaye.yml` declares `visibility: private` in its own
-    #   `repository:` block, and an anonymous `git ls-remote
-    #   https://github.com/cafaye/site.git HEAD` is a 404. That would have taken
-    #   this job's clone step down under `set -euo pipefail`. **A manifest is
-    #   the record of its own visibility**, and the cheap way to be wrong about a
-    #   cafaye repository is to infer its visibility from its name.
-    #
-    #   FINDING, not acted on, because acting on it belongs to a packet that
-    #   does not own cafaye-rb: an anonymous `git ls-remote
-    #   https://github.com/cafaye/cafaye-rb.git HEAD` SUCCEEDED on 2026-10-02,
-    #   which says the repository reads without a credential and the PRIVATE
-    #   claim three files have repeated since pantry-03 no longer holds. Moving
-    #   the name to CAFAYE_REPOS would end a real coverage gap, and it is
-    #   deliberately not done here, because the two errors are not symmetric:
-    #   leaving it wrong keeps a gap that is at least written down, and moving
-    #   it wrong takes the drift job down on a 404. Confirm with
-    #   `gh repo view cafaye/cafaye-rb` and move it in the same commit.
-    #
-    # What it costs, stated here rather than left to be inferred from a green
-    # badge: `every_exclusion_reason_is_still_true` cannot check the
-    # `cafaye-rb` or `site` exclusion rows, because there is no checkout to
-    # read. Those rows' reasons are verified by a developer's run of the test
-    # with PANTRY_CAFAYE_ROOT pointed at a real workspace, and by nothing else.
-    # `tests/schema.rs` prints a SKIP for each saying exactly that, and
-    # `tests/ci.rs` keeps this list and registry/index.yml honest in both
-    # directions — so a repository that becomes readable is a red rather than a
-    # silent loss of coverage.
-    #
-    # A name belongs in this list only while the runner genuinely cannot clone
-    # it. It used to read "because it is private, or because it is not a
-    # repository yet", and the second clause is gone with its only member:
-    # pantry-23 found `cafaye-py` written, which is the sentence in
-    # `DECISIONS.md` D2 that said a fifth `blockedBy` — `planned` — would be
-    # needed for a thing that does not exist yet. It does not, so the value does
-    # not either, and D2 is RULED. And
-    # `an_unreadable_repository_is_neither_cloned_nor_registered` below is what
-    # makes removing a name from this list a decision rather than a forgetting.
-    env:
-      CAFAYE_REPOS: core caf cafaye-ts identity billing courier darkroom muse guard parlor kit docs cafaye-py
-      CAFAYE_UNREADABLE: cafaye-rb site
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: pantry
-          fetch-depth: 0
-
-      - name: check out the fleet
-        run: |
-          set -euo pipefail
-          # `read -a` rather than `for repo in $CAFAYE_REPOS`, because unquoted
-          # expansion splits on whitespace in bash and does not in zsh or fish:
-          # a guard that silently iterates one 90-character "repository name"
-          # is worse than no guard, and this file is read by more shells than
-          # the runner's.
-          read -r -a repos <<< "$CAFAYE_REPOS"
-          for repo in "${repos[@]}"; do
-            # NOT --depth 1, and the reason is the recorded-ref checks.
-            # `tests/recorded_copy.rs` verifies each `registry/services/<name>/`
-            # copy against the `recordedAt` commit in `registry/index.yml`, and
-            # `tests/schema.rs` verifies `schemas/` against the sha in
-            # `vendir.lock.yml`. `git show <sha>:<path>` against a shallow clone
-            # cannot reach a commit that is not the tip, so a `--depth 1` clone
-            # would make every one of those checks SKIP — naming the ref it could
-            # not read, which is honest, but which would mean CI verified nothing
-            # about any registry copy at all.
-            #
-            # The cost is a full history per repository, on a public
-            # repository, anonymously. That is a few MB each and it is the price
-            # of the gate checking copies rather than checking that a copy
-            # matches whatever was newest. `tests/ci.rs::
-            # the_drift_job_clones_deep_enough_to_reach_a_recorded_ref` fails if a
-            # shallow clone comes back.
-            git clone "https://github.com/cafaye/${repo}.git" "$repo"
-          done
-
-      # A clone that quietly did not happen is the failure this job cannot
-      # report, because its symptom is a workspace that is present and
-      # unreadable: `cafaye_root()` looks for exactly one file to decide a
-      # workspace exists, and every drift test SKIPs — green — when it is
-      # absent. So every checkout is checked for the two things the drift tests
-      # actually read: git metadata, and core's schema as the workspace marker.
-      # A guard that only covered core would let the other ten fail silently,
-      # and one that demanded a `cafaye.yml` would be wrong — `kit` is
-      # configuration and carries none, which is why it is in the exclusion
-      # record in the first place.
-      - name: prove the workspace is real
-        run: |
-          set -euo pipefail
-          read -r -a repos <<< "$CAFAYE_REPOS"
-          for repo in "${repos[@]}"; do
-            if [ ! -d "$repo/.git" ]; then
-              echo "::error::$repo cloned to a directory with no git metadata — the drift tests would skip it"
-              exit 1
-            fi
-          done
-          test -f core/schemas/cafaye.manifest.schema.json || {
-            echo "::error::core/schemas/cafaye.manifest.schema.json is missing, so cafaye_root() will not find this workspace and every drift test will SKIP"
-            exit 1
-          }
-
-      # `bin/prime` ends by running the platform CLI's own `contract lint` over
-      # this manifest and every registry entry, guarded on `../caf` being a
-      # checkout — and `caf` is on the list above, so that step RUNS here rather
-      # than skipping, which means the whole registry is validated by the
-      # platform's own CLI on every run. It needs a Go toolchain, and the runner
-      # image's is not a version this file can promise anything about: caf's
-      # go.mod says 1.25, and a runner shipping less would fail on a build
-      # rather than on a registry. `actions/setup-go@v7` with `stable` is the
-      # same action and the same default kit's reusable workflow uses,
-      # deliberately, so the two cannot drift apart. It runs after the clone
-      # because its cache key is `caf/go.sum`.
+      # `go-version-file: go.mod` rather than a literal version, and that is the
+      # point: the pin now lives in `go.mod` (which the compiler enforces) and in
+      # `mise.toml` (which the gate's first step checks against it), and a literal
+      # here would be a FOURTH copy for CI to disagree with. Two copies, one of
+      # them checked by `bin/prime-go` at startup.
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
-          cache-dependency-path: caf/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
-      # The whole gate, with the workspace reachable, so the drift tests run
-      # instead of skipping. The exit code is the last command's and nothing is
+      # PROVE THE DATABASE IS AVAILABLE BEFORE RUNNING ANYTHING AGAINST IT.
+      #
+      # `tests/rls.sh` finds its own PostgreSQL by looking in a list of well-known
+      # directories and then falling back to `pg_ctl` on PATH, and when it finds
+      # none it prints a counted skip and exits 0. That is the correct behaviour
+      # for a laptop and the wrong one for a badge, and the env vars above are
+      # what turn it into a red — but a red that arrives at the END of a two-minute
+      # run, naming a skip, is a worse report than one that arrives in four
+      # seconds naming the directory it looked in.
+      #
+      # So this step runs the harness's own discovery, in list mode, and fails
+      # here if it comes back empty. `--print-pg-bin` is the same code path
+      # `--serve` uses to choose, so a green here is a green there.
+      #
+      # THE TEST IS ON THE VALUE AND NOT ON THE EXIT STATUS, and that is a
+      # measured correction rather than a style. `--print-pg-bin` exits **0** when
+      # it finds nothing, printing `skip: …` on stderr and the resolved directory
+      # — or nothing at all — on stdout, because its contract is "report what I
+      # resolved, and a caller that cannot run still gets to say so". A first draft
+      # of this step branched on the exit status and would therefore have gone
+      # green on a runner with no PostgreSQL, printing an empty PANTRY_PG_BIN and
+      # letting the gate skip 96 checks behind a green badge. The empty-string test
+      # below is what actually holds the line.
+      #
+      # AND NOTHING IN THIS STEP MAY NAME THE GATE, which is a correction the
+      # self-test forced rather than a style. This step used to end its error
+      # message with `bin/prime would then be a green badge over 84 SQL checks`,
+      # and core reads a workflow by substring-matching the declared argv against
+      # every `run:` body — with a `./` prefix treated as optional. That message
+      # was inside a `run:` body, so it satisfied `gate.ci`'s reachability check
+      # on its own: `bin/gate-self-test`'s "a CI workflow whose gate step carries
+      # a different command" case went green over a workflow with no gate step in
+      # it. Deleting the gate step from CI would have been silent. It says "the
+      # gate" here, and every error message in this file is written the same way,
+      # because the cost of the next word is a checker that cannot see a deleted
+      # step.
+      - name: prove a PostgreSQL is available to the suite
+        run: |
+          set -euo pipefail
+          pgbin="$(./tests/rls.sh --print-pg-bin)"
+          if [ -z "$pgbin" ]; then
+            echo "::error::no PostgreSQL server binaries (pg_ctl, psql, initdb) on this" >&2
+            echo "::error::runner. tests/rls.sh would print a counted skip and exit 0," >&2
+            echo "::error::and the gate would then be a green badge over 84 SQL" >&2
+            echo "::error::checks and 12 Go gates that never ran. Install PostgreSQL" >&2
+            echo "::error::server binaries, or set PANTRY_PG_BIN." >&2
+            exit 1
+          fi
+          echo "postgres binaries: ${pgbin}"
+          echo "PANTRY_PG_BIN=${pgbin}" >> "$GITHUB_ENV"
+
+      # `caf` is cloned as a SIBLING of this checkout, which is where `bin/prime`
+      # looks for it (`../caf/go.mod`). That is what makes its last tier run for
+      # real instead of printing `skipped: ../caf is not a checkout here`: the
+      # platform CLI validates this repository's `cafaye.yml` and every entry under
+      # `registry/services` on every run, using the platform's own schema.
+      #
+      # NO CREDENTIAL. Every cafaye repository is public, so this is an anonymous
+      # HTTPS clone with no `secrets:` anywhere in this file.
+      - name: check out caf, for the manifest tier
+        run: git clone --depth 1 https://github.com/cafaye/caf.git ../caf
+
+      # THE GATE, and only the gate. The previous `build` job re-spelled four
+      # cargo steps as four separate `run:` lines — `cargo fmt --check`,
+      # `cargo build --all-targets`, `cargo clippy`, `cargo test` — instead of
+      # calling `bin/prime`. That was a real difference between the
+      # developer-facing command and the CI command, and it is why a step added to
+      # `bin/prime` was not run by CI and nothing noticed. This job runs the same
+      # file a developer runs. The exit code is the last command's and nothing is
       # piped, per PLAN.md §1.
       - name: prime
-        working-directory: pantry
-        env:
-          PANTRY_CAFAYE_ROOT: ${{ github.workspace }}
         run: ./bin/prime
+
+  # ---------------------------------------------------------------------
+  # WHAT THIS WORKFLOW NO LONGER DOES, and it is the honest cost of the packet
+  # that removed the Rust suite. Written here rather than left to be inferred
+  # from a green badge, which is where the last version of this file's job list
+  # went wrong.
+  #
+  # There WAS a second job, `workspace-drift`, and it existed for one reason: the
+  # Rust tests `tests/drift.rs`, `tests/recorded_copy.rs`, `tests/schema.rs` and
+  # `tests/ci.rs` verified `registry/` against LIVE sibling checkouts, and on a
+  # clone of pantry alone there was nothing to compare against, so the job cloned
+  # twelve repositories anonymously and pointed `PANTRY_CAFAYE_ROOT` at them.
+  #
+  # All four of those files were 146 Rust tests about the REGISTRY MANIFEST
+  # FORMAT and the vendored core schema pin. They are deleted with `src/`, because
+  # the thing they checked was the Rust service's manifest and the Rust service is
+  # gone. **Nothing in this repository now reads a sibling checkout** except
+  # `bin/prime`'s manifest tier, which needs `caf` and nothing else — and that is
+  # checked out above.
+  #
+  # So keeping that job would mean cloning twelve repositories to verify nothing:
+  # a slow, expensive green that says the fleet was checked when no code in this
+  # repository looked at it. That is the exact shape of the defect this packet
+  # exists to remove, and it is removed rather than preserved.
+  #
+  # WHAT IS THEREFORE NO LONGER CHECKED ANYWHERE, stated plainly:
+  #
+  #   1. That each `registry/services/<name>/cafaye.yml` is a verbatim copy of
+  #      that service's own manifest, and that each `recordedAt` commit still
+  #      exists. `tests/recorded_copy.rs` was the only check.
+  #   2. That `vendir.lock.yml`'s recorded core schema sha is still core's, and
+  #      that `schemas/` matches it. `tests/core_pin.rs` and `tests/schema.rs`
+  #      were the only checks.
+  #   3. That `registry/index.yml` curates nothing this repository cannot read,
+  #      and that its exclusion rows' reasons are still true. `tests/ci.rs` and
+  #      `tests/drift.rs` were the only checks, in both directions.
+  #   4. That `CAFAYE_UNREADABLE` is still exactly the set of repositories an
+  #      anonymous clone cannot fetch. Nothing checks it now.
+  #
+  # NONE OF THAT IS RESTORED BY THIS PACKET, and none of it should be restored in
+  # Rust. The honest reading is that registry drift has a real coverage gap, the
+  # gap is a consequence of deleting a suite rather than of anything breaking, and
+  # closing it means writing the checks in Go against the same inputs. That is
+  # owed work with a name, not a task smuggled into a cleanup — see
+  # REPORT-registry-norust-03.md and DECISIONS.md D33. A coverage gap that is
+  # written down is recoverable; one that is papered over with a job that clones
+  # repositories nobody reads is not.

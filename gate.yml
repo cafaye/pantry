@@ -1,86 +1,77 @@
 # gate.yml — how pantry is gated, declared rather than guessed.
 #
 # WHY THIS FILE IS HERE. The cafaye standard for declaring a gate lives in
-# `cafaye/core`: `schemas/gate.schema.json` is the format,
-# `harness/gate_check.py` is the checker, and `docs/gate.md` is the reasoning.
-# pantry is adopting it, not inventing it. The short version of why: across
-# fifteen repositories "run the gate" had five different spellings, and every one
-# of them was found by a human getting it wrong. A gate that is discovered by
-# failure is a gate that was never declared. pantry was one of the services with
-# no `gate.yml` at all, so a developer here could run `bin/prime`, see green, and
-# learn nothing about whether the gate could detect anything — replacing the gate
-# with `exit 0` would have left this repository green.
+# `cafaye/core`: `schemas/gate.schema.json` is the format, `harness/gate_check.py`
+# is the checker, and `docs/gate.md` is the reasoning. pantry is adopting it, not
+# inventing it. The short version of why: across fifteen repositories "run the
+# gate" had five different spellings, and every one of them was found by a human
+# getting it wrong. A gate that is discovered by failure is a gate that was never
+# declared. pantry was one of the services with no `gate.yml` at all, so a
+# developer here could run `bin/prime`, see green, and learn nothing about whether
+# the gate could detect anything — replacing the gate with `exit 0` would have
+# left this repository green.
 #
 # WHAT THE CHECKER PROVES ABOUT THIS FILE, AND WHAT IT DOES NOT. It proves the
-# command resolves, `bin/prime` exists and is executable, `mise run prime`
-# resolves to that same file, the CI workflow really invokes it, and — the part
-# that matters — that running it makes every line in `proof` below appear, with
-# the countable one at or above its floor. It does NOT prove the tests touched
-# what they claim to. A `gate.proof` is a line of output; "41 tests ran" is not
-# "41 tests hit the fleet". That is MD12's collect-then-run machinery, owed in
-# `caf`, and it is named in core's `harness/gate_findings.json` rather than
-# implied here.
+# command resolves, `bin/prime` exists and is executable, `mise run prime` resolves
+# to that same file, the CI workflow really invokes it, and — the part that matters
+# — that running it makes every line in `proof` below appear, with the countable
+# ones at or above their floors. It does NOT prove the tests touched what they
+# claim to. A `gate.proof` is a line of output; "30 tests ran" is not "30 tests hit
+# Postgres". That is MD12's collect-then-run machinery, owed in `caf`, and it is
+# named in core's `harness/gate_findings.json` rather than implied here.
 #
 # MEASURED, NOT GUESSED. Every number and every pattern below came from running
-# this repository's gate and reading its output, on pantry at 92ca41e, on a
-# saturated 8-core arm64 host (rustc 1.95.0, cargo 1.95.0, mise 2026.8.4, Go
-# 1.26.1), with the cafaye workspace reachable at
-# `/Users/kaka/Code/any/moon/cafaye`:
+# this repository's gate and reading its output on pantry at b15e0a0, on an arm64
+# host with the cafaye workspace reachable at `/Users/kaka/Code/any/moon/cafaye`:
 #
 #   * the developer-facing command is `bin/prime`, and `mise.toml` resolves
 #     `[tasks.prime]` to `./bin/prime` — verified by reading the task, not by
 #     trusting the job name.
-#   * CI runs `./bin/prime` in ONE job (the `workspace-drift` job at ci.yml:266)
-#     and NOT in the other (`build`, which re-spells the four cargo steps
-#     individually — see the `ci` block, which is where that difference is
-#     recorded rather than papered over).
-#   * `bin/prime` prints one `test result: ok. N passed; …` line per TEST
-#     BINARY, and the checker reads the LAST match. Measured on a real run:
-#     14 such lines, and the last is always `Doc-tests pantry` reporting
-#     `0 passed` — this crate is `publish = false` with no doctests and cargo
-#     runs the doc-test block last. A floor written the obvious way therefore
-#     reads **0 on every run in this repository**, and any positive floor under
-#     it is a gate that can never go green. The leading `[1-9]` on the `suite`
-#     proof is not a weakening, it is the correction, and it is the same
-#     correction darkroom's declaration made for the same measured reason.
-#   * the pass counts, per binary, on that run: 0 (lib) + 0 (bin) + 24 api +
-#     7 ci + 9 contract + 7 core_pin + 12 drift + 13 filters + 7 kind +
-#     13 manifest + 11 pin + 4 recorded_copy + 7 schema + 0 doc-tests = **114**.
-#
-#     **THAT TALLY WAS STALE AND WAS RE-MEASURED, not incremented.** Adding
-#     `scoping.rs` (14) and `entry_point_isolation.rs` (11) and 3 drift tests
-#     took the real total to **146**, measured on a run with the cafaye
-#     workspace reachable. The `total` floor below stayed at 112 and needed no
-#     change, because it is a DECREASE-detector and the suite grew — which is
-#     the reason that floor's margin argument still holds. `bin/prime`'s
-#     `across N test binaries` was the number that was actually WRONG: it said
-#     11 while `tests/` held 13 files, and nothing could catch it because the
-#     `total` proof matches that line's shape rather than its numbers. It is
-#     counted from `tests/*.rs` now.
-#   * 16 test binaries total — 13 integration-test files, plus the lib and bin
-#     unittest blocks and the `Doc-tests pantry` block. The `targets` proof below
-#     is a different kind of check again — see its comment.
+#   * `bin/prime` has THREE tiers and one language. `bin/prime-go` runs the Go
+#     service's own checks (gofmt, build, vet, test, and a generated-code check);
+#     `tests/rls.sh` runs 84 SQL checks against a scratch PostgreSQL with
+#     `migrations/` applied and `tests/seed.sql` loaded; the last tier shells into
+#     `../caf` and runs `caf contract lint` over this repository's own `cafaye.yml`
+#     and every entry in `registry/services`. There is no Rust tier and no second
+#     language; see REPORT-registry-norust-03.md for what went with it.
 #   * the step banners are all `==> …`, ANSI-wrapped by `step()`. core strips
 #     terminal escapes before matching, so the patterns are written against the
 #     line a terminal SHOWS and carry no escape tolerance. See the `no-escapes`
-#     case in `bin/gate-self-test`, which fails if any `match:` here ever names
-#     a terminal escape again.
-#   * a warm gate is ~4m17s wall clock on this host, and that number is
-#     dominated by `cargo build --all-targets` + `cargo clippy --all-targets`
-#     on a machine already at load average >100. A cold checkout additionally
-#     fetches and compiles ~110 crates from crates.io.
+#     case in `bin/gate-self-test`, which fails if any `match:` here ever names a
+#     terminal escape again.
 #
-#   * THE MEASUREMENT THAT CHANGED THIS FILE, and it is the reason the packet
-#     was worth doing. The gate was also run from a real `git clone` of this
-#     repository in a directory with no cafaye sibling anywhere up the tree —
-#     which is what a pantry-only clone is, and what CI's `build` job sees. It
-#     **exited 0 reporting 114 passed, 0 failed, 0 ignored**, with the entire
-#     drift tier skipped, and printed no SKIP line anywhere: libtest counts an
-#     early `return` from a test body as a PASS, and it captures a passing
-#     test's stderr and discards it. So the skip was invisible in the count AND
-#     invisible in the output. `bin/prime` now runs with `--nocapture` and
-#     prints `skips: N` on every run. See the `skip-count` proof and the closing
-#     block of the proof list for the full account.
+#   * THE COUNTED LINES, and both of them are printed by the gate rather than
+#     parsed out of a test runner's per-package output. Measured, with a real
+#     PostgreSQL 18.4 on this host:
+#
+#       suite: 30 passed, 0 failed
+#       packages: 2 with tests
+#       rls: 84 of 84 checks passed, 0 tier skipped
+#
+#     and measured again on a machine with no PostgreSQL at all, which is the
+#     measurement that decided what the floors below could be:
+#
+#       suite: 20 passed, 0 failed
+#       rls: 0 of 0 checks passed, 1 tier skipped
+#       data path: 12 check(s) DID NOT RUN against a database (counted, and named above)
+#
+#     Read the second set beside the first. `suite` drops by ten and `rls` drops to
+#     zero, so a floor on either one is a floor that FIRE ON A MACHINE THAT
+#     VERIFIED NOTHING. That is deliberate, and it is the correction this file was
+#     rewritten to make: the declaration it replaces carried a `skips: 0` proof
+#     whose `minimum: 0` was mathematically incapable of ever failing.
+#
+#   * WHY TEN AND NOT TWELVE, since both numbers are above and they disagree. The
+#     Go tier counts `gates entered` at twelve and the suite loses ten `--- PASS:`
+#     lines, because `dbGate()` is called twice by the tests that need a second,
+#     unseeded cluster — one test, two gates. `internal/pantrydb`'s own summary
+#     line is the count of GATES and `suite:` is the count of TESTS; they are
+#     different quantities and neither is wrong.
+#
+#   * `go test` marks a package with no test files with `?  … [no test files]`, not
+#     `ok`, which is what makes `packages: 2 with tests` mean what it says. Five of
+#     the seven packages in this module have no test files; the count is of the two
+#     that do.
 version: 1
 name: pantry
 
@@ -90,554 +81,328 @@ gate:
   # `… | tail -45; echo "PRIME EXIT=$?"` under zsh, where `$?` is tail's and
   # tail is always zero.
   #
-  # `bin/prime` and NOT `mise run prime`, and that is a measured claim rather
-  # than a taste. `bin/prime` runs `cargo fmt`, `cargo build`, `cargo clippy`,
-  # `cargo test` and (when `../caf` is a checkout) `go run ./cmd/caf contract
-  # lint`. Its only hard requirement is a Rust toolchain on PATH, and it runs
-  # correctly under a bare PATH with mise absent. `mise.toml` also pins
-  # `rust = "1.95"`, so under a configured shell the two spellings run the same
-  # toolchain; declaring `mise run prime` would be declaring a command that
-  # cannot run at all without mise installed. Both are one gate here, and
-  # `miseTask` below is what lets the checker cross-check that the two agree.
+  # `bin/prime` and NOT `mise run prime`, and that is a measured claim rather than
+  # a taste. `bin/prime` runs `bin/prime-go`, then `tests/rls.sh`, then (when
+  # `../caf` is a checkout) `go run ./cmd/caf contract lint`. Its only hard
+  # requirement is a Go toolchain on PATH, and it runs correctly under a bare PATH
+  # with mise absent. `mise.toml` pins `go = "1.26.1"`, so under a configured shell
+  # the two spellings run the same toolchain; declaring `mise run prime` would be
+  # declaring a command that cannot run at all without mise installed. Both are one
+  # gate here, and `miseTask` below is what lets the checker cross-check that the
+  # two agree.
   command: [bin/prime]
   # The fleet's spelling, cross-checked against `entrypoint`: `mise.toml` says
-  # `[tasks.prime] run = "./bin/prime"`, so the task and this file cannot drift
-  # onto two different gates without `gate.task-unresolvable`.
+  # `[tasks.prime] run = "./bin/prime"`, so the task and this file cannot drift onto
+  # two different gates without `gate.task-unresolvable`.
   miseTask: prime
   # The file behind the command, and the file the mise task must resolve to.
   entrypoint: bin/prime
-  # Deliberately generous, for the same reason every other adopter's is. The
-  # warm run measured here is ~4m17s on a host with load average above 100; a
-  # cold checkout has to fetch and compile ~110 crates first and `bin/prime`
-  # compiles the crate twice more (once for `cargo build --all-targets`, once
-  # for `cargo clippy --all-targets`). A budget tight enough to be a bug
-  # detector is tight enough to be a flake generator on somebody's first run,
-  # and a timeout that fires on a cold clone reports a red that is not the
-  # suite's answer. This number exists to stop a hung gate, not to measure one.
+  # Deliberately generous, for the same reason every other adopter's is. A warm
+  # run is ~20s on this host; the first one on a cold checkout also fetches the
+  # module graph named in `go.sum`, and the RLS tier's 84 checks stand a scratch
+  # cluster up and tear it down. A budget tight enough to be a bug detector is
+  # tight enough to be a flake generator on somebody's first run, and a timeout
+  # that fires on a cold clone reports a red that is not the suite's answer. This
+  # number exists to stop a hung gate, not to measure one.
   timeoutSeconds: 3600
   proof:
     # ---------------------------------------------------------------------
-    # THE TOOLCHAIN PROOF, and the first one, because `bin/prime` asserts the
+    # THE TOOLCHAIN PROOF, and the first one, because `bin/prime-go` asserts the
     # pin before it does anything else.
     #
     # The banner carries no `minimum` — it reports no countable number, and the
     # schema allows a proof without one for exactly that case. What it asserts is
-    # that the version check RAN and passed, which is the thing a bare `cargo
-    # fmt --check` script cannot say. If somebody deletes the check, this line
+    # that the version check RAN and passed, which is the thing a bare
+    # `go build ./...` script cannot say. If somebody deletes the check, this line
     # is absent and it is `gate.proof-missing`, a failure.
     #
-    # The pattern is deliberately loose about the patch: `1.95.0` and `1.95.1`
-    # both satisfy the pin (the second is a security release of the same
-    # toolchain, and `mise install` resolves to it), so matching `1\.95\.[0-9]+`
-    # rather than the exact string is correct. What it must NOT match is a
-    # different minor, and that half is enforced in `bin/prime` itself, which
-    # exits 127 rather than printing a banner at all.
+    # The pattern is deliberately loose about the patch: `1.26.1` and `1.26.2` both
+    # satisfy the pin (the second would be a security release of the same
+    # toolchain), so matching `1\.26\.[0-9]+` rather than the exact string is
+    # correct. What it must NOT match is a different minor, and that half is
+    # enforced in `bin/prime-go` itself, which exits 127 rather than printing a
+    # banner at all.
     - id: toolchain
-      match: '^==> toolchain: rustc 1\.95\.[0-9]+ \(mise\.toml pins 1\.95\)$'
+      match: '^==> toolchain: go 1\.26\.[0-9]+ \(mise\.toml pins 1\.26\.1\)$'
     # ---------------------------------------------------------------------
-    # The load-bearing one, and the only line here that cannot appear unless
-    # cargo ran the suite to the end of every binary in it.
+    # THE GO SUITE, counted by the gate rather than parsed out of `go test`.
     #
-    # `gate.proof-missing` is a FAILURE, so a gate that exits zero without
-    # emitting this is a red rather than a green. That is the defect the format
-    # exists to catch: a script whose last line became `exit 0` satisfies the
-    # exit code and nothing else.
+    # `suite:` is computed in `bin/prime-go` from the same log it just read, by
+    # counting `--- PASS:` lines. That is not decoration and not a convenience: the
+    # declaration this file replaces read its count out of cargo's per-binary
+    # `test result:` lines, took the LAST match, and therefore read **0 on every
+    # run in this repository** — cargo always runs `Doc-tests pantry` last, and
+    # that block is empty. The leading `[0-9]+` below would have been a floor that
+    # could never be satisfied; a gate that can never go green is not a strict
+    # gate, it is a broken one.
+    #
+    # Both halves are pinned and that is load-bearing: `0 failed` is LITERAL, not
+    # `[0-9]+`, so a run that failed cannot satisfy this proof by printing a big
+    # number next to a red. A skipped test is neither — `go test` prints `--- SKIP:`
+    # and does not count it here — which is why this floor ALSO fires on a machine
+    # with no PostgreSQL (30 measured, 20 measured there). That is the property,
+    # not a bug in it; see the `data-path` proof for what reads the skip case in
+    # words.
+    #
+    # The count is of PASS lines and not of tests that did not fail: a red run
+    # still prints every passing test in the failing packages. Read this WITH
+    # `bin/prime`'s exit status and the `--- FAIL:` lines, which are what say the
+    # gate is red.
     - id: suite
-      # Measured against a real run's full output, and checked against every one
-      # of the fourteen shapes this gate prints. Two properties are load-bearing
-      # and both were got wrong first:
+      match: '^suite: ([0-9]+) passed, 0 failed$'
+      # 30 against a measured 30, and the margin is ZERO on purpose.
       #
-      #   1. `[1-9]` — the leading digit may not be `0`. `cargo test` prints one
-      #      `test result:` line per binary and the checker reads the LAST, which
-      #      is always `Doc-tests pantry` at `0 passed`. Without this the floor
-      #      reads zero forever.
-      #   2. `0 failed; 0 ignored;` — literal, not `[0-9]+`. Both halves are
-      #      pinned so a run that failed, or that ignored tests, cannot satisfy
-      #      this proof by printing a big number next to a red. This repository
-      #      currently has no `#[ignore]` anywhere (measured: `grep -c` for
-      #      `ignore` over `tests/` finds only identifiers and prose), so `0
-      #      ignored` is the true statement today and a future `#[ignore]` is a
-      #      change to this declaration in the same commit.
+      # The floor this replaces was 144 against a measured 146, and its own
+      # comment recorded the rule that governs the number: the margin must be
+      # SMALLER THAN THE SMALLEST TEST FILE, or a file small enough to fit inside
+      # the margin can be deleted and the run stays green. That is guard's
+      # near-miss reproduced in pantry, and it was caught by measuring file sizes
+      # rather than by reasoning about them.
       #
-      # The test count is a CAPTURING group and every other group would be
-      # `gate.proof-invalid`; there are no other groups here, and the
-      # `two-capture-groups` case in `bin/gate-self-test` asserts the rule
-      # rather than assuming it holds.
+      # Here the smallest deletable unit is a single test, so the margin that
+      # catches every deletion is zero. The cost is that a deliberate test
+      # REMOVAL is a red until this number is lowered in the same commit — which
+      # is the correct cost. A decrease-detector whose floor can be satisfied by a
+      # loss has stopped detecting, and adding tests is exactly what opens that
+      # margin, which is why a floor that was right on the day it was written goes
+      # wrong without anybody editing it.
       #
-      # Deliberately UNANCHORED at the start. `ci.yml` sets
-      # `CARGO_TERM_COLOR: always`, so a `^` anchor would make this proof depend
-      # on whether colour was forced — core strips ANSI (MD17) so an anchored
-      # pattern would still match, but a proof whose behaviour changes with a
-      # runner flag is a proof that is testing the runner. It IS anchored at the
-      # end, which is the half that matters: `0 measured; 0 filtered out;` is
-      # asserted, so a filtered or ignored test cannot be read as a pass. The
-      # trailing `finished in …` is deliberately NOT in the pattern: libtest has
-      # changed that field before, and a proof that breaks on an unrelated
-      # formatting change is a proof that gets deleted.
-      match: 'test result: ok\. ([1-9][0-9]*) passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;'
-      # 7 against a measured 7 for `tests/schema.rs` — the LAST matching line,
-      # which is what `minimum` reads. Read this one as "the last test binary
-      # cargo ran actually ran something, and reported at least the floor", which
-      # is exactly the claim the schema makes about a floor, and no more.
-      #
-      # It is deliberately a small number on a small repository, and the `total`
-      # proof below is the one that carries the suite-wide decrease-detector. The
-      # margin here is zero because the value is not a budget for the suite at
-      # all — putting a margin on it would be pretending it is something it is
-      # not. `core`'s `test_the_gate_floor_is_not_below_the_suite_core_claims`
-      # ratchet, which forces a floor up as tests are added, is OWED here and is
-      # named in REPORT-pantry-08-gate.md rather than quietly skipped.
-      #
-      # READ IT AS A FLOOR ON ONE BINARY, NOT ON THE SUITE. This is the honest
-      # reading of the format here and it is worth being blunt about, because
-      # "7" is not the number a reader expects and the `total` proof below is
-      # the one that carries the suite-wide claim: `minimum` comes from the LAST
-      # matching line, which is `tests/schema.rs` at 7. What that buys is
-      # exactly the claim the schema makes — "the last thing cargo ran actually
-      # ran something, and reported more than the floor" — and no more.
-      minimum: 7
+      # RAISING OR LOWERING THIS NUMBER BELONGS IN THE SAME COMMIT AS THE TEST
+      # CHANGE IT ACCOUNTS FOR, in both directions.
+      minimum: 30
     # ---------------------------------------------------------------------
-    # The suite total `bin/prime` now prints from the same log it just read.
+    # THE RLS TIER, which the declaration this file replaces said NOTHING about.
     #
-    # This is a SECOND counted floor and it is the one that is immune to the
-    # `cargo test` per-binary problem above: it sums every `test result: ok.`
-    # line rather than reading the last, so it moves when ANY test is lost
-    # rather than when the alphabetically-last file is. `targets` is the third.
-    # Three numeric floors for one suite is not decoration — each measures a
-    # different failure, and `bin/gate-self-test` breaks each one separately.
-    - id: total
-      match: '^suite: ([0-9]+) passed across [0-9]+ test binaries$'
-      # 112 against a measured 114: a DECREASE-DETECTOR with a margin of two, and
-      # the margin is two rather than the five the `suite` floor above uses for a
-      # MEASURED reason that the first draft of this file got wrong.
+    # That is the largest gap the rewrite closes, and it is worth naming plainly:
+    # `tests/rls.sh` ran 84 checks on every `./bin/prime` and not one of them was
+    # in `proof`. A tier can be deleted outright — `rm tests/rls.sh` — and this
+    # declaration would have stayed green, because everything it asserted lived in
+    # a language that is no longer here.
+    #
+    # `rls:` is printed by `bin/prime` from the suite's own `checks:` line. The
+    # second and third numbers are matched loosely on purpose: the floor is the
+    # first one, and pinning `0 tier skipped` into the PATTERN would turn a machine
+    # with no PostgreSQL into `gate.proof-missing` (a red that names a missing
+    # string) instead of `gate.floor` (a red that names the number). The floor is
+    # the better-shaped failure and it reads 0 on that machine.
+    - id: rls
+      match: '^rls: ([0-9]+) of [0-9]+ checks passed, [0-9]+ tier skipped$'
+      # 84 against a measured 84: 84 run, 84 passed, 0 failed, 0 skipped, on
+      # PostgreSQL 18.4. Margin zero, for the same reason `suite` has one.
       #
-      # **Raised 112 -> 144, and the reason is that leaving it was WRONG — it was
-      # caught by `bin/gate-self-test`, which is the whole reason that script
-      # exists.** An earlier draft of this packet argued the floor should stay at
-      # 112 on the grounds that it is a decrease-detector and a margin is a
-      # statement about how far the count may fall. That reasoning was correct
-      # about the DIRECTION and wrong about the CONSEQUENCE: the margin has to be
-      # smaller than the smallest test file, and "146 - 4" is a 4-test file
-      # falling from 146 to 142 against a floor of 112 — which SATISFIES it. The
-      # detector had stopped detecting, by 30 tests, and nothing said so.
-      #
-      # This is guard's near-miss reproduced in a second direction. That one was a
-      # margin of five hiding a four-test file; this one is a margin of 34 hiding
-      # the same file, and it was introduced by *adding tests*, which is why it
-      # looked like the safe direction. "Safe" is the word that should make a
-      # reader suspicious of a floor.
-      #
-      # 144 against a measured 146: a margin of two, unchanged in kind, and
-      # `bin/gate-self-test` asserts both ends of it — deleting
-      # `tests/recorded_copy.rs` (4) and `tests/kind.rs` (7) are both `gate.floor`
-      # again, re-run after this change rather than argued about.
-      #
-      # This floor is what catches a deleted test FILE, since the format cannot
-      # express a floor on the file count itself (see `targets` for the two
-      # attempts and what the checker said to each). For that job the floor has
-      # to be tight: the margin must be SMALLER THAN THE SMALLEST TEST FILE IN
-      # `tests/`, or the smallest file can be deleted and the run stays green.
-      #
-      # Measured: `tests/recorded_copy.rs` holds 4 tests, and the other ten hold
-      # 7 or more. A margin of 5 — the number guard, muse and courier use, copied
-      # here first — meant deleting `recorded_copy.rs` took the total from 114 to
-      # 110 against a floor of 110, which SATISFIES the floor. A four-test file
-      # was invisible. That is guard's near-miss reproduced, and it was caught by
-      # measuring the file sizes rather than by reasoning about them.
-      #
-      # A margin of two leaves headroom for the consolidation a growing
-      # repository does, and still trips on the smallest file: 146 - 4 = 142,
-      # below 144. **Raising this number is a deliberate act and belongs in the
-      # same commit as the test it accounts for** — and, on the evidence above, it
-      # belongs in the same commit as any commit that ADDS tests, because adding
-      # tests is what opens the margin. The line above that says "raising this
-      # number is deliberate" is not a formality: this number is wrong again
-      # within about thirty tests, silently.
-      minimum: 144
+      # `tests/rls.sh` counts a skipped CHECK as neither a pass nor a fail, so
+      # this number drops when a check stands down rather than when one fails —
+      # which is the direction a floor wants to catch.
+      minimum: 84
     # ---------------------------------------------------------------------
-    # The structural detector, and the one proof here that is immune to the
-    # environment-gated tier. `Running tests/<name>.rs` is printed once per
-    # integration-test binary, so it reads 11 whatever the workspace does.
+    # THE DATA PATH, in words, and the proof that replaces a floor of zero.
     #
-    # This is guard's `files` floor, for guard's measured reason. Deleting a
-    # test file takes the pass count down by only that file's tests; if the file
-    # is small enough, the `suite` floor above does not notice, because it reads
-    # the LAST line and not the total. This is the floor that catches it. Two
-    # numeric floors is not redundancy here — it is what makes a deletion of any
-    # size detectable, which one floor cannot promise.
-    - id: targets
-      # NO capture group, and that is not an oversight — see the long comment
-      # below this pattern. A `minimum` on a group-less pattern is
-      # `gate.proof-invalid`, so this proof is a PRESENCE proof and the floor on
-      # the test-file count is carried by the `total` proof instead. The
-      # `floor-with-two-groups` case in `bin/gate-self-test` asserts the
-      # single-group rule where a floor actually exists.
-      #
-      # **The path is deliberately NOT matched, and that is a correction rather
-      # than a looseness.** The first draft of this line ended
-      # `\(target/debug/deps/` — copied from the shape of other adopters' `files`
-      # proofs — and it matches NOTHING here, for a measured reason:
-      # `gate_check.py` runs the gate with whatever `CARGO_TARGET_DIR` the
-      # environment carries, and both `bin/gate-self-test` and any CI runner
-      # that sets one put a different absolute path there. That draft would have
-      # made this proof `gate.proof-missing` on every run except the one it was
-      # written on, which is the worst possible failure for a proof: a red that
-      # is always red teaches a reader to ignore it.
-      #
-      # What is left is the part that carries the meaning — `Running tests/`,
-      # the `.rs` filename, and cargo's parenthesised path — anchored at the
-      # start so it cannot match `Running unittests src/lib.rs`, which is
-      # always 0 and is not a test file at all.
-      match: '^ *Running tests/\S+\.rs \(.*\)$'
-      # 11, exactly, and not a rounded number. There is no margin here and that
-      # is a DIFFERENT rule from the one above, for a measured reason: a file
-      # count does not move when a test is added, so the margin that buys
-      # headroom on `suite` is pure loss here — and that headroom is precisely
-      # what let a deletion through the other floor in guard's declaration.
-      #
-      # **THIS PROOF HAS NO `minimum` AND SO THAT NUMBER IS NOW HISTORICAL, not
-      # a threshold.** It counted 11 integration-test binaries when this file
-      # was written; `tests/` holds 13, and `scoping.rs` and
-      # `entry_point_isolation.rs` arrived without updating the sentence below.
-      # That is harmless *here* — a presence proof with no floor cannot be
-      # falsified by a stale count, which is the same accident that makes it
-      # useless — and it is exactly the accident `bin/prime`'s `across N test
-      # binaries` line had, where the number WAS printed and WAS wrong. That
-      # line is counted from `tests/*.rs` now; this sentence is kept because the
-      # reasoning below about the lib/bin/doc-test blocks is still the reason
-      # this proof is a presence proof.
-      #
-      # 11 WAS the number of integration-test binaries in `tests/`: api, ci,
-      # contract, core_pin, drift, filters, kind, manifest, pin, recorded_copy,
-      # schema. It is deliberately NOT the lib and bin unittests blocks and the
-      # `Doc-tests pantry` block — three more `test result:` lines — because
-      # counting them would make this move when nothing about the test files
-      # moved.
-      #
-      # NO `minimum`, and the reason is the long comment above: a floor on this
-      # line is not expressible, because the line carries no count and the
-      # checker reads floors out of the output. Leaving a `minimum` here anyway
-      # is `gate.proof-invalid` — and that is exactly how it was found. The
-      # declaration's `proving control` in `bin/gate-self-test` runs the real
-      # gate against this file, so a proof that cannot be evaluated fails the
-      # control rather than sitting green until somebody ran the gate by hand.
+    # **The declaration this file replaces carried `skips: 0` with
+    # `minimum: 0`, and that proof could not fail.** A `minimum` is a LOWER bound,
+    # the value it read was 0, and no run of this gate has ever produced a
+    # negative number of skips. Its comment said so at length and then shipped the
+    # floor anyway, which is the shape of a check that documents its own uselessness
+    # and stays in the file.
     #
-    # **AND THIS PROOF IS A PRESENCE PROOF, NOT A FLOOR — and the schema's
-    # `maxItems` is the reason, not a preference.**
+    # This proof is the same claim with the failure direction reversed: it matches
+    # the line `bin/prime-go` prints when every database-backed gate ENTERED, and
+    # NOT the line it prints when some did not. A skip is therefore
+    # `gate.proof-missing` — a failure — rather than a number a human has to
+    # notice. Measured on this host with PostgreSQL 18.4 the line reads:
     #
-    # What this file wanted was a floor on the NUMBER OF TEST FILES, which is
-    # guard's `files` proof and is the detector that catches a deletion too
-    # small to move the suite count. Two attempts at expressing it here, and
-    # both were the checker refusing, which is the check working on the
-    # declaration that declares the checks:
+    #   data path: every check ran against a real PostgreSQL (0 skipped)
     #
-    #   1. A pattern with no capture group and a `minimum`. `gate.proof-invalid`
-    #      — "its pattern has 0 capture group(s); a floor is read from exactly
-    #      one". Right: `minimum` is read from group 1, and there was no group.
-    #   2. A pattern capturing the FILENAME, with a `minimum`. Also
-    #      `gate.proof-invalid`, and for a reason the schema does not spell out
-    #      in prose: the checker collects only matches whose group 1 `.isdigit()`,
-    #      finds none in `tests/kind.rs`, and reports "sets a minimum but its
-    #      capture group is not a number". So a file-name capture is NOT a way to
-    #      smuggle a count past a floor — it is refused precisely because there
-    #      is no number in it.
+    # and with `PANTRY_PG_BIN` pointed at a directory holding no server binaries:
     #
-    # So the floor on test-file count is **not expressible in this format**,
-    # because the format reads floors out of the OUTPUT and the output does not
-    # contain that number. What cargo prints is one `Running tests/<file>` line
-    # per file, with no total anywhere. This is recorded rather than papered
-    # over with a pattern that looks like it works, and the honest consequence
-    # is stated: **deleting a whole test file is caught by the `total` floor
-    # above, which drops by that file's test count, and NOT by this proof.**
+    #   data path: 12 check(s) DID NOT RUN against a database (counted, and named above)
     #
-    # `tests/kind.rs` holds 7 tests, so deleting it takes `total` from 114 to
-    # 107 against a floor of 110 — red. A file with fewer tests than the margin
-    # would not be caught by `total` either, and that residual hole is named in
-    # REPORT-pantry-08-gate.md rather than hidden. The fix, when the format
-    # grows an answer for it, is one line of counting in `bin/prime` and one
-    # `files:` proof — not a cleverer regex.
+    # THE CONSEQUENCE, stated here because it changes who can run this gate: **a
+    # machine with no PostgreSQL is red.** That is a change from the behaviour the
+    # previous declaration described, and it is the intended one. `bin/prime` still
+    # exits 0 there, because the SCRIPT's contract is "counted skips are legitimate,
+    # and `PANTRY_DB_REQUIRED=1` is how a caller insists" — a developer without a
+    # database can still run the gate and read what stood down. This declaration is
+    # stricter on purpose: CI is the thing that must not be green over a database
+    # that was never stood up, and the workflow's `build` job now sets
+    # `PANTRY_DB_REQUIRED=1` and `PANTRY_RLS_REQUIRED=1` and carries a postgres
+    # service so that the strictness costs CI nothing.
     #
-    # So this proof is kept as a PRESENCE proof, with no `minimum`: it asserts
-    # the suite still builds and launches integration-test binaries at all, and
-    # `bin/gate-self-test` asserts the `total` floor catches the deletion. That
-    # pairing is measured, in the `test-file-deleted` case, which deletes
-    # `tests/kind.rs` and asserts `gate.floor`.
-    # ---------------------------------------------------------------------
-    # THE SKIP COUNT, and the proof that exists because of a measured defect
-    # rather than out of caution.
-    #
-    # **In this suite a skip is a `return`, not an `#[ignore]`, and libtest
-    # scores an early return as a PASS.** Every environment-gated tier —
-    # drift, schema, core-pin, recorded-copy — prints `SKIP …` on stderr and
-    # returns, so on a machine with no cafaye workspace the run reports the
-    # SAME `114 passed; 0 failed; 0 ignored` as a run that compared every
-    # registry copy against the real services. Worse, libtest *captures* a
-    # passing test's output and discards it, so the SKIP lines did not reach the
-    # terminal either: `bin/prime` printed a clean green over a suite that had
-    # verified nothing about the fleet. Both halves of that were measured, on a
-    # real clone with no cafaye sibling anywhere up the tree — see
-    # REPORT-pantry-08-gate.md.
-    #
-    # So `bin/prime` now runs the suite with `--nocapture` and prints this line
-    # itself, computed from the log by counting lines that begin `SKIP `. It is
-    # a LOWER bound, which is the honest direction for the property that
-    # matters: the failure is the skip count going UP, and a lower bound cannot
-    # catch an increase — so the value of this proof is not the number, it is
-    # that the gate is now obliged to SAY the number on every run. Deleting the
-    # `--nocapture` and the count together removes this line, which is
-    # `gate.proof-missing`, a failure.
-    - id: skip-count
-      match: '^skips: ([0-9]+)'
-      # 0, and that is a real measurement rather than a hope: on a run with the
-      # cafaye workspace reachable, no tier skips and the gate prints
-      # `skips: 0 — every tier ran`. It is deliberately NOT higher than 0.
-      # Raising it would be the exact defect this packet exists to remove — a
-      # floor that turns "the drift tier stood down" into a green.
-      minimum: 0
+    # `minimum` is deliberately absent. The line carries no count on the success
+    # branch, and the schema reads a floor out of exactly one capture group; adding
+    # one would make this `gate.proof-invalid`. The claim is PRESENCE, and presence
+    # is the whole of it.
+    - id: data-path
+      match: '^data path: every check ran against a real PostgreSQL \(0 skipped\)$'
     # ---------------------------------------------------------------------
     # The step markers. Three of them, no `minimum`, so all they assert is that
-    # the banner was printed. They are here because `bin/prime` can exit 0
-    # having done less than it appears to, and each of these is a way that
-    # happens.
+    # the banner was printed. They are here because `bin/prime` can exit 0 having
+    # done less than it appears to, and each of these is a way that happens.
     #
-    # **The `fmt` banner was cut to fit the schema's cap of eight proofs, and
-    # that is a real constraint rather than a preference.** The first draft of
-    # this file declared nine — `toolchain`, `suite`, `total`, `targets`,
-    # `skip-count`, `fmt`, `clippy`, `lint`, `ok` — and the checker refused it
-    # with `gate.schema: gate/proof: minItems 1, maxItems 8`. The schema working
-    # on the declaration that declares the checks, which is the whole point of
-    # having a checker.
+    # **TWO BANNERS ARE ABSENT AND THE CAP OF EIGHT IS THE REASON**, which is a
+    # real constraint rather than a preference — the checker refused a ninth
+    # declaration with `gate.schema: gate/proof: minItems 1, maxItems 8`, and the
+    # schema working on the declaration that declares the checks is the whole point
+    # of having a checker.
     #
-    # `fmt` went rather than `clippy` or `lint`, and the reason is that it is the
-    # one whose failure mode is already covered: `cargo fmt --check` is a
-    # formatting check, so a repository that stopped being formatted is a
-    # repository whose diff is ugly, and `cargo clippy -- -D warnings` failing is
-    # `gate.nonzero` either way. A missing `clippy` step is a gate that quietly
-    # stopped linting; a missing `fmt` step is a gate that stopped tidying. If a
-    # ninth proof is ever needed, `fmt` is the one to restore and the honest way
-    # to buy the room is a `maxItems` bump in core's schema — a core change, and
-    # therefore not this packet's call. REPORT-pantry-08-gate.md records it.
-    - id: clippy
-      # THE ONE WORTH ITS PLACE. `cargo clippy --all-targets -- -D warnings` is
-      # the step that turns a lint into a red, and a gate that quietly stopped
-      # linting would still be green — the script's own header says every step
-      # is load-bearing, and this is the only thing that would notice one
-      # going missing. Deleting the step removes the banner with it.
-      match: '^==> cargo clippy -D warnings$'
+    # `gofmt` went rather than any of the three above. `gofmt -l` is a formatting
+    # check, so a repository that stopped being formatted is a repository whose
+    # diff is ugly; `go vet ./...` failing is `gate.nonzero` either way. A missing
+    # `vet` step is a gate that quietly stopped linting; a missing `gofmt` step is
+    # a gate that stopped tidying. This is the same trade the previous version of
+    # this file made when it cut `fmt` to keep `clippy`, and it is recorded here
+    # rather than left to look like an oversight.
+    #
+    # `go test ./...` and `packages:` went for a different and better reason: the
+    # `suite` floor above counts the output of that very step, so a banner
+    # asserting the step ran would be a proof of a proof. The count is the
+    # stronger form and it is already here.
+    - id: vet
+      # THE ONE WORTH ITS PLACE. `go vet ./...` is the step that turns a lint into
+      # a red, and a gate that quietly stopped linting would still be green — the
+      # script's own header says every step is load-bearing, and this is the only
+      # thing that would notice one going missing. Deleting the step removes the
+      # banner with it. `go vet` is this repository's `cargo clippy -D warnings`:
+      # it ships with the toolchain, needs no separate binary, and fails the build
+      # on a finding.
+      match: '^==> go vet \./\.\.\.$'
     - id: lint
       # The manifest step, and the one with a two-sided shape. It runs
-      # `caf contract lint` over this repository's own `cafaye.yml` and over
-      # every registry entry when `../caf` is a checkout, and prints
-      # `OK <path>` per file when it runs. On a pantry-only clone it prints
-      # `skipped: ../caf is not a checkout here.` instead and the gate stays
-      # green.
+      # `caf contract lint` over this repository's own `cafaye.yml` and over every
+      # registry entry when `../caf` is a checkout, and prints `OK <path>` per file
+      # when it runs. On a pantry-only clone it prints `skipped: ../caf is not a
+      # checkout here.` instead and the gate stays green.
       #
-      # So this proof matches the BANNER, which both paths print, and not the
-      # `OK` lines, which only one does. That is a real limitation and it is the
-      # honest reading: this proof says the step exists, not that it linted
-      # anything. `bin/prime` was measured in BOTH states for this file — with
-      # the workspace reachable and from a bare clone in a directory with no
-      # cafaye sibling — and the banner is the only line common to both. What
-      # protects the linted content is that the step is a subprocess whose exit
-      # code is the gate's own, plus the `contract` test tier in
-      # `tests/contract.rs`.
+      # So this proof matches the BANNER, which both paths print, and not the `OK`
+      # lines, which only one does. That is a real limitation and it is the honest
+      # reading: this proof says the step exists, not that it linted anything.
+      # What protects the linted content is that the step is a subprocess whose exit
+      # code is the gate's own.
       match: "^==> the manifest validates against core's schema$"
     - id: ok
-      # The gate reached its own last line. With `fmt` and `clippy` bracketing
-      # it, the four markers say: the gate started, it linted, it found nothing
-      # fatal, and it finished. Cheap, and it is what distinguishes "the suite
-      # printed its summary" from "the gate completed".
+      # The gate reached its own last line. With `vet` and `lint` bracketing it,
+      # the three markers say: the gate linted, it found nothing fatal, and it
+      # finished. Cheap, and it is what distinguishes "the suite printed its
+      # summary" from "the gate completed".
       match: '^==> ok$'
-    #
-    # NOT FULLY ASSERTED, AND WHAT NOW HOLDS THE LINE INSTEAD. Read this beside
-    # the `skip-count` proof above, because the two are one story.
-    #
-    # **A skip in this suite is a test that returned early, and libtest counts an
-    # early return as a PASS.** There is not one `#[ignore]` in `tests/`. The
-    # drift, schema, core-pin and recorded-copy tiers call `require_workspace!` /
-    # `skip_without_workspace`, which print `SKIP …` on stderr and `return`. So
-    # before this packet the run reported the same `114 passed; 0 failed; 0
-    # ignored` whether it had compared every registry copy against the real
-    # services or had not compared any of them — and, because libtest captures a
-    # passing test's output and discards it, the SKIP lines never reached the
-    # terminal either. That was the `cafaye-rb` defect (1430 tests green against
-    # an empty schema) wearing a Rust hat, and it was measured here rather than
-    # assumed: on a real clone with no cafaye sibling anywhere up the tree, the
-    # gate exited 0 reporting 114 passed with every drift tier skipped.
-    #
-    # What changed, and it is in `bin/prime` rather than in this file: the suite
-    # runs with `--nocapture`, and the gate counts lines beginning `SKIP ` and
-    # prints `skips: N` on EVERY run, naming `PANTRY_CAFAYE_ROOT` when N is not
-    # zero. `minimum` on that proof is 0 and is deliberately not higher — see
-    # its comment.
-    #
-    # What is STILL not expressible here, stated so nobody assumes it is covered:
-    #
-    #   * `minimum` is a LOWER bound, so no floor in this format can fail on the
-    #     skip count RISING. The proof's job is to make the gate say the number;
-    #     the number is the evidence, and a human or a CI step reading the log is
-    #     what acts on it.
-    #   * a tier that skips is still reported by `cargo test` as `ok`. Nothing
-    #     here changes that, and nothing here claims to. The environment variable
-    #     is `PANTRY_CAFAYE_ROOT`, and it must name the directory holding
-    #     `core/schemas/cafaye.manifest.schema.json` — that one file is what
-    #     `cafaye_root()` looks for, and it is the marker that distinguishes a
-    #     workspace from a directory that merely exists.
-    #   * the mechanism that ENFORCES the tier is CI, and it predates this file:
-    #     `tests/ci.rs::the_drift_job_is_enabled` fails if the `workspace-drift`
-    #     job is gated on `if: false` or deleted, and
-    #     `::the_drift_job_points_the_suite_at_the_checkouts` fails if that job
-    #     stops running `./bin/prime` or sets `PANTRY_CAFAYE_ROOT` to anything
-    #     other than `${{ github.workspace }}`.
-    #
-    # So: this file makes the skip COUNT visible and makes the gate fail if it
-    # stops being printed, and `tests/ci.rs` makes sure the job that forces the
-    # tier cannot quietly go away. Neither of them is the same as "the drift tier
-    # ran", and this is the honest limit of the format.
 
 external:
-  # NOT self-contained, and saying so is the point. `bin/prime` needs a Rust
-  # toolchain this repository pins rather than ships, a crates.io fetch on a
-  # cold checkout, and — for the drift tier and the manifest step — a checkout
-  # of `core` and of `caf`. A declaration that called this self-contained would
-  # be describing a gate nobody has ever run on a clean machine, which is the
-  # same defect as identity's gate being green over a database nobody had
-  # migrated, told the other way round.
+  # NOT self-contained, and saying so is the point. `bin/prime` needs a Go
+  # toolchain this repository pins rather than ships, a module fetch on a cold
+  # checkout, a PostgreSQL server to run 84 SQL checks and 12 database-backed Go
+  # gates against, and — for the manifest step — a checkout of `caf`. A
+  # declaration that called this self-contained would be describing a gate nobody
+  # has ever run on a clean machine, which is the same defect as identity's gate
+  # being green over a database nobody had migrated, told the other way round.
   selfContained: false
   requirements:
-    # THE TOOLCHAIN PIN, and this is the entry the cafaye-rb packet's lesson
-    # asks for. `mise.toml` pins `rust = "1.95"`, `Cargo.toml` declares
-    # `rust-version = "1.95"`, and `docker/Dockerfile`'s `ARG RUST_VERSION=1.95`
-    # is the third copy. Three files, one number, and NO `rust-toolchain.toml`:
-    # nothing in this repository makes cargo itself enforce the pin, so whatever
-    # rustc answers on PATH is what builds and tests the gate.
+    # THE TOOLCHAIN PIN, and this is the entry the cafaye-rb packet's lesson asks
+    # for. `mise.toml` pins `go = "1.26.1"`, `go.mod`'s `go` directive says
+    # `1.26.1` and is the copy the COMPILER enforces, and the Dockerfile's
+    # `ARG GO_VERSION` names the image tag. Three files, one number, and nothing
+    # else: whatever `go` answers on PATH is what builds and tests the gate unless
+    # something checks, which is why `bin/prime-go`'s FIRST step compares all three
+    # and exits 127 naming `mise install` rather than letting a wrong toolchain
+    # produce a confusing build error three steps later.
     #
-    # That is exactly the failure cafaye-rb hit — a gate that ran on macOS
-    # system Ruby 2.6.10 while its own `external` requirement named 4.0.1, and
-    # red-herring on gem/module errors instead of saying "the wrong toolchain
-    # answered". So `bin/prime`'s FIRST step is now a version assertion that
-    # fails loudly and exits 127 naming `mise install`, rather than letting a
-    # wrong toolchain produce a confusing build error three steps later. See the
-    # `toolchain` proof and REPORT-pantry-08-gate.md for the measurement.
+    # That is exactly the failure cafaye-rb hit — a gate that ran on macOS system
+    # Ruby while its own `external` requirement named a different version, and
+    # red-herring on gem errors instead of saying "the wrong toolchain answered".
     - kind: toolchain
-      name: rustc 1.95 with cargo, rustfmt and clippy — the pin in mise.toml, Cargo.toml's rust-version and the Dockerfile's RUST_VERSION
+      name: go 1.26 — the pin in mise.toml, the compiler-enforced directive in go.mod, and the Dockerfile's GO_VERSION
       satisfy:
         # A bare name is a claim about THIS MACHINE, so the checker reports
-        # `gate.requirement-unproven` and deliberately leaves the exit code
-        # alone. That severity is correct: a checker that failed on it would be
-        # red on a laptop and green on CI.
+        # `gate.requirement-unproven` and deliberately leaves the exit code alone.
+        # That severity is correct: a checker that failed on it would be red on a
+        # laptop and green on CI.
         command: [mise, install]
         # Quoted, and that is not decoration: a plain YAML scalar may not contain
         # ": ", so the unquoted spelling of this sentence is a document core's
         # restricted reader accepts and every other YAML parser in the fleet
         # refuses. The schema is the thing that taught me this.
-        unmet: 'bin/prime exits 127 at its first step with "rustc is 1.X, and mise.toml pins 1.95" in the message, and no step banner is printed at all'
-    # Demonstrated on a cold checkout only. `Cargo.lock` pins ~110 crates and
-    # `cargo build --all-targets` is the first thing that reaches for them; a
-    # warm gate touches the network not at all, so saying "network" flatly would
-    # over-claim a dependency this gate does not always have.
+        unmet: 'bin/prime exits 127 at its first step with "go is 1.X, and mise.toml pins 1.26.1" in the message, and no step banner is printed at all'
+    # Demonstrated on a cold checkout only. `go.sum` pins the module graph and
+    # `go build ./...` is the first thing that reaches for it; a warm gate touches
+    # the network not at all, so saying "network" flatly would over-claim a
+    # dependency this gate does not always have. This entry REPLACES the crates.io
+    # one the Rust tier needed, for the same reason and with the same shape.
     - kind: network
-      name: crates.io, ONCE, on a cold checkout only — the crates in Cargo.lock, and nothing after the first fetch
+      name: a Go module proxy, ONCE, on a cold checkout only — the modules in go.sum, and nothing after the first fetch
       satisfy:
         # A bare name for the same reason as the toolchain above, and the honest
         # spelling is the command `bin/prime` itself runs, so satisfying this
-        # requirement and building the crate are the same act on a cold checkout.
-        command: [cargo, fetch]
-        unmet: cargo build --all-targets exits nonzero naming a crate in Cargo.lock, with a network or download error
-    # THE ONE THAT IS NOT NAMED IN CI, and the reason this entry exists. The
-    # drift tier reads sibling checkouts of every registered service and
-    # compares them against `registry/`. `cafaye_root()` looks for exactly one
-    # file — `core/schemas/cafaye.manifest.schema.json` — under
-    # `PANTRY_CAFAYE_ROOT` or under the repository's parent, and misses on a
-    # pantry-only clone.
+        # requirement and building the tree are the same act on a cold checkout.
+        command: [go, mod, download]
+        unmet: go build ./... exits nonzero naming a module in go.sum, with a network or download error
+    # THE NEW ONE, and the reason this requirement exists at all: pantry's tests
+    # are about ROW-LEVEL SECURITY, and row-level security cannot be checked
+    # without a database. There is no mock for it, there is not a fake for it, and
+    # 84 of the checks in `tests/rls.sh` plus 12 of the 30 Go tests open a real
+    # connection to a real server with `migrations/` applied.
     #
-    # Measured, not reasoned about: this gate was run from a bare `git ls-files`
-    # copy in a directory with no cafaye sibling anywhere up the tree, and it
-    # exited 0. That is the honest scope of the requirement — **the gate runs
-    # without it and verifies pantry against itself.** CI is what makes the tier
-    # run: the `workspace-drift` job clones the fleet anonymously and sets
-    # `PANTRY_CAFAYE_ROOT` to the workspace root. So this is a requirement of
-    # the GATE, not of CI's job, and the distinction is the whole finding.
+    # Both scripts find one themselves — `tests/rls.sh` starts a scratch cluster
+    # with `initdb`, applies the migrations, seeds it and removes it on exit, and
+    # the Go tier runs that same script with `--serve` — so nothing here has to be
+    # installed beyond the three server binaries. What the requirement declares is
+    # that those binaries have to EXIST somewhere, and that their absence is a red
+    # in CI rather than a skip.
     - kind: filesystem
-      name: a cafaye workspace beside this repository, or PANTRY_CAFAYE_ROOT naming one — core/ plus every service in registry/
+      name: PostgreSQL server binaries — pg_ctl, psql and initdb — on PATH or at PANTRY_PG_BIN, plus the ports a scratch cluster binds
       satisfy:
-        # Repository-relative, so the checker verifies the file is here: a
-        # requirement satisfied by a file that does not exist is a pointer to a
-        # page that does not exist, which is the thing this field replaced.
-        # `bin/prime` is the smallest argv in this repository that makes the
-        # workspace observable, because the drift tests print their SKIP lines
-        # through it.
-        command: [bin/prime]
+        # Repository-relative, so the checker verifies the thing is here rather
+        # than pointing at a page. `tests/rls.sh --print-pg-bin` is the smallest
+        # argv in this repository that makes the answer observable, and it is the
+        # same answer `bin/prime` acts on.
+        command: [tests/rls.sh, --print-pg-bin]
         unmet: >-
-          bin/prime prints "skips: N" with N above zero and names
-          PANTRY_CAFAYE_ROOT. Note that WITHOUT --nocapture this is worse than a
-          skip: the run reports 114 passed and 0 ignored and says nothing,
-          because libtest scores an early return as a pass and discards the
-          stderr that said so
-    # A fourth requirement, and the one that is easiest to declare wrongly.
-    # `bin/prime`'s last step shells into `../caf` and runs
-    # `go run ./cmd/caf contract lint` over this manifest and every registry
-    # entry. That needs a Go toolchain and a `caf` checkout, and it is a
-    # DIFFERENT host and a DIFFERENT failure from the crates.io fetch above, so
-    # folding it in would hide it. It is declared as its own entry because
-    # `tests/ci.rs` asserts on this job's shape and the reason it exists is
-    # named there.
-    - kind: toolchain
-      name: Go 1.25 or newer, plus a caf checkout at ../caf — bin/prime's last step runs caf's own contract lint
+          bin/prime prints "rls: 0 of 0 checks passed, 1 tier skipped" and "data
+          path: N check(s) DID NOT RUN", names PANTRY_PG_BIN, and exits 0 — a
+          correct, honest, COUNTED skip, and a gate.proof-missing against the
+          data-path proof above. Set PANTRY_DB_REQUIRED=1 and
+          PANTRY_RLS_REQUIRED=1 to turn it into exit 3 at the script's own level
+    # The manifest lint, and it is a DIFFERENT host and a DIFFERENT failure from
+    # anything above, which is why folding it in would hide it: it needs a Go
+    # toolchain (covered) and a `caf` checkout at `../caf`.
+    - kind: filesystem
+      name: a caf checkout at ../caf, holding go.mod and cmd/caf — bin/prime's last tier runs caf's own contract lint over cafaye.yml and every registry/services entry
       satisfy:
         command: [go, version]
         unmet: >-
           bin/prime prints "skipped: ../caf is not a checkout here", the gate
           exits 0, and no manifest in registry/ was linted by the platform CLI.
-          Measured: a clone in a directory with no cafaye sibling takes this
-          branch
+          Measured: a clone in a directory with no cafaye sibling takes this branch
   # NOT required, and named so nobody goes looking for them:
   #
   #   * NO CREDENTIAL, of any kind, and this is the sharpest entry in the block
-  #     rather than a reassurance. Every cafaye repository is public, so CI's
-  #     `workspace-drift` job clones all twelve anonymously over HTTPS with no
-  #     `secrets:` at all; an earlier version of that job cloned over SSH with a
-  #     deploy key from repository settings, on the assumption the repositories
-  #     were private. They are not, and that key was a long-lived private key
-  #     created to work around a problem that did not exist. `pantry-04` deleted
-  #     it and `tests/ci.rs::the_drift_job_clones_anonymously_and_needs_no_credential`
-  #     fails the workflow — on a pantry-only clone, in a minute — if a secret
-  #     reference, an SSH-form remote, an install of a key or a credential-bearing
-  #     URL reappears anywhere in it. That test is why this comment does not name
-  #     the old secret: naming it would trip the check that exists to keep it
-  #     gone.
-  #   * no database and no service. pantry owns nothing persistent; `Registry::load`
-  #     reads a directory at startup and the HTTP tests drive the router in
-  #     process with `tower::ServiceExt::oneshot`, so no test can open a socket by
-  #     accident.
-  #   * no fixed port, and no container runtime. The suite binds nothing.
-  #   * no browser, no image, and nothing outside the repository except the
-  #     sibling checkouts named above. `target/` is written inside the tree and
-  #     gitignored.
+  #     rather than a reassurance. Every cafaye repository is public, so CI clones
+  #     the fleet anonymously over HTTPS with no `secrets:` at all. An earlier
+  #     version of the drift job cloned over SSH with a deploy key from repository
+  #     settings, on the assumption the repositories were private. They are not,
+  #     and that key was a long-lived private key created to work around a problem
+  #     that did not exist. It is gone and this comment does not name it: naming it
+  #     would invite exactly the search that puts it back.
+  #   * no PERSISTENT database and no service. The scratch cluster is created,
+  #     seeded and destroyed inside one `./bin/prime`; the suite binds a port on
+  #     loopback and removes the data directory on exit, including on SIGINT.
+  #   * no fixed port, and no container runtime. `initdb` picks a free one.
+  #   * no browser, no image, and nothing outside the repository except the sibling
+  #     checkout and the PostgreSQL binaries named above. The build cache and the
+  #     scratch data directories are written outside the tree.
 
 ci:
   workflow: .github/workflows/ci.yml
-  # `./bin/prime`, verbatim — the `workspace-drift` job's step at ci.yml:266.
-  # Checked TEXTUALLY against the workflow's `run:` bodies, so a workflow that
-  # stops calling the gate becomes `gate.ci-disagrees` rather than a quiet
-  # divergence.
+  # `./bin/prime`, verbatim — the `build` job's step. Checked TEXTUALLY against the
+  # workflow's `run:` bodies, so a workflow that stops calling the gate becomes
+  # `gate.ci-disagrees` rather than a quiet divergence.
   #
-  # WHAT THIS BLOCK DELIBERATELY DOES NOT CLAIM, because `check_ci` reads one
-  # workflow's `run:` bodies and nothing else: **the other CI job does not run
-  # this gate.** The `build` job re-spells the four cargo steps as four separate
-  # `run:` lines — `cargo fmt --check`, `cargo build --all-targets`,
-  # `cargo clippy --all-targets -- -D warnings`, `cargo test --no-fail-fast` —
-  # rather than calling `bin/prime`. That is a real difference between the
-  # developer-facing command and the CI command in THIS repository, it was
-  # measured rather than assumed, and it is why the local gate and the CI gate
-  # can drift in exactly the way `docs/gate.md` says the format exists to
-  # prevent: a step added to `bin/prime` is not run by `build`, and nothing in
-  # the workflow or the suite notices.
+  # WHAT CHANGED HERE, and it is the second gap this rewrite closes. The `build`
+  # job used to re-spell the four cargo steps as four separate `run:` lines —
+  # `cargo fmt --check`, `cargo build --all-targets`, `cargo clippy`, `cargo test`
+  # — rather than calling `bin/prime`. That was a real difference between the
+  # developer-facing command and the CI command, measured rather than assumed, and
+  # it is why a step added to `bin/prime` was not run by `build` and nothing in
+  # the workflow or the suite noticed.
   #
-  # It is not fixed by this packet. Adding a `run: ./bin/prime` step to the
-  # `build` job is a change to how CI verifies this repository, which is a
-  # manager's call, and doing it here would have meant this declaration going
-  # green over a workflow this packet also rewrote. REPORT-pantry-08-gate.md is
-  # where the finding is written down; `tests/ci.rs::the_drift_job_points_the_suite_at_the_checkouts`
-  # is what holds the job that does call the gate.
+  # The job now runs `./bin/prime` itself, with `PANTRY_DB_REQUIRED=1` and
+  # `PANTRY_RLS_REQUIRED=1` set and a `postgres` service alongside it, which is
+  # what makes this declaration's strict `data-path` proof affordable in CI.
   invokes: [./bin/prime]

@@ -864,3 +864,91 @@ was thinking about. Removing the single grant and re-running the suite turns 34 
 77 checks red, and only four of them are about `pantry`. An owner role's privileges
 are load-bearing for every other role's writes, which is the least obvious fact in
 this schema and the one the missing grant demonstrated.
+
+## D33 — deleting the Rust suite leaves `registry/` unverified, and that is a decision about what this repository is for — OPEN
+
+**Found** 2026-10-03, landing `registry-norust-03` (the packet that deletes `src/`,
+`Cargo.toml`, `Cargo.lock`, `docker/Dockerfile` and all fourteen Rust tests).
+
+**What the packet did.** One service, one language, one gate tier. `cmd/pantry`
+serves the four declared operations out of PostgreSQL with row-level security in
+front of it; `internal/catalog/postgres.go` is the read seam mounted rather than
+guessed at; `tests/rls.sh` runs 84 SQL checks against a scratch cluster the gate
+stands up and removes itself; and `bin/prime-go` is the only tier that compiles
+anything. A warm gate is about twelve seconds, against about four minutes under
+Rust — measured, not estimated.
+
+**The finding, stated as the shape of the hole rather than as a list of files.**
+Four Rust test files — `tests/recorded_copy.rs`, `tests/drift.rs`,
+`tests/schema.rs`, `tests/core_pin.rs` — and one CI job existed to answer
+questions about **other repositories**: is every `registry/services/*/cafaye.yml`
+byte-identical to the service it was copied from at the commit `recordedAt` names;
+does every row's stated `kind` still match that service's OpenAPI document; does
+every row's `basePath` still resolve; does every exclusion reason still hold; is
+the vendored copy of core's manifest schema still core's. They read a twelve-
+repository workspace and compared. None of them was about pantry.
+
+`registry-norust-03` deleted them, because they were Rust and the thing they
+checked was written for a Rust service that read a YAML directory. **The `ci:`
+job that cloned twelve repositories to run them was deleted too**, rather than
+left as a slow, expensive green that asserted twelve repositories had been
+verified when no compiled code in this repository looked at any of them.
+
+So the honest sentence about this repository today is: **its registry is
+maintained by reading.** A service that renames itself stays here under its old
+name; a `basePath` that moved keeps pointing at the old place; an exclusion row
+whose reason stopped being true keeps saying so. Nothing will fail, because
+nothing is checking.
+
+**Why it is open rather than quietly fixed in the same packet.** Three
+considerations, and the first is procedural: a packet whose brief is "delete the
+Rust" should not also be the packet that rewrites 150 tests of fleet drift
+checking in Go. That is a second packet, with its own measurement, and folding
+it in would mean the deletion's diff and the replacement's diff arrive together
+so neither can be read. The second is that the replacement is not a translation.
+`recorded_copy.rs` compared bytes across a `git show`; a Go version does the same
+thing with the same inputs and no new design, but the *drift* checks read a
+workspace whose shape (`PANTRY_CAFAYE_ROOT`, non-shallow clones, which
+repositories an anonymous clone cannot fetch) was itself only ever tested by the
+tests being deleted. Writing the replacement is where that shape gets re-derived
+and this time it gets pinned. The third is that a decision made under time
+pressure about what to delete is a different decision from one made about what to
+build, and conflating them is how a coverage gap gets closed with a stub.
+
+**The options, as they were before this packet and as they are now.**
+
+1. **Rewrite the four test files in Go**, against the same workspace shape. The
+   faithful option. Cost: a real packet, and the workspace-shape assumptions get
+   re-established rather than inherited. Consequence if chosen: `workspace-drift`
+   comes back as a job, and the `CI` clone list comes back with it.
+2. **Write one test, not four.** Assert the single thing that matters most —
+   that every `registry/services/*/cafaye.yml` matches its source at `recordedAt`
+   — and accept that `kind`, `basePath`, the exclusion table and the vendored
+   core pin stay unverified until someone has a reason to look. Cost: a smaller
+   packet and a smaller guarantee, and the other four need saying out loud
+   somewhere they will be read. **This is the recommendation**, because it is the
+   only one that can be finished without re-deriving the whole workspace shape,
+   and a byte-identity check is the check whose absence rots fastest.
+3. **Accept the gap permanently and delete the claim.** Drop `registry/`'s
+   description as a verified thing; describe it as curation a human maintains.
+   Cost: this repository stops being a registry whose accuracy is checked, which
+   is most of what it is for.
+
+**What would make this decision rather than a preference.** A measurement of how
+fast the copies actually drift — how many rows in `registry/index.yml` have a
+`recordedAt` whose subject has since renamed, moved a `basePath`, or started
+declaring `exposes`. That number is computable today by running the four deleted
+tests once from a git-stash of the deletion, and nobody has run it. If it is
+zero over the registry's life so far, option 3 is defensible and option 1 is
+ceremony. If it is non-zero — and the exclusion table's own history suggests at
+least one row already has been (courier's events gained the prefix core requires,
+and its row fired) — then option 1 is overdue and this decision should be read as
+a backlog item with an age on it.
+
+**The cost of flipping.** Options 1 and 2 are additive: they put back coverage
+that existed for two years and lost it in one commit. Option 3 is the only
+irreversible one, because it also retires the `recordedAt` column's meaning, and
+that column is read by `registry/index.yml`'s comments, by this file, and by any
+future tool that wants to answer "when was this copy taken". **It is recorded
+here rather than decided because the manager owns it and the packet's brief was
+not to decide it.**

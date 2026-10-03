@@ -7,7 +7,78 @@ bottom.
 
 ## [Unreleased]
 
+### Removed
+
+- **The Rust implementation, entirely.** `src/` (ten modules), `Cargo.toml`,
+  `Cargo.lock`, `docker/Dockerfile`, and all fourteen files under `tests/`. This
+  is `registry-norust-03`; the reasoning and the costs are in
+  `REPORT-registry-norust-03.md` and `DECISIONS.md` D33.
+
+  There is never a commit in which both implementations of the same OpenAPI
+  document could be started: the Rust service and its image went in the same
+  commit as the thing that made the Go service whole. **Breaking**, in the sense
+  the versioning note below defines — a second implementation of a published
+  contract is removed, and `docker build -f docker/Dockerfile` no longer works
+  because there is nothing to build.
+
+  **What went with it, stated plainly rather than as a clean-up.** Four Rust test
+  files verified `registry/` against a twelve-repository workspace — that every
+  `cafaye.yml` copy is byte-identical to its source at the `recordedAt` commit,
+  that every row's `kind` and `basePath` still match, that every exclusion reason
+  still holds, and that the vendored core schema is still core's — and the CI job
+  that cloned those twelve repositories to run them is gone. **`registry/` is now
+  maintained by reading and nothing else.** That gap is real, it is recorded as
+  `DECISIONS.md` D33 with three options and a recommendation, and it is not
+  closed by this packet.
+
 ### Added
+
+- **A gate declaration that can actually fail.** `gate.yml` was rewritten around
+  seven proofs that each name a line `bin/prime` really prints: the toolchain
+  banner, `suite: N passed, 0 failed` (floor 30, margin **zero** — smaller than
+  the smallest deletable unit, which in Go is a single `func Test`),
+  `rls: N of M checks passed` (floor 84, the SQL checks that ran on every gate
+  and were named in no proof at all), `data path:`, and three step banners.
+
+  The declaration it replaces carried `skips: 0` with `minimum: 0`. A minimum is
+  a *lower* bound, the healthy value was zero, and no run could ever produce a
+  negative skip count — **the proof could not fail**, and its own comment said so
+  at length before shipping the floor anyway. It also read the last cargo
+  `test result:` line, which is always `Doc-tests pantry` at zero, so its floor
+  could never be satisfied either. A machine with no PostgreSQL is now a red.
+
+  Four mutations were run against the new declaration and each was caught by the
+  finding it was supposed to be: a raised floor (`gate.floor` at 31), a
+  `t.Skip` (29 against 30), a `PANTRY_PG_BIN` pointing at nothing (three
+  findings, including `gate.proof-missing` on the data path), and a deleted
+  `go vet` step (`gate.proof-missing`).
+
+- **`gate.ci`'s reachability check is textual, and this repository no longer
+  writes the trigger.** core decides CI runs the gate by substring-matching the
+  declared argv against every `run:` body, treating a `./` prefix as optional.
+  A `::error::` message in `.github/workflows/ci.yml` that *said* `bin/prime`
+  satisfied it on its own — deleting the gate step entirely would have been
+  silent. Found by `bin/gate-self-test`, and the messages now say "the gate".
+
+### Changed
+
+- **CI is one job that runs `./bin/prime`.** The previous `build` job re-spelled
+  four cargo steps as four separate `run:` lines, so a step added to the gate was
+  not run by CI and nothing noticed. The workflow now proves PostgreSQL server
+  binaries exist *before* running anything — `tests/rls.sh` would otherwise
+  print a counted skip and exit 0, and the badge would be green over 84 SQL
+  checks and 12 Go gates that never ran — and sets `PANTRY_RLS_REQUIRED=1` and
+  `PANTRY_DB_REQUIRED=1` so a missing database is `exit 3` rather than a skip.
+  A scratch cluster needs no service container: the suite runs `initdb` itself.
+
+- **The manifest says `language: go`**, in `cafaye.yml` and in
+  `registry/services/pantry/cafaye.yml`, with the reasoning for choosing per-job
+  rather than per-fleet.
+
+- **A warm gate is about twelve seconds**, against about four minutes under
+  Rust.
+
+### Added (earlier in this cycle)
 
 - **The Go service, standing beside the Rust one.** `cmd/pantry` serves the same
   four operations from the same `openapi/v1.yaml` — `net/http` + `chi` with

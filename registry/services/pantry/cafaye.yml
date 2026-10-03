@@ -6,20 +6,34 @@
 #
 # The schema is owned by cafaye/core
 # (core/schemas/cafaye.manifest.schema.json) and pantry vendors a copy of it
-# under schemas/ so it can validate its own registry entries at startup. A
-# vendored copy is only safe because tests/schema.rs asserts the copy is
-# byte-identical to core's while a sibling checkout is reachable — see
-# AGENTS.md, "The vendored schema".
+# under schemas/ so it can validate its own registry entries at startup.
+#
+# A vendored copy is only safe if something checks it against core's, and the
+# thing that used to was the Rust test `tests/schema.rs`. **That test was deleted
+# with `src/` and nothing has replaced it.** The copy under schemas/ is now
+# asserted by nobody: it is a file that was byte-identical to core's when it was
+# recorded and will drift silently the first time core changes its schema. This
+# is a real coverage gap and it is named rather than papered over — the check has
+# a name and a home in DECISIONS.md D33 and REPORT-registry-norust-03.md, and it
+# is written in Go when it is written.
 name: pantry
 description: The cafaye service registry — what every official service is, what it exposes, and where to reach it.
 
-language: rust
+# Go, chosen for the SERVICE and not for the fleet: pantry is a read model over a
+# PostgreSQL database with a hand-written RLS policy in front of it, it speaks HTTP
+# and nothing else, and it is started by a scratch `initdb` on every gate run. A
+# compiled binary with `net/http` and `pgx` is the smallest thing that does all of
+# that, and the gate went from about four minutes to about twelve seconds when
+# this line changed — which is not an aesthetic result.
+language: go
 core: ^0.2.0
 
 exposes:
   # The committed HTTP contract. It is the document `caf pantry` (and any other
-  # client) is generated from, and tests/api.rs asserts every route the router
-  # serves appears here and every path here is served — so the two cannot drift.
+  # client) is generated from, and `internal/httpapi/routes_test.go` asserts every
+  # route the router serves appears here and every path here is served — so the
+  # two cannot drift. That check used to be `tests/api.rs`; it is the same two
+  # assertions, in the language the service is now written in.
   api: openapi/v1.yaml
 
 # pantry publishes no events and subscribes to none. It is a read model over
