@@ -18,9 +18,13 @@
 -- `is_first_party` is therefore a COLUMN here and NOT a per-publisher setting, and
 -- that is deliberate: a first-party service is a fact about the cafaye fleet's own
 -- manifests, decided by a reviewed commit to `registry/index.yml`, and never by
--- anybody who registers an account. It is the one field on this table that no
--- publisher may set, and `00005_rls.sql`'s insert policy refuses the write rather
--- than trusting the application to have left it alone.
+-- anybody who registers an account. It is not the one field on this table that no
+-- publisher may set — as this file used to say — because on the INSERT path no
+-- publisher may set ANY field: `pantry_publisher` holds no INSERT privilege on
+-- this table at all, so the refusal is the GRANT and never reaches a policy
+-- (`tests/rls.sh` D17, and D17's own note that `publishers` has only one
+-- barrier). `00005_rls.sql` is not the file that says any of this; there is no
+-- insert policy on `publishers` and there never was.
 --
 -- ONE TABLE, THREE COLUMNS THAT ARE NOT DECORATION:
 --
@@ -29,6 +33,13 @@
 --              registry keyed on a mutable string is a registry whose ownership
 --              can be transferred by a rename. github_login is kept because every
 --              human reading a row wants it, and it is unique but not the key.
+--              "Immutable" was a CLAIM with nothing behind it until `00008`
+--              measured it: `publishers_publisher_update`'s `with check` pinned
+--              only `id`, and `github_id` and `github_login` were both writable
+--              by `pantry_publisher` on its own row — a rename and a re-key,
+--              exactly the two things this paragraph is about. `00008` makes the
+--              claim true, and the mutation table in
+--              REPORT-pantry-publisher-rewrite-01.md is how it is held down.
 --   claimed_at when the identity first claimed the name. It is the fact that the
 --              publisher was at a real account when they took it, and it is the
 --              one value in this table a later row can be checked against after
@@ -36,11 +47,22 @@
 --   verified   whether the OAuth flow proved control of the account. FALSE for a
 --              row created by a migration or a fixture, and the honest value for a
 --              row the sync wrote for a first-party service. `verified` is NOT an
---              authorisation input in `00005_rls.sql` — a publisher role writes
---              its own rows whether or not this is true — because a policy that
---              branches on a column the publisher can set is a policy the publisher
---              controls. It is a fact to display and to filter on, and saying so
---              here is what stops a later reader from trusting it.
+--              authorisation input — a publisher reads and writes nothing on this
+--              table that changes what it may reach, and `00008` is what makes that
+--              sentence true rather than aspirational.
+--
+--              The sentence this paragraph used to carry instead was "a publisher
+--              role writes its own rows whether or not this is true — because a
+--              policy that branches on a column the publisher can set is a policy
+--              the publisher controls." That is the right rule and it condemned
+--              this very column: `publishers_public_read` is
+--              `using (not is_first_party and verified)`, so a publisher that could
+--              set `verified` on its own row decided its own public visibility.
+--              Measured before `00008`, `update … set verified = false` by
+--              `pantry_publisher` answered `UPDATE 1`. `verified` is a fact to
+--              display and to filter on, and the filter is why it must not be
+--              publisher-writable — saying so here is what stops a later reader
+--              from trusting it in either direction.
 
 -- +goose Up
 
@@ -62,8 +84,10 @@ create table pantry.publishers (
   github_login text       not null check (github_login ~ '^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$'),
 
   -- THE TRUST FLAG. Read the column comment above this file's header: it is set
-  -- by the fleet, never by the publisher, and `00005_rls.sql` refuses a publisher
-  -- write that sets it.
+  -- by the fleet, never by the publisher. On the INSERT path that is the GRANT —
+  -- `pantry_publisher` holds no INSERT privilege here at all — and on the UPDATE
+  -- path it is `00008`'s `with check (false)`, which refuses the write to both
+  -- `pantry_publisher` and the owner `pantry`.
   is_first_party boolean  not null default false,
 
   claimed_at  timestamptz not null default now(),
