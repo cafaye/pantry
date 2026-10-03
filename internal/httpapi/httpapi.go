@@ -39,7 +39,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/cafaye/pantry/internal/api"
 	"github.com/cafaye/pantry/internal/catalog"
@@ -111,8 +110,8 @@ func New(cat catalog.Catalog, opts ...Option) http.Handler {
 		writeProblem(w, r, api.MethodNotAllowed, http.StatusMethodNotAllowed,
 			"this resource is read-only: the document declares GET and nothing else")
 	})
-	r.Use(middleware.Recoverer)
 	r.Use(traceMiddleware)
+	r.Use(recoverMiddleware)
 
 	api.HandlerWithOptions(svc, api.ChiServerOptions{
 		BaseRouter: r,
@@ -195,6 +194,37 @@ func (s *Service) writeNoCatalog(w http.ResponseWriter, r *http.Request) {
 		panic("catalog mounted but pantry-01 has no read path: pantry-02 replaces this")
 	}
 	writeProblem(w, r, api.Unavailable, http.StatusServiceUnavailable, noCatalogDetail)
+}
+
+// recoverMiddleware turns a panic into the document's 500 problem rather than
+// chi's text/plain one.
+//
+// chi's own Recoverer would write "panic recovered\n" with a text/plain content
+// type, which breaks the promise the document makes about every non-2xx this
+// service writes — and a 500 is the one response a client is guaranteed to see
+// eventually, so it is the worst one to get wrong. The cause is logged with the
+// request's trace id, because a 500 whose detail says "internal error" and whose
+// log line cannot be found is an incident nobody closes.
+func recoverMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			cause := recover()
+			if cause == nil {
+				return
+			}
+			if cause == http.ErrAbortHandler {
+				// The documented way to abandon a response. Not an incident, and
+				// re-panicking would make the net/http server log it as one.
+				panic(cause)
+			}
+			slog.Default().ErrorContext(r.Context(), "httpapi: recovered from a panic",
+				"method", r.Method, "path", r.URL.Path,
+				"trace_id", traceIDFrom(r.Context()), "panic", cause)
+			writeProblem(w, r, api.Internal, http.StatusInternalServerError,
+				"the request could not be served: an internal error occurred")
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // contextKey is unexported so no other package can collide with this one.

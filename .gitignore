@@ -1,5 +1,9 @@
 /target
 /coverage
+# Go build output. `mise run build` writes build/pantry; it is a binary, and a
+# committed one is a machine's artefact in a review.
+/build
+/coverage.out
 .env
 .env.*
 !.env.example
