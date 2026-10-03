@@ -491,6 +491,29 @@ routes to it.
 
 ---
 
+## The Go service
+
+`cmd/pantry` serves the same four operations as `src/`, from the same
+`openapi/v1.yaml` — oapi-codegen generates the router and the types, and
+`internal/httpapi` implements the document's server interface. There is no second
+contract and no hand-written route table.
+
+What it answers today:
+
+| route | answer | why |
+|---|---|---|
+| `GET /healthz` | `200 {"status":"ok"}` | the process is running. The document says liveness is 200 even when the registry did not load, and an orchestrator that restarted on this would turn a missing data source into a crash loop |
+| `GET /readyz` | `503 unavailable` | no data source is mounted, so there is nothing to serve. The detail names pantry-02, so the cause is not a mystery to support |
+| `GET /v1/services` | `503 unavailable` | the document's own answer for "the registry did not load". A `200` with an empty `data` would be indistinguishable from a platform with no services |
+| `GET /v1/services/{name}` | `503 unavailable` | same |
+
+`internal/catalog` is the seam pantry-02 fills: three methods, expressed in the
+generated types. There is deliberately no filter grammar, no cursor encoding and
+no compatibility rule in this tree — the addendum says the compatibility graph is
+the moat, and a decision about it made from this packet's seat would be wrong.
+
+Run it with `mise run run-go`, or `./bin/prime-go` to check just this tier.
+
 ## Deliberately not built
 
 Phase 1 is official-only and curation-only. These are Phase 5 (PLAN.md §4b item
@@ -658,11 +681,24 @@ also fails if the drift job is disabled, if a secret reference reappears, or if
 
 ## Layout
 
+pantry is mid-rewrite: `src/` is the Rust service that serves today, `cmd/` and
+`internal/` are the Go rewrite standing beside it. Both tiers are gated. The Go
+service mounts no data source yet — see "The Go service" below.
+
 ```
 pantry/
-├── bin/prime                  # the gate
+├── bin/prime                  # the gate: the Rust tier, then bin/prime-go
+├── bin/prime-go               # the Go tier: gofmt, build, vet, test
 ├── cafaye.yml                 # this service's own manifest
+├── cmd/pantry/                # the Go binary: configuration, timeouts, shutdown
 ├── DECISIONS.md               # this repository's open decisions, D1, D2, …
+├── Dockerfile                 # the Go image, distroless nonroot
+├── docker/Dockerfile          # the Rust image — still what a deployment runs
+├── go.mod, go.sum             # module github.com/cafaye/pantry, Go 1.26.1
+├── internal/
+│   ├── api/                   # oapi-codegen output, generated from openapi/v1.yaml
+│   ├── catalog/               # the read seam; unmounted in pantry-01
+│   └── httpapi/               # chi router (generated), problems, trace ids, probes
 ├── openapi/v1.yaml            # the HTTP contract, machine half of the table above
 ├── registry/                  # the official service set, as data
 ├── schemas/                   # core's manifest schema, vendored

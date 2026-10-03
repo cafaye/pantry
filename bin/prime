@@ -84,6 +84,19 @@ fi
 step "toolchain: rustc $actual_rust (mise.toml pins $pinned_rust)"
 rustc --version
 
+# THE GO TIER, FIRST, and the ordering is the point. pantry is mid-rewrite:
+# `src/` and `cmd/`+`internal/` are two implementations of one document, and
+# `set -e` means a red tier stops the run. With the Go tier last, a red Rust tier
+# would make this gate never check the Go one — which is a gate that verifies half
+# the repository and says nothing about it. Cheap tier first, expensive tier
+# second: the one that is fastest to be wrong is the one that gets to complain
+# first. The tier is a script rather than six steps here so that working on the Go
+# service does not mean compiling 110 crates to learn whether `go vet` is happy.
+# See bin/prime-go, which asserts the Go toolchain against mise.toml for the same
+# reason this script asserts rustc.
+step "the Go tier: gofmt, build, vet, test"
+./bin/prime-go
+
 step "cargo fmt --check"
 cargo fmt --check
 
@@ -209,15 +222,5 @@ else
   echo "and every registry entry with:"
   echo "  cd ../caf && go run ./cmd/caf contract lint $PWD/registry/services"
 fi
-
-# THE GO TIER, and why it is called rather than inlined. pantry is mid-rewrite:
-# `src/` and `cmd/`+`internal/` are two implementations of one document, and both
-# have to stay green or the repository is in a state nobody chose. The tier lives
-# in its own script so a developer working on the Go service does not compile 110
-# crates to learn whether `go vet` is happy, and so "which tier is red" has an
-# answer. See bin/prime-go, which asserts the Go toolchain against mise.toml for
-# the same reason the step above asserts rustc.
-step "the Go tier: gofmt, build, vet, test"
-./bin/prime-go
 
 step "ok"

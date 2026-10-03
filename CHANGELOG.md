@@ -9,6 +9,19 @@ bottom.
 
 ### Added
 
+- **The Go service, standing beside the Rust one.** `cmd/pantry` serves the same
+  four operations from the same `openapi/v1.yaml` — `net/http` + `chi` with
+  `oapi-codegen` generating the router and the types — plus a container image
+  (`Dockerfile`, distroless nonroot, `CGO_ENABLED=0`) and its own gate tier
+  (`bin/prime-go`), which `bin/prime` now runs after the Rust tier.
+
+  It mounts no data source yet, so `/readyz` and both data routes answer the
+  document's declared `503` and say in the problem detail that pantry-02 mounts
+  the read path. `/healthz` is 200. Nothing about the Rust implementation in
+  `src/` changed: it still serves, and `docker/Dockerfile` is still its image.
+  A later packet removes `src/`, `Cargo.toml`, `Cargo.lock` and `docker/Dockerfile`
+  once the Go service has data.
+
 - **`BlockedBy::Private`, and `site` moved onto it.** The exclusion record had
   no honest row for a repository whose manifest validates, which is plainly a
   service, and which nobody outside cafaye can clone.
