@@ -1,0 +1,176 @@
+# account_scope.yml — every entry point pantry mounts, and which of them can
+# reach another publisher's rows.
+#
+# Checked by cafaye/core's contract harness:
+#
+#     cd cafaye/core && python3 harness/account_scope_check.py ../<this checkout>
+#
+# ---------------------------------------------------------------------------
+# READ THIS BEFORE CHANGING A LINE HERE. THREE THINGS IN IT ARE MEASUREMENTS
+# ABOUT CORE'S CHECKER, NOT OPINIONS ABOUT PANTRY.
+# ---------------------------------------------------------------------------
+#
+# 1. THE ROUTES ARE INVISIBLE TO THE CHECKER, AND ONE TOKEN IS WHY.
+#    `surface.sources` names `internal/api/api.gen.go`, which is the file that
+#    registers all four operations, and the checker finds ZERO of them. It is not
+#    that it read the file and disagreed: `internal/api/api.gen.go:707` is
+#
+#        r.Get(options.BaseURL+"/v1/services", wrapper.ListServices)
+#
+#    and the chi recogniser's pattern requires a `/`-prefixed string literal as
+#    the FIRST term after `(`. Concatenation is handled, but only in the other
+#    direction — `"/v1/x/"+prefix+"/y"` — because identity's own router writes it
+#    that way. So `oapi-codegen` emits the one shape of Go route registration this
+#    checker cannot read, and pantry's whole surface reads as `route_defs=0` for a
+#    service with four routes. `REPORT-pantry-account-scope-01.md` §3 deletes the
+#    token `options.BaseURL+` from those four lines and shows the run go from
+#    1 failure and 5 warnings to 0 and 1. That is the whole of the difference.
+#
+# 2. `surface.minimum: 0` IS THE FLOOR THE CHECKER CAN HONESTLY HOLD, SO IT IS
+#    NOT A RATCHET. The docs make `minimum` the one thing in this format that
+#    notices a route appearing where the recognisers cannot reach. On pantry it
+#    cannot be set above zero: `minimum: 4` produces
+#    `account-scope.surface-thin: the declared sources register 0 entry point(s)`
+#    on a tree that serves four routes, permanently and correctly. So the floor
+#    is pinned at zero here and the ratchet's job is done instead by
+#    `internal/httpapi/scope_declaration_test.go`, which reads the live router
+#    with `chi.Walk` — the thing the checker cannot do — and fails when this file
+#    and the router and `openapi/v1.yaml` stop agreeing. That test is why this
+#    file is a contract and not a copy.
+#
+# 3. ONE ROW IS `stale` ON A TREE THAT IS CORRECT, AND IT IS SHIPPED THAT WAY.
+#    `get-service` below is registered at `internal/api/api.gen.go:710`, and the
+#    checker prints
+#
+#        FAIL account-scope.stale: get-service: registeredAt points at a line
+#        that does not register it: internal/api/api.gen.go:710
+#
+#    which is FALSE about the code and TRUE about the checker. With the route
+#    invisible, `registeredAt` falls back to "does this line contain the last
+#    segment of the path", and the last segment of `/v1/services/{name}` after
+#    parameter-collapsing is the two-character string `{}`, which appears in no
+#    Go file. The three rows whose paths do NOT end in a parameter go green on
+#    that same accident (`services`, `healthz`, `readyz` are all substrings of
+#    their own lines). So the one row whose path is spelled the way the document
+#    spells it is the only one that goes red. The alternative spelling —
+#    `/v1/services/name` — would exit 0 and is a route pantry does not serve.
+#
+#    > DECISION NEEDED (pantry-account-scope-01, D34): core's chi recogniser
+#    > requires a `/`-prefixed string literal as the FIRST term after `(`, so a
+#    > registration written as `<expression>+"…"` is invisible to it. Teaching it
+#    > one leading concatenation term makes all four rows machine-verified, makes
+#    > `surface.minimum` settable above 0, and turns `undeclared` from
+#    > structurally impossible on pantry into decidable. `DECISIONS.md` D34 has the
+#    > measurement and the option list, and a second finding independent of this
+#    > one: `declaration-contradicts-code` cannot read a Go-cased account field,
+#    > so even a VISIBLE pantry route would not be contradiction-checked.
+#
+# ---------------------------------------------------------------------------
+# THE ACCOUNTING, WHICH IS THE PART THAT ACTUALLY MATTERS
+# ---------------------------------------------------------------------------
+#
+# NO ROW IS `accountScoped: true`, AND THAT IS A MEASUREMENT.
+#
+# The resolver this service HAS is `pantry.current_publisher_id()` —
+# `migrations/00005_functions.sql:62` — read from the transaction-local GUC that
+# `pantry.begin_publisher(p_publisher_id uuid)` sets at
+# `migrations/00005_functions.sql:108` (and `:117`, `set_config`). Both exist,
+# both are exercised by `tests/rls.sh`, and **neither is called from any Go file
+# in this repository** — there is no `begin_publisher` call site outside SQL, and
+# `openapi/v1.yaml:82` says `security: []` in as many words.
+#
+# The connection takes a role and nothing else: `internal/pantrydb/db.go:125`
+# issues `set role pantry_public` per connection and `:129` reads `current_user`
+# back, and `pantry_public` holds SELECT and no write grant. With no identity set,
+# `pantry.current_publisher_id()` returns NULL, so every publisher predicate in
+# `migrations/00006_rls.sql` compares against NULL and `pantry.service_is_visible`
+# reduces to "published, or first-party in any state". A caller of
+# `GET /v1/services` therefore sees rows belonging to MANY publishers, and is
+# scoped by none of them.
+#
+# So `accountScoped: false` here means **"resolves no publisher"**. It does NOT
+# mean "reaches no publisher's data", which is the reading courier's file warns
+# its Oban rows against and is the same distinction. Every row below reaches rows
+# that carry a `publisher_id`.
+#
+# `reason: public` is the closed-vocabulary member that fits, and it is worth
+# being precise about why: the schema defines it as "reachable without a
+# credential at all", which is true, and the vocabulary has no member for the
+# third thing this is — "reaches many publishers' rows, resolved from a policy
+# rather than from a caller". `public` is the honest member; `none` would be a
+# lie about the data and would be the finding `declaration-contradicts-code`
+# exists to catch in the other direction.
+#
+# THE WRITE PATH IS ABSENT, AND IT IS ABSENT BY A MIGRATION, NOT BY OMISSION.
+# `migrations/00008_publisher_identity_immutable.sql` is `with check (false)`: a
+# publisher, and the table owner, may not UPDATE `publishers` at all. Nothing in
+# `internal/` writes `publishers` — `internal/pantrydb/queries/catalog.sql` is
+# four reads — so no row here claims a publisher write path, and none should be
+# added until a flow exists that needs one.
+#
+# `surface.kind: http` and there are no `kind: job` rows because this service has
+# no queue consumer, no cron entry and no CLI entry point. That is NOT courier's
+# shape: courier declared three Oban workers precisely because a route grep cannot
+# see one. Here there is nothing to declare, and `grep -rniE 'oban|sidekiq|queue
+# |consumer|cron|schedule' internal/ cmd/` returns no production hit.
+
+version: 1
+service: pantry
+
+surface:
+  kind: http
+  # The ONE file that registers anything. See note 1: the checker reads it and
+  # finds zero, because oapi-codegen emits `options.BaseURL+"/v1/…"`.
+  sources:
+    - internal/api/api.gen.go
+  # ZERO, and see note 2 — this is the number the checker can honestly hold, not
+  # the number of routes pantry serves. The ratchet that would otherwise live
+  # here is `internal/httpapi/scope_declaration_test.go`.
+  minimum: 0
+  # pantry's own word for it. `account_id` would be a lie that happened to pass
+  # `carries_key`, which compares case- and separator-insensitively: `id` is what
+  # `migrations/00002_publishers.sql` and `migrations/00006_rls.sql` call it.
+  accountKey: publisher_id
+
+entryPoints:
+  # ==========================================================================
+  # THE REGISTRY — anonymous traffic. Two rows, both reading `pantry.services`
+  # through a role that has no identity, with the visibility decided by the RLS
+  # policy underneath rather than by anything in the handler.
+  # ==========================================================================
+  - id: list-services
+    kind: http
+    method: GET
+    path: /v1/services
+    accountScoped: false
+    reason: public
+    registeredAt: { file: internal/api/api.gen.go, line: 707 }
+
+  - id: get-service
+    kind: http
+    method: GET
+    path: /v1/services/{name}
+    accountScoped: false
+    reason: public
+    registeredAt: { file: internal/api/api.gen.go, line: 710 }
+
+  # ==========================================================================
+  # THE PROBES — deliberately outside the `/v1` prefix, per core's conventions.
+  # `/readyz` does reach the database (it asks for a row count) and so is the
+  # only row here that touches pantry's own data; it reaches no publisher's.
+  # ==========================================================================
+  - id: healthz
+    kind: http
+    method: GET
+    path: /healthz
+    accountScoped: false
+    reason: public
+    registeredAt: { file: internal/api/api.gen.go, line: 713 }
+
+  - id: readyz
+    kind: http
+    method: GET
+    path: /readyz
+    accountScoped: false
+    reason: public
+    registeredAt: { file: internal/api/api.gen.go, line: 716 }
