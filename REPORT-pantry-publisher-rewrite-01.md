@@ -476,3 +476,27 @@ PANTRY_PG_BIN=/opt/homebrew/opt/postgresql@18/bin ./tests/rls.sh
 
 Both are green: **99 checks, 99 passed, 0 failed, 0 skipped**; **5 mutations, 5
 verdicts as predicted, 7 green controls, 5 reverts verified, 0 problems.**
+
+### 9.1 Diff this branch with THREE dots
+
+This branch was cut from `3ccc679`, and `master` has since advanced to `e7ac3b3`,
+which merged `worker/pantry-narrowing-01`. So:
+
+```
+git diff master worker/pantry-publisher-rewrite-01        # TWO dots — MISLEADING
+```
+
+reports `REPORT-pantry-narrowing-01.md` and both files under
+`reports/pantry-narrowing-01/` as **deleted**. They are not. My branch is one
+merge behind and simply does not contain them; nothing in this branch removes
+them. A two-dot diff between a branch and a master it does not include always
+reads that way.
+
+```
+git diff master...worker/pantry-publisher-rewrite-01       # THREE dots — correct
+```
+
+is the change set, and it is the seven files in §5. The merge itself is clean and
+verified with `git merge-tree`: `narrowing-01` **added** three files and touched
+neither `migrations/` nor `tests/`, so there was nothing for this branch to
+conflict with. Merging loses nothing of it.
