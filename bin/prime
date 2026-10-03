@@ -97,6 +97,45 @@ rustc --version
 step "the Go tier: gofmt, build, vet, test"
 ./bin/prime-go
 
+step "the RLS suite, against a real postgres"
+# THIS TIER IS ABOUT THE MIGRATIONS, and it is the only tier in this gate that
+# starts a database. It is here and not in `bin/prime-go` because the Go tier's
+# stated subject is "no network, no database" (its own header), and quietly
+# changing that would be a worse surprise than one more step in the gate.
+#
+# THE SKIP IS COUNTED, not absent. `tests/rls.sh` prints one `skip:` line naming
+# the reason when it cannot find `pg_ctl`, and the count is printed below and
+# asserted on, for the reason the rest of this script counts `SKIP ` lines: a tier
+# that quietly did not run is indistinguishable from a tier that passed, and this
+# repository has a red for exactly that — `cargo test` reporting `114 passed` on a
+# machine with no cafaye workspace. `PANTRY_RLS_REQUIRED=1` turns the skip into an
+# exit 3, and that is how CI should run it: a CI job that has a postgres service
+# should be red when it does not, and a developer with no postgres should still be
+# able to run the gate.
+rls_log="$(mktemp "${TMPDIR:-/tmp}/pantry-prime-rls.XXXXXX")"
+set +e
+./tests/rls.sh 2>&1 | tee "$rls_log"
+rls_status="${PIPESTATUS[0]}"
+set -e
+rls_line="$(grep -m1 '^checks: ' "$rls_log" || true)"
+rls_checks="$(printf '%s' "$rls_line" | awk '{print $2}')"
+rls_passed="$(printf '%s' "$rls_line" | awk '{print $4}')"
+rls_skipped="$(grep -c '^skip: ' "$rls_log" || true)"
+echo "rls: ${rls_passed:-0} of ${rls_checks:-0} checks passed, ${rls_skipped} tier skipped"
+if [[ "$rls_skipped" -ne 0 ]]; then
+  # Named, for the same reason the cargo skip count above names its tiers: a count
+  # with no variable is a number nobody can act on.
+  echo "  the RLS tier did not run, and those counted as nothing. Install a"
+  echo "  PostgreSQL server or set PANTRY_PG_BIN to its bin directory."
+  grep '^skip: ' "$rls_log" | sort -u | sed 's/^/  /'
+fi
+if [[ "$rls_status" -ne 0 ]]; then
+  echo "bin/prime: tests/rls.sh exited ${rls_status}" >&2
+  rm -f "$rls_log"
+  exit "$rls_status"
+fi
+rm -f "$rls_log"
+
 step "cargo fmt --check"
 cargo fmt --check
 

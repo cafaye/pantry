@@ -761,3 +761,106 @@ which is why that fixture exists.
 > * Cost of flipping: one function and one `eprintln!` in `tests/drift.rs`. No
 >   assertion, nothing in `src/`, no change to any HTTP contract, and no
 >   re-record of anything.
+
+---
+
+## D31 — `FORCE ROW LEVEL SECURITY`, and which role performs which operation — RULED (2026-10-03, `00006_rls.sql`; the role map re-decided by registry-pantry-schema-02)
+
+`registry-pantry-schema-01` recorded this decision in `migrations/00006_rls.sql`
+and pointed at "DECISIONS.md as D31" — **and D31 did not exist.** The file named
+a decision that was nowhere to be found, which is the same failure as a check that
+covers nothing: a reader who trusted the pointer found nothing to read. This is
+the entry, and the second half of it is new: the first packet decided *whether*
+to FORCE and never decided *who does what under it*, which is why the schema
+applied cleanly and had no data path.
+
+**The `FORCE` half, unchanged and still correct.** Every service in this fleet
+runs its migrations as the role that owns its tables, so without
+`force row level security` the owner walks straight past its own policies while
+`pg_class.relrowsecurity` still reads `true`. `relforcerowsecurity` is the only
+catalog that says otherwise and no lint in this fleet checks it. The cost is real
+and is asserted rather than described: with `FORCE` on and no identity set, `pantry`
+reads **zero** rows (`tests/rls.sh` F2), not every row.
+
+**The role/operation map, which nobody had decided.** An absent policy that nobody
+decided is the defect; here is the table, and every row of it is an executed
+check in `tests/rls_checks.sh` rather than a claim:
+
+| operation | role | why this one |
+|---|---|---|
+| public catalog read — `GET /v1/services`, versions, owners | `pantry_public` | granted `SELECT` on four tables and nothing else, so it cannot write even if a policy were wrong. Its own policies scope it to published/first-party/verified rows. |
+| a publisher's own rows — submit a service, add a version, add an edge, withdraw | `pantry_publisher` | scoped by policy to `current_publisher_id()`, and Phase 1 has no self-registration so `publishers` rows come from a migration, a fixture or an admin. |
+| review, approve, publish, and **the first-party ingest** | `pantry_admin` | the decision-maker, deliberately not the deploy path: it is a separate role so a migration cannot publish whatever it liked. |
+| migrations, DDL | the provisioning role | `00001` needs `create role`, so the migrations cannot be applied by `pantry` — measured: `permission denied to create role`. |
+| backfill / maintenance | `pantry`, **with `begin_publisher/1` called** | so the owner's own maintenance obeys the same rule as everybody else rather than being the one identity in the schema that bypasses the boundary it wrote. |
+
+**`pantry` has NO INSERT policy, deliberately.** Ingesting the fleet's manifests
+writes first-party rows; a first-party service has `publisher_id IS NULL` by
+`00003`'s `services_first_party_has_no_publisher` CHECK; every publisher-shaped
+insert policy requires `publisher_id = current_publisher_id()`. So no
+publisher-shaped policy can admit a first-party row, and the policy that could
+would be an **unconditional** one — on the role that owns the tables and runs the
+migrations. That is the bypass `FORCE` exists to prevent, reached through a
+policy instead of through `relforcerowsecurity = false`.
+
+**The alternative, rejected.** An unconditional `for insert to pantry with check
+(true)` on four tables: it makes the deploy path the ingest path, which is
+precisely the identity `pantry_admin` exists to keep separate, and it reopens in
+policy form the hole `FORCE` just closed. **The cost of the choice**, stated
+rather than discovered later: the fleet's manifests reach the database through a
+role that is not the one serving HTTP, so the sync needs a login that is a member
+of `pantry_admin` — one provisioning statement, and `00001` already says
+credentials are the cluster's business. `pantry` is `NOINHERIT`, so a membership in
+`pantry_admin` does not leak into the serving role even if one login holds both.
+
+Proven in both directions rather than argued: the same first-party insert is
+**permitted** as `pantry_admin` (E5) and **refused** as `pantry` (F5). The second
+half is the only thing that makes the first a decision instead of an accident of
+who happened to hold a grant.
+
+## D32 — the migrations do not define who owns the schema, so two deployments get different privileges — OPEN
+
+**The finding.** `00001`..`00006` contain no `alter … owner to` and no
+`alter schema … owner to`. They therefore do not decide whether the schema and its
+tables are owned by `pantry` or by the provisioning role that runs them — and that
+decides where `pantry`'s schema `USAGE` comes from, because a schema's **owner**
+holds every privilege on it implicitly and a role that merely *holds objects in
+it* gets nothing. Measured on PostgreSQL 18.4, both shapes green after
+registry-pantry-schema-02's fix, and materially different before it:
+
+| who owns `schema pantry` | `pantry`'s `USAGE` before this packet | after |
+|---|---|---|
+| `pantry` | implicit (owner) — the lockout was invisible on a dev box | granted explicitly |
+| the provisioning role | **none** — every read and every write a 403 | granted explicitly |
+
+**Why it is open rather than fixed.** The two candidate fixes are both bigger than
+a lockout: (a) add `alter schema pantry owner to pantry;` plus four `alter table`
+statements to `00001`, which requires the migration role to be a member of
+`pantry` and so puts a grant-to-a-role-the-migration-is-creating into the same
+file; (b) require provisioning to hand the objects over, which is what
+`tests/rls.sh` does in shape 1 and what the packet's premise assumed. (a) is the
+better long-term shape and is a provisioning decision as much as a migration one.
+
+**What was done instead, and why it is the right narrowing.** The fix is
+`grant usage on schema pantry to pantry_public, pantry_publisher, pantry_admin,
+pantry` — one statement that is *correct in both shapes*. Where `pantry` owns the
+schema the grant is redundant and harmless; where it does not, the grant is the
+only thing that supplies the privilege. A fix that only works in one deployment is
+a fix for one deployment.
+
+**The cost of flipping**, so the decision can be made later without archaeology:
+if the manager rules for (a), it is four statements in `00001` — and
+`tests/rls.sh` shape 1 must then keep handing the tables to `pantry` and NOT the
+schema, or the suite goes vacuous for the same reason it would have been before
+this packet. **A test that cannot fail is a deleted test wearing a disguise**
+(`DECISIONS.md` D29's shape, one directory over).
+
+**The measurement that makes this unavoidable rather than tidy:** with
+`force row level security` on, a foreign key's referential-integrity check runs as
+the **owner of the referencing table**. So with `pantry` holding no schema `USAGE`,
+`services.publisher_id`'s FK to `publishers` fails for *every* writer — `pantry`,
+`pantry_admin` and `pantry_publisher` alike — with an error naming a table nobody
+was thinking about. Removing the single grant and re-running the suite turns 34 of
+77 checks red, and only four of them are about `pantry`. An owner role's privileges
+are load-bearing for every other role's writes, which is the least obvious fact in
+this schema and the one the missing grant demonstrated.
