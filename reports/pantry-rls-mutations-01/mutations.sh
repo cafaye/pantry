@@ -164,6 +164,27 @@ grep_confirm() {
   return 0
 }
 
+# block_confirm <file> <multi-line text> <want> <label> <note>
+# `grep -c` counts LINES, so a multi-line needle never matches one and a
+# multi-line confirmation built on it silently confirms nothing. This is the
+# literal-containment form, and it is what confirms the mutations that span
+# lines. It reads the file fresh from disk, so it is a real confirmation that the
+# mutation is present in the bytes the suite is about to run, not a restatement
+# of what the writer believed it wrote.
+block_confirm() {
+  local file="$1" text="$2" want="$3" label="$4" note="${5:-}" got
+  got=$(TEXT="$text" FILE="$file" python3 -c '
+import os
+print(open(os.environ["FILE"], encoding="utf-8").read().count(os.environ["TEXT"]))')
+  if [ "$got" != "$want" ]; then
+    say "ABORT  $label: expected $want occurrence(s) of the mutated block in ${file#$REPO/}, found $got"
+    PROBLEMS=$((PROBLEMS+1))
+    return 1
+  fi
+  say "        grep-confirmed: $got occurrence(s) of the mutated block in ${file#$REPO/}$note"
+  return 0
+}
+
 tree_clean() {
   local d
   for d in "${SUBJECT_DIRS[@]}"; do
@@ -217,7 +238,21 @@ run_suite() {
   set -- $line
   RUN_TOTAL=$1; RUN_PASS=$2; RUN_FAIL=$3; RUN_SKIP=$4
   say "        tests/rls.sh -> $RUN_TOTAL run, $RUN_PASS passed, $RUN_FAIL failed, $RUN_SKIP skipped (exit $RUN_RC)"
-  [ -n "$kept" ] && rm -rf "$kept"
+  # The TSV is COPIED OUT before the cluster's workdir goes, not read from in
+  # place. Reading it after `rm -rf` classifies an empty string as "nothing
+  # failed", which is how a run with 6 reds printed "NOT RED AT ALL" on its way
+  # to calling a widening undetectable. Every verdict below comes from this copy.
+  if [ -n "$kept" ] && [ -f "$kept/results.tsv" ]; then
+    cp "$kept/results.tsv" "$WORK/$label.results.tsv"
+    RESULTS="$WORK/$label.results.tsv"
+  else
+    RESULTS=""
+    say "ABORT  $label: tests/rls.sh kept no results.tsv, so no red can be named."
+    PROBLEMS=$((PROBLEMS+1))
+    [ -n "$kept" ] && rm -rf "$kept"
+    return 1
+  fi
+  rm -rf "$kept"
   return 0
 }
 
@@ -285,6 +320,11 @@ tier() { printf '%s' "$1" | sed -E 's/^([A-J])[0-9].*/\1/'; }
 OBS_D=0; OBS_OTHER=0; OBS_NAMES=""; OBS_NOTE=""
 observe() {
   local label="$1" predicted="$2" out v n
+  # Reset per breakage. These are this breakage's numbers, and the whole point of
+  # printing them separately from the tallies is that they are not cumulative —
+  # a carried-over count reported as "2 D-tier reds" for a breakage that had none
+  # is the exact blended number this recipe exists to refuse.
+  OBS_D=0; OBS_OTHER=0; OBS_NAMES=""; OBS_NOTE=""
   out=$(classify)
   if [ -z "$out" ]; then
     say "        NOT RED AT ALL: every check passed with the breakage planted."
@@ -346,8 +386,16 @@ b1_drop_select_predicate() {
   to pantry_publisher, pantry
   using (true);
 ' || return 1
-  grep_confirm "$R6" 'to pantry_publisher, pantry
-  using (true);' 1 "B1" || return 1
+  block_confirm "$R6" 'create policy publishers_publisher_select
+  on pantry.publishers
+  for select
+  to pantry_publisher, pantry
+  using (true);
+' 1 "B1" \
+" — the policy exists, is unchanged but for its predicate, and now admits every row" || return 1
+  block_confirm "$R6" '  using (id = (select pantry.current_publisher_id()));
+' 0 "B1" \
+" — the SELECT policy's predicate text is gone from the file" || return 1
   say "        B1: publishers_publisher_select lost its predicate — using -> true"
 }
 
@@ -365,9 +413,16 @@ b2_delete_with_check() {
 ' \
 '  using (id = (select pantry.current_publisher_id()));
 ' || return 1
-  grep_confirm "$R6" 'publishers_publisher_update' 1 "B2" \
-    ", and no with check line remains under it" || return 1
-  grep_confirm "$R6" '  with check (id = (select pantry.current_publisher_id()));' 0 "B2" || return 1
+  block_confirm "$R6" 'create policy publishers_publisher_update
+  on pantry.publishers
+  for update
+  to pantry_publisher, pantry
+  using (id = (select pantry.current_publisher_id()));
+' 1 "B2" \
+" — the UPDATE policy is now using-only" || return 1
+  block_confirm "$R6" '  with check (id = (select pantry.current_publisher_id()));
+' 0 "B2" \
+" — and no with check remains anywhere in the file" || return 1
   say "        B2: publishers_publisher_update lost its with check — using survives"
 }
 
