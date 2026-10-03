@@ -9,6 +9,35 @@ bottom.
 
 ### Added
 
+- **The compatibility graph is on the wire.** Two operations, and the direction
+  is a decision rather than a parameter: `GET /v1/services/{name}/requirements`
+  answers "what do I need to run this?" and `GET /v1/services/{name}/required-by`
+  answers "who breaks if I change this?". Both read `requires` edges only —
+  `conflicts_with` is a different fact and gets its own operation when it gets
+  one, because answering "what must I not run alongside?" through the same shape
+  that answers "what must I run?" is how a caller installs a conflict.
+
+  The query existed since the first data packet; what held it off the wire was
+  deliberate — the document had no field for it and `cafaye-ts` has a client
+  generated from the document. The decision that packet asked for is now made:
+  **two operations, not a `Service` field**, because the two directions are two
+  questions asked by two different people, and a field would have made every
+  list row carry graph data nobody asked for on that call. DECISIONS.md D34.
+
+  An edge is visible only when both of its endpoints are visible to the caller,
+  which is 00007's policy answering rather than a filter; a known service with
+  no edges is `200` with `data: []`, and an unknown name is `404` — the
+  distinction is enforced by the catalog checking the subject through `Get`
+  before the edge query runs, because the edge query answers zero rows
+  identically for a leaf and for a typo.
+
+### Fixed
+
+- Two stale comment blocks claimed the graph was unreachable and cited
+  `TestTheCompatibilityGraphIsUnreadableByTheCatalogRole` — a tripwire test that
+  asked to be deleted on the day `00007` made the graph readable. The reachability
+  test exists; the prose describing it did not move with it.
+
 - **The rollback is a check now, and it found a migration that could not be
   rolled back.** `tests/rls.sh` applied only the `-- +goose Up` sections; the
   `-- +goose Down` half was never applied by anything in this repository, since

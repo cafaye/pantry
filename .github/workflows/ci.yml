@@ -13,7 +13,7 @@ env:
   # "green over nothing" failure this repository has been bitten by three times.
   # So CI asks for the hard form and provides the thing it asks for.
   #
-  # `PANTRY_RLS_REQUIRED` is read by `tests/rls.sh` (the 89 SQL checks) and
+  # `PANTRY_RLS_REQUIRED` is read by `tests/rls.sh` (the 99 SQL checks) and
   # `PANTRY_DB_REQUIRED` by `bin/prime-go` (the 12 database-backed Go gates).
   # Both turn "no server binaries" into exit 3.
   PANTRY_RLS_REQUIRED: "1"
@@ -68,7 +68,7 @@ jobs:
       #
       # AND NOTHING IN THIS STEP MAY NAME THE GATE, which is a correction the
       # self-test forced rather than a style. This step used to end its error
-      # message with `bin/prime would then be a green badge over 89 SQL checks`,
+      # message with `bin/prime would then be a green badge over 99 SQL checks`,
       # and core reads a workflow by substring-matching the declared argv against
       # every `run:` body — with a `./` prefix treated as optional. That message
       # was inside a `run:` body, so it satisfied `gate.ci`'s reachability check
@@ -85,7 +85,7 @@ jobs:
           if [ -z "$pgbin" ]; then
             echo "::error::no PostgreSQL server binaries (pg_ctl, psql, initdb) on this" >&2
             echo "::error::runner. tests/rls.sh would print a counted skip and exit 0," >&2
-            echo "::error::and the gate would then be a green badge over 89 SQL" >&2
+            echo "::error::and the gate would then be a green badge over 99 SQL" >&2
             echo "::error::checks and 12 Go gates that never ran. Install PostgreSQL" >&2
             echo "::error::server binaries, or set PANTRY_PG_BIN." >&2
             exit 1

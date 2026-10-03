@@ -121,13 +121,32 @@ func TestEveryMountedRouteIsARead(t *testing.T) {
 // because a count cannot say WHICH route appeared, and this repository has been
 // caught by a gate that counted what it should have named (bin/prime's test
 // binary count, gate.yml's floor on it).
-func TestTheRouterServesTheFourDeclaredOperations(t *testing.T) {
+// NAMED FOR THE COUNT NO LONGER, and the rename is part of the change: this
+// was `TestTheRouterServesTheFourDeclaredOperations` and the document now
+// declares six. A test whose name carries a number goes stale as a lie rather
+// than as a failure — it keeps passing while asserting a census that is two
+// behind — so the name carries the PROPERTY instead, and the count is asserted
+// the only place a count can be, in the list itself.
+//
+// The list is the whole assertion and it is deliberately literal. Deriving it
+// from the document would make this test read the document and agree with it,
+// which cannot fail; writing the six out is the compiler-checked bridge
+// between what openapi/v1.yaml declares and what the router mounts, and it is
+// the only check on the direction the generated interface cannot see: a path
+// in the document whose implementation was never registered.
+func TestTheRouterServesEveryDeclaredOperation(t *testing.T) {
 	got := mountedRoutes(t)
 	want := []string{
 		"GET /healthz",
 		"GET /readyz",
 		"GET /v1/services",
 		"GET /v1/services/{name}",
+		// The router sorts chi's tree, and `/required-by` sorts before
+		// `/requirements` there while the document lists them the other way
+		// round — the assertion reads what the router serves, so it lists the
+		// routes in the order the router will report them.
+		"GET /v1/services/{name}/required-by",
+		"GET /v1/services/{name}/requirements",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("the router serves %d routes %v, want %d %v", len(got), got, len(want), want)

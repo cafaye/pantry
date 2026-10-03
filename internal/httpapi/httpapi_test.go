@@ -3,6 +3,8 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -335,6 +337,14 @@ func (f fakeCatalog) Count(context.Context) (int, error) {
 	return f.services, nil
 }
 
+func (f fakeCatalog) Requirements(context.Context, string) ([]api.CompatibilityEdge, error) {
+	return nil, f.err
+}
+
+func (f fakeCatalog) RequiredBy(context.Context, string) ([]api.CompatibilityEdge, error) {
+	return nil, f.err
+}
+
 // panicOnCount is the fault injection for the panic path, and it replaces the
 // CATALOG rather than the router: the request still passes through chi, still
 // gets a trace id, still recovers — the whole chain production uses.
@@ -345,3 +355,236 @@ func (panicOnCount) List(context.Context, catalog.Filter) ([]api.Service, *strin
 }
 func (panicOnCount) Get(context.Context, string) (api.Service, error) { return api.Service{}, nil }
 func (panicOnCount) Count(context.Context) (int, error)               { panic("injected") }
+func (panicOnCount) Requirements(context.Context, string) ([]api.CompatibilityEdge, error) {
+	return nil, nil
+}
+func (panicOnCount) RequiredBy(context.Context, string) ([]api.CompatibilityEdge, error) {
+	return nil, nil
+}
+
+// graphCatalog is the fake for the two graph operations, and it keeps the two
+// directions' answers in separate fields because the whole point of the tests
+// below is that the two questions are not the same question read from two ends.
+//
+// `known` is the set of names the fake answers with edges; anything else is
+// ErrNoSuchService, which is what makes the 404 path testable from the handler
+// down without a database.
+type graphCatalog struct {
+	requirements map[string][]api.CompatibilityEdge
+	requiredBy   map[string][]api.CompatibilityEdge
+	known        []string
+	err          error
+}
+
+func (g graphCatalog) List(context.Context, catalog.Filter) ([]api.Service, *string, error) {
+	return nil, nil, g.err
+}
+func (g graphCatalog) Get(_ context.Context, name string) (api.Service, error) {
+	for _, k := range g.known {
+		if k == name {
+			return api.Service{Name: name}, nil
+		}
+	}
+	return api.Service{}, catalog.ErrNoSuchService
+}
+func (g graphCatalog) Count(context.Context) (int, error) { return len(g.known), nil }
+
+// Both graph methods answer ErrNoSuchService for a name outside `known`, on
+// PURPOSE and in the fake rather than only in `Postgres`: the interface's
+// contract is that an unknown subject is an error, and if the fake answered a
+// quiet empty list where the real catalog answers a sentinel, these handler
+// tests would be certifying a 200 that no real database can produce. A fake
+// that is more forgiving than the thing it stands in for is a fake that hides
+// the exact bug the 404 test below exists for.
+func (g graphCatalog) Requirements(_ context.Context, name string) ([]api.CompatibilityEdge, error) {
+	if g.err != nil {
+		return nil, g.err
+	}
+	if !g.knows(name) {
+		return nil, catalog.ErrNoSuchService
+	}
+	edges := g.requirements[name]
+	if edges == nil {
+		edges = []api.CompatibilityEdge{}
+	}
+	return edges, nil
+}
+func (g graphCatalog) RequiredBy(_ context.Context, name string) ([]api.CompatibilityEdge, error) {
+	if g.err != nil {
+		return nil, g.err
+	}
+	if !g.knows(name) {
+		return nil, catalog.ErrNoSuchService
+	}
+	edges := g.requiredBy[name]
+	if edges == nil {
+		edges = []api.CompatibilityEdge{}
+	}
+	return edges, nil
+}
+
+func (g graphCatalog) knows(name string) bool {
+	for _, k := range g.known {
+		if k == name {
+			return true
+		}
+	}
+	return false
+}
+
+// The seed's graph, so the fixtures below read like the database the fake
+// stands in for: muse requires identity and courier; identity is required by
+// courier and muse.
+var (
+	museRequirements = []api.CompatibilityEdge{
+		{Name: "courier", VersionRange: "^0.1.0", Dependency: api.Required},
+		{Name: "identity", VersionRange: "^0.1.0", Dependency: api.Required},
+	}
+	identityRequiredBy = []api.CompatibilityEdge{
+		{Name: "courier", VersionRange: "^0.1.0", Dependency: api.Required},
+		{Name: "muse", VersionRange: "^0.1.0", Dependency: api.Required},
+	}
+)
+
+// TestRequirementsIsTheForwardDirectionOfTheGraph asserts the 200 path, and
+// three things on it that are easy to get wrong separately:
+//
+//   - the `service` field echoes the path parameter, because a client that
+//     holds several responses must be able to tell them apart without having
+//     kept the request URLs;
+//   - the edges are the CATALOG's edges, serialised through the document's
+//     generated type — a pantry-owned edge shape here would be a second
+//     description of the same row and they would drift;
+//   - the three fields are all present, because `dependency` is the field that
+//     separates "does not start without it" from "runs degraded", and an edge
+//     that loses it turns a warning into an outage.
+func TestRequirementsIsTheForwardDirectionOfTheGraph(t *testing.T) {
+	cat := graphCatalog{
+		requirements: map[string][]api.CompatibilityEdge{"muse": museRequirements},
+		known:        []string{"muse"},
+	}
+	rec := get(t, New(cat), http.MethodGet, "/v1/services/muse/requirements")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET requirements is %d, want 200", rec.Code)
+	}
+	body := decode[api.ServiceRequirements](t, rec)
+	if body.Service != "muse" {
+		t.Errorf("service is %q, want the path parameter echoed", body.Service)
+	}
+	if len(body.Data) != 2 {
+		t.Fatalf("data holds %d edges, want 2", len(body.Data))
+	}
+	if body.Data[0].Name != "courier" || body.Data[1].Name != "identity" {
+		t.Errorf("edges are [%s %s], want ordered by the required service's name",
+			body.Data[0].Name, body.Data[1].Name)
+	}
+	if body.Data[0].VersionRange != "^0.1.0" || body.Data[0].Dependency != api.Required {
+		t.Errorf("edge is %+v, want the publisher's range verbatim and the dependency named",
+			body.Data[0])
+	}
+}
+
+// TestRequiredByIsTheOtherQuestionAndNotTheSameAnswer runs ONE catalog through
+// BOTH operations for the same name and asserts the answers differ, because the
+// failure this guards against is not a wrong query — it is the day somebody
+// "simplifies" the two handlers into one that answers `Requirements` for both
+// paths. Every response would still be a 200 with plausible edges in it, and
+// the backward answer would be about the wrong endpoint.
+//
+// The wrappers being distinct generated types is the compile-time half of that
+// guard; this is the runtime half, because a shared handler could satisfy both
+// signatures with one type.
+func TestRequiredByIsTheOtherQuestionAndNotTheSameAnswer(t *testing.T) {
+	// `identity` is the subject the seed actually supports for this: the graph
+	// holds no edge WITH identity as its source, so its forward answer is the
+	// empty list while its backward answer holds two services. Both halves of
+	// the assertion are then about the same subject, which is the comparison
+	// that catches one handler answering the other's question.
+	cat := graphCatalog{
+		requirements: map[string][]api.CompatibilityEdge{"identity": {}},
+		requiredBy:   map[string][]api.CompatibilityEdge{"identity": identityRequiredBy},
+		known:        []string{"identity"},
+	}
+	fwd := get(t, New(cat), http.MethodGet, "/v1/services/identity/requirements")
+	bwd := get(t, New(cat), http.MethodGet, "/v1/services/identity/required-by")
+	if fwd.Code != http.StatusOK || bwd.Code != http.StatusOK {
+		t.Fatalf("GET requirements is %d and GET required-by is %d, want 200 and 200",
+			fwd.Code, bwd.Code)
+	}
+	fwdBody := decode[api.ServiceRequirements](t, fwd)
+	bwdBody := decode[api.ServiceRequiredBy](t, bwd)
+	if len(fwdBody.Data) != 0 {
+		t.Errorf("identity requires %d edges through the fake, want none — the fixture wants "+
+			"a subject whose two answers CANNOT be confused", len(fwdBody.Data))
+	}
+	if len(bwdBody.Data) != 2 {
+		t.Errorf("required-by(identity) holds %d edges, want the two services the seed says "+
+			"require it", len(bwdBody.Data))
+	}
+	if bwdBody.Service != "identity" {
+		t.Errorf("required-by's service field is %q, want the SUBJECT echoed — the service "+
+			"being depended on, not the services that depend on it", bwdBody.Service)
+	}
+}
+
+// TestTheGraphRoutesAnswer404ForAnUnknownName — the document's rule for the
+// collection ("no service matches" is a 200 with an empty list) does NOT extend
+// to the graph routes, because there is no collection here: the path names one
+// service, and a service that does not exist makes the question unanswerable
+// rather than empty. A 200 with `data: []` on a name that is not registered
+// would tell a client that a service with no dependencies exists, and they
+// would go and try to run it.
+func TestTheGraphRoutesAnswer404ForAnUnknownName(t *testing.T) {
+	for _, path := range []string{"/v1/services/nope/requirements", "/v1/services/nope/required-by"} {
+		rec := get(t, New(graphCatalog{known: []string{"muse"}}), http.MethodGet, path)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s is %d, want 404", path, rec.Code)
+			continue
+		}
+		problem := decode[api.Problem](t, rec)
+		if problem.Code != api.NotFound {
+			t.Errorf("GET %s code is %q, want %q", path, problem.Code, api.NotFound)
+		}
+	}
+}
+
+// TestALeafOfTheGraphIsAnAnswerNotAnAbsence — the other 200, and the one the
+// 404 test above exists to be distinct from. `caf` requires nothing and is
+// required by nothing; both of its answers are empty ARRAYS and not nulls,
+// because the document's convention is "empty rather than absent" and a JSON
+// null in `data` makes every client's loop a special case.
+func TestALeafOfTheGraphIsAnAnswerNotAnAbsence(t *testing.T) {
+	cat := graphCatalog{requirements: map[string][]api.CompatibilityEdge{},
+		requiredBy: map[string][]api.CompatibilityEdge{}, known: []string{"caf"}}
+	for _, tc := range []struct {
+		path string
+		any  func() error
+	}{
+		{"/v1/services/caf/requirements", func() error {
+			b := decode[api.ServiceRequirements](t,
+				get(t, New(cat), http.MethodGet, "/v1/services/caf/requirements"))
+			if b.Data == nil {
+				return errors.New("data is null, want []")
+			}
+			if len(b.Data) != 0 {
+				return fmt.Errorf("data holds %d edges, want none", len(b.Data))
+			}
+			return nil
+		}},
+		{"/v1/services/caf/required-by", func() error {
+			b := decode[api.ServiceRequiredBy](t,
+				get(t, New(cat), http.MethodGet, "/v1/services/caf/required-by"))
+			if b.Data == nil {
+				return errors.New("data is null, want []")
+			}
+			if len(b.Data) != 0 {
+				return fmt.Errorf("data holds %d edges, want none", len(b.Data))
+			}
+			return nil
+		}},
+	} {
+		if err := tc.any(); err != nil {
+			t.Errorf("GET %s: %v", tc.path, err)
+		}
+	}
+}

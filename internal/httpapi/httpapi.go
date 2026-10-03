@@ -297,6 +297,66 @@ func (s *Service) GetService(w http.ResponseWriter, r *http.Request, name string
 	writeJSON(w, r, http.StatusOK, svc)
 }
 
+// ListServiceRequirements answers the forward direction of the graph: what does
+// running this service need?
+//
+// The three answers are the same three the data routes have, and they must not
+// look alike for the same reason: a known service with no edges is a 200 with
+// `data: []` because the database answered and the answer is "leaf of the
+// graph"; an unknown name is a 404 because the question was about a service
+// that does not exist; and a database that cannot be read is a 503, because an
+// empty graph in place of an error is a caller installing less than they
+// needed. There is no fallback in this handler for the same reason there is
+// none anywhere in this file.
+func (s *Service) ListServiceRequirements(w http.ResponseWriter, r *http.Request, name string) {
+	s.writeCompatEdges(w, r, name, "requirements", func(ctx context.Context) ([]api.CompatibilityEdge, error) {
+		return s.catalog.Requirements(ctx, name)
+	})
+}
+
+// ListServiceRequiredBy answers the backward direction: who depends on this
+// service? Same three answers, same reasons, other endpoint.
+func (s *Service) ListServiceRequiredBy(w http.ResponseWriter, r *http.Request, name string) {
+	s.writeCompatEdges(w, r, name, "required-by", func(ctx context.Context) ([]api.CompatibilityEdge, error) {
+		return s.catalog.RequiredBy(ctx, name)
+	})
+}
+
+// writeCompatEdges is the body both graph operations share, and the direction
+// is a LABEL rather than a branch: the two calls above differ in which catalog
+// method runs and which wrapper is serialised, and nothing else. Putting the
+// direction in one place is what keeps the two responses structurally
+// identical — which the document wants, edge shape being edge shape — while
+// the wrappers stay distinct types, so a client that confuses the questions
+// gets a decode error rather than an outage.
+func (s *Service) writeCompatEdges(w http.ResponseWriter, r *http.Request, name, direction string, read func(context.Context) ([]api.CompatibilityEdge, error)) {
+	if s.catalog == nil {
+		s.writeNoCatalog(w, r)
+		return
+	}
+
+	edges, err := read(r.Context())
+	switch {
+	case errors.Is(err, catalog.ErrNoSuchService):
+		writeProblem(w, r, api.NotFound, http.StatusNotFound,
+			"no official cafaye service is registered under that name")
+		return
+	case err != nil:
+		s.logger.ErrorContext(r.Context(), "catalog: the compatibility graph could not be read",
+			"name", name, "direction", direction, "error", err, "trace_id", traceIDFrom(r.Context()))
+		writeProblem(w, r, api.Unavailable, http.StatusServiceUnavailable,
+			"the registry could not be read from its database: "+err.Error())
+		return
+	}
+
+	switch direction {
+	case "requirements":
+		writeJSON(w, r, http.StatusOK, api.ServiceRequirements{Service: name, Data: edges})
+	case "required-by":
+		writeJSON(w, r, http.StatusOK, api.ServiceRequiredBy{Service: name, Data: edges})
+	}
+}
+
 // listQueryParameters is the document's `GET /v1/services` parameter set, and it
 // is written out here because `openapi/v1.yaml` is not readable at runtime.
 //

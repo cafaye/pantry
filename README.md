@@ -69,6 +69,57 @@ The **same object**, not wrapped — core's convention wraps collections in
 `data`/`page`, and a single resource is not a collection. Unknown name: `404`
 with the problem envelope below.
 
+### `GET /v1/services/{name}/requirements`
+
+The **forward direction of the compatibility graph**: what does running this
+service need? One `requires` edge per entry, with the publisher's own version
+range verbatim and how hard the edge binds — `required` (does not start without
+it), `soft` (starts and runs degraded), `dev` (build and test time only).
+
+```json
+{
+  "service": "courier",
+  "data": [
+    { "name": "identity", "version_range": "^0.1.0", "dependency": "required" }
+  ]
+}
+```
+
+An edge appears only when **both** of its endpoints are visible to you — an
+edge into a draft is work in progress, and work in progress is not in the public
+graph. That is the database's row-level policy answering, not a filter on this
+route. A known service with no edges is `200` with `"data": []`; an unknown name
+is `404`, because "a leaf of the graph" and "no such service" are different
+answers and only one of them is safe to install from.
+
+**`requires` edges only.** `conflicts_with` — "what must I NOT run alongside?" —
+deliberately has no operation in this version, because answering both questions
+under one name is how a caller ends up installing a conflict.
+
+### `GET /v1/services/{name}/required-by`
+
+The **backward direction**, and a different question rather than the same one
+read from the other end: who requires this service? This is the
+upgrade-safety question — read it before changing a service's contract, to
+learn who is reading it. The edge shape is the same; the wrapper is a
+different type in every generated client, on purpose, so that confusing the two
+questions is a decode error rather than an outage.
+
+```json
+{
+  "service": "identity",
+  "data": [
+    { "name": "courier", "version_range": "^0.1.0", "dependency": "required" },
+    { "name": "muse", "version_range": "^0.1.0", "dependency": "required" }
+  ]
+}
+```
+
+One consequence of the both-endpoints rule is worth naming here: an edge
+**from** a draft service is hidden in this direction too, so a service's public
+backward graph grows as work in progress is published. Nothing here claims a
+dependency you cannot also read the other side of.
+
 ### Where every field comes from
 
 | field | source |
@@ -276,7 +327,7 @@ row-level security rather than by the fact that nobody can write the files), and
 the consequence is stated here rather than left to be found: **a registry whose
 rows can be written at runtime is a registry that can be given a new service by
 anyone holding the `pantry_admin` role.** The grant boundary is the trust model
-now, and `tests/rls.sh` holds it to 89 checks over four roles.
+now, and `tests/rls.sh` holds it to 99 checks over four roles.
 
 **Why a copy at all.** A container has no sibling checkouts, so the registry has
 to be self-contained; but a copy nobody checks is a copy that rots. So there
@@ -526,7 +577,7 @@ routes to it.
 
 ## The Go service
 
-`cmd/pantry` serves the four declared operations, from the committed
+`cmd/pantry` serves the six declared operations, from the committed
 `openapi/v1.yaml` — oapi-codegen generates the router and the types, and
 `internal/httpapi` implements the document's server interface. There is no second
 contract and no hand-written route table.
@@ -546,6 +597,8 @@ What it answers today:
 | `GET /readyz` | `503 unavailable` | no data source is mounted, so there is nothing to serve. The detail names pantry-02, so the cause is not a mystery to support |
 | `GET /v1/services` | `503 unavailable` | the document's own answer for "the registry did not load". A `200` with an empty `data` would be indistinguishable from a platform with no services |
 | `GET /v1/services/{name}` | `503 unavailable` | same |
+| `GET /v1/services/{name}/requirements` | `503 unavailable` | same — an empty graph in place of an error is a caller installing less than they needed |
+| `GET /v1/services/{name}/required-by` | `503 unavailable` | same — and an empty backward graph is the answer "nothing depends on this", which a client must not be told while the database is down |
 
 `internal/catalog` is the seam pantry-02 fills: three methods, expressed in the
 generated types. There is deliberately no filter grammar, no cursor encoding and
@@ -600,7 +653,7 @@ $ ./bin/prime                   # gofmt, build, vet, test, RLS suite, contract l
 ### The gate
 
 `gofmt -l`, `go build ./...`, `go vet ./...`, `go test -count=1 -v ./...`,
-`tests/rls.sh` (89 SQL checks against a scratch PostgreSQL it stands up and
+`tests/rls.sh` (99 SQL checks against a scratch PostgreSQL it stands up and
 removes itself), and `caf contract lint` on this repository's own manifest when
 `../caf` is present. A warm run is about twelve seconds; under Rust this same
 script took about four minutes.
@@ -616,7 +669,7 @@ those binaries exist before running anything rather than after.
 **Read this before reading a green badge on this repository.**
 
 **A green badge on `main` now means: the Go service builds, its 30 tests pass,
-its 89 SQL checks pass against a real PostgreSQL, its OpenAPI document and its
+its 99 SQL checks pass against a real PostgreSQL, its OpenAPI document and its
 generated router agree, and this repository's manifests validate.** It does not
 mean `registry/` is accurate — that was four Rust tests reading a twelve-repository
 workspace and comparing every copy byte for byte, and it is gone.
@@ -751,7 +804,7 @@ pantry/
 ├── openapi/v1.yaml            # the HTTP contract, machine half of the table above
 ├── registry/                  # the official service set, as data and seed
 ├── schemas/                   # core's manifest schema, vendored
-└── tests/                     # rls.sh, rls_checks.sh, seed.sql — 89 SQL checks
+└── tests/                     # rls.sh, rls_checks.sh, seed.sql — 99 SQL checks
 ```
 
 Read `AGENTS.md` before changing anything here.

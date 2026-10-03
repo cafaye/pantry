@@ -952,3 +952,52 @@ that column is read by `registry/index.yml`'s comments, by this file, and by any
 future tool that wants to answer "when was this copy taken". **It is recorded
 here rather than decided because the manager owns it and the packet's brief was
 not to decide it.**
+
+---
+
+## D34 — the compatibility graph goes on the wire as two operations, not as a field on `Service` — RULED (manager, 2026-10-03)
+
+`registry-pantry-data-01` shipped the graph's query, tested it, and left it off
+the wire on purpose: the published `Service` object had no field for it, and
+`cafaye-ts` already has a client generated from `openapi/v1.yaml`, so adding one
+was a contract change for the manager to make deliberately rather than a decision
+for a read-path packet to make quietly. This is that decision.
+
+**RULED: two operations.**
+
+- `GET /v1/services/{name}/requirements` — the forward direction: what do I need
+  to run this?
+- `GET /v1/services/{name}/required-by` — the backward direction: who breaks if
+  I change this?
+
+The alternative — a `requirements` field on `Service` — was rejected for three
+reasons, in the order they matter:
+
+1. **The two directions are two questions asked by two different people.** An
+   operator choosing what to run reads the forward answer; an operator deciding
+   whether a change is safe reads the backward one. A field on `Service` has one
+   natural reading, and a second direction would arrive as a flag or as a second
+   field — at which point the shape is an operation's shape wearing a field's
+   name.
+2. **A field on `Service` is loaded for every list row.** The graph is per-service
+   data; the list is the catalog. Embedding edges in every row means either a join
+   per page or a second round trip per service, and both make the common case pay
+   for the graph question that most callers are not asking on that call.
+3. **The wrappers being distinct types is the guard.** A client that confuses
+   "what must I run?" with "what must I not run alongside?" installs a conflict.
+   Two operations with two response types make that confusion a decode error;
+   one type with a direction field makes it a value check somebody has to
+   remember to write.
+
+Also ruled here, because the same decision hid inside it: **`requires` edges
+only, on both routes.** `conflicts_with` has no operation in this version. When
+it gets one, it gets a third method in the catalog and a third wrapper in the
+document — the compiler, not a convention, is what keeps the answers apart.
+
+**What this costs:** `cafaye-ts`'s generated client is stale the moment this
+merges, and regenerating it is part of landing the change rather than a follow-up
+that can slip.
+
+**What would reopen it:** a caller that needs graph data attached to list rows
+(every service with its edges in one response). Nobody is asking that today, and
+the routes answer the questions that are being asked.

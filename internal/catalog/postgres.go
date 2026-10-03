@@ -35,6 +35,7 @@ type Querier interface {
 	GetService(ctx context.Context, name string) (gen.GetServiceRow, error)
 	CountServices(ctx context.Context) (int64, error)
 	RequirementsForService(ctx context.Context, serviceName string) ([]gen.RequirementsForServiceRow, error)
+	RequiredByForService(ctx context.Context, serviceName string) ([]gen.RequiredByForServiceRow, error)
 }
 
 // New builds the catalog over a generated querier.
@@ -147,41 +148,84 @@ func (p *Postgres) Count(ctx context.Context) (int, error) {
 // It is the compatibility graph's answer to "what do I need to run this?", which
 // is the question the registry exists to answer and the one Docker Hub, npm and
 // GitHub Topics do not: they answer what is SIMILAR, and similarity is not
-// composition.
-type Requirement struct {
-	// Target is the cafaye name of the service required.
-	Target string
-	// VersionRange is the publisher's own range, in core's four-form grammar,
-	// stored verbatim. It is not re-rendered.
-	VersionRange string
-	// Dependency is `required`, `soft` or `dev`.
-	Dependency string
-}
+// edge is one row of the compatibility graph, already projected into the
+// document's `CompatibilityEdge`. There is no pantry-owned edge type: the graph
+// is on the wire, so the catalog speaks the document's shape and a handler
+// cannot serialise a field the document does not declare.
+//
+// `version_range` is stored verbatim and re-rendered by nothing — a range the
+// publisher wrote is a claim about what they tested against, and rewriting it
+// into an equivalent form would be the registry quietly editing the claim.
 
-// Requirements returns what one service requires, directly.
+// Requirements returns what one service requires — the FORWARD direction of the
+// graph, "what do I need to run this?" — over `requires` edges only.
 //
-// IT IS NOT ON THE WIRE, and the reason is a measurement rather than an omission:
-// `pantry.service_compat` holds the edges and `pantry_public` holds SELECT on the
-// table, but NO SELECT POLICY on that table names `pantry_public`, so RLS returns
-// zero rows to this role.
-// `TestTheCompatibilityGraphIsUnreadableByTheCatalogRole` asserts that by reading
-// `pg_policies`, and the statement that would change it is in
-// `REPORT-registry-pantry-data-01.md`.
+// `conflicts_with` is deliberately unreachable from here. It is a different
+// fact ("what must I NOT run alongside?") and answering both under one name is
+// how a caller ends up installing a conflict; when it goes on the wire it gets
+// its own operation, and the catalog will grow a third method rather than a
+// `kind` parameter.
 //
-// It is on the concrete type rather than the `Catalog` interface for that reason:
-// adding a method to the interface would make every fake mount one, and the HTTP
-// surface cannot call it until the document has a field for it.
-func (p *Postgres) Requirements(ctx context.Context, name string) ([]Requirement, error) {
+// Visibility is the database's answer, not a filter here. 00007's policy makes
+// an edge visible exactly when BOTH endpoints are visible to the reading role,
+// and the query re-states the target half only because the join would otherwise
+// leak it; a draft target hides the edge at the policy, which is CHECK C4's
+// assertion. Rows this function returns can therefore be fewer than the table
+// holds, and that is the boundary working rather than a bug in the query.
+// THE SUBJECT IS CHECKED FIRST, through Get, and that is a decision about what
+// "exists" means rather than about round trips: the edge query answers zero
+// rows identically for "a leaf of the graph" and for "no such service", and a
+// caller who typed a name wrong must be TOLD so (404) rather than handed an
+// empty graph to install from (200). Reusing Get means this interface has one
+// definition of existence, the same one the service route uses — a second
+// query that answers the same question is a second answer that can disagree
+// with the first.
+func (p *Postgres) Requirements(ctx context.Context, name string) ([]api.CompatibilityEdge, error) {
+	if _, err := p.Get(ctx, name); err != nil {
+		return nil, err
+	}
 	rows, err := p.q.RequirementsForService(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: reading requirements of %q: %w", name, err)
 	}
-	out := make([]Requirement, 0, len(rows))
+	out := make([]api.CompatibilityEdge, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, Requirement{
-			Target:       r.TargetName,
+		out = append(out, api.CompatibilityEdge{
+			Name:         r.TargetName,
 			VersionRange: r.VersionRange.String,
-			Dependency:   r.Dependency,
+			Dependency:   api.CompatibilityEdgeDependency(r.Dependency),
+		})
+	}
+	return out, nil
+}
+
+// RequiredBy returns what depends on one service — the BACKWARD direction,
+// "who breaks if I change this?" — over `requires` edges only.
+//
+// The mirror of `Requirements` with the visibility predicate on the other
+// endpoint: the subject is `target_id`, the other endpoint is the requirer, and
+// an edge FROM a draft service is hidden here exactly as an edge INTO a draft
+// is hidden in the forward direction. The consequence is named in the document
+// because it is real: a service's public backward graph grows as work in
+// progress is published, and that is the conservative answer — nothing claims a
+// dependency the caller cannot also read the other side of.
+// Same subject-first check as `Requirements`, for the same reason: the backward
+// query cannot distinguish a leaf ("nothing requires caf") from a name that was
+// never registered, and the 404 belongs to the second and only the second.
+func (p *Postgres) RequiredBy(ctx context.Context, name string) ([]api.CompatibilityEdge, error) {
+	if _, err := p.Get(ctx, name); err != nil {
+		return nil, err
+	}
+	rows, err := p.q.RequiredByForService(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: reading the services that require %q: %w", name, err)
+	}
+	out := make([]api.CompatibilityEdge, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, api.CompatibilityEdge{
+			Name:         r.RequirerName,
+			VersionRange: r.VersionRange.String,
+			Dependency:   api.CompatibilityEdgeDependency(r.Dependency),
 		})
 	}
 	return out, nil

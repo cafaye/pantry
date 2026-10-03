@@ -11,13 +11,22 @@
 // contract tests run against both, so a handler that grows a special case for the
 // real catalog breaks a test rather than a deployment.
 //
-// What is NOT here is the ingest that turns git manifests into rows, and the
-// compatibility graph on the wire. The graph's QUERY is committed
-// (`internal/pantrydb/queries/catalog.sql`) and is unreachable today because no
-// SELECT policy on `service_compat` names `pantry_public` — measured, and asserted
-// by `TestTheCompatibilityGraphIsUnreadableByTheCatalogRole`. That is a policy on
-// a merged schema rather than a shape decision here, and `Postgres.Requirements`
-// is the callable half that a `Service` field would use.
+// The compatibility graph IS here, since registry-compat-05, as two operations
+// and not as a field on `Service`: the forward direction (`Requirements`) is
+// "what do I need to run this?" and the backward direction (`RequiredBy`) is
+// "who breaks if I change this?" — two questions asked by two different people,
+// which is why they are two methods with two wrappers in the document rather
+// than one array with a direction flag. The graph had to wait for a packet of
+// its own for a stated reason, recorded in `REPORT-registry-pantry-data-01.md`:
+// it is additive but `cafaye-ts` has a client generated from the document, so
+// putting it on the wire was a contract change for the manager to make
+// deliberately, and this is that decision made.
+//
+// `conflicts_with` is deliberately NOT reachable from this interface, and the
+// reason is the graph's whole value: answering "what must I not run alongside?"
+// through the same method that answers "what must I run?" is how a caller ends
+// up installing a conflict. When it goes on the wire it gets a third method,
+// and the compiler — not a convention — is what keeps them apart.
 //
 // # WHAT THE SCHEMA SETTLED ABOUT `Filter`
 //
@@ -51,9 +60,10 @@ import (
 	"github.com/cafaye/pantry/internal/api"
 )
 
-// ErrNoSuchService is returned by Get for a name the registry does not carry.
-// It is a sentinel rather than a bool so a read path can wrap it with its own
-// detail without the handler learning what could have caused it.
+// ErrNoSuchService is returned by Get, Requirements and RequiredBy for a name
+// the registry does not carry. It is a sentinel rather than a bool so a read
+// path can wrap it with its own detail without the handler learning what could
+// have caused it.
 var ErrNoSuchService = errors.New("no such service")
 
 // ErrBadFilter is returned by List for a filter this version of the document
@@ -112,6 +122,16 @@ type Catalog interface {
 	// only exists as len(List(...)) would make the probe load a whole page to
 	// answer "is there anything here".
 	Count(ctx context.Context) (int, error)
+
+	// Requirements returns the FORWARD direction of the compatibility graph for
+	// one service — what it requires to run — or ErrNoSuchService. `requires`
+	// edges only; see the package comment for why `conflicts_with` has no path
+	// through this interface.
+	Requirements(ctx context.Context, name string) ([]api.CompatibilityEdge, error)
+
+	// RequiredBy returns the BACKWARD direction for one service — what requires
+	// it — or ErrNoSuchService. Same edges, other endpoint, different question.
+	RequiredBy(ctx context.Context, name string) ([]api.CompatibilityEdge, error)
 }
 
 // Filter is what the document's query parameters mean, and nothing more.
