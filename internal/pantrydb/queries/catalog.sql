@@ -80,82 +80,90 @@ with rows as (
   select s.name,
          s.description,
          s.language,
-         s.kind::text                  as kind,
+         s.kind::text as kind,
          s.core_constraint,
          s.base_path,
          s.manifest
     from pantry.services s
-   where (sqlc.narg('kind')::text     is null or s.kind::text   = sqlc.narg('kind')::text)
-     and (sqlc.narg('language')::text is null or s.language      = sqlc.narg('language')::text)
+   where (sqlc.narg('kind')::text     is null or s.kind::text = sqlc.narg('kind')::text)
+     and (sqlc.narg('language')::text is null or s.language    = sqlc.narg('language')::text)
      -- The cursor, resolved to a name: `where name > $after`, ordered by name.
-     and (sqlc.narg('after_name')::text is null or s.name       > sqlc.narg('after_name')::text)
+     and (sqlc.narg('after_name')::text is null or s.name      > sqlc.narg('after_name')::text)
 ),
-asked as (
-  -- The caller's own range, or a null row when `contract` was not asked for, so
-  -- the join below is a left join rather than a filter with a four-arm CASE.
-  select nullif(sqlc.narg('contract')::text, '') as c
-),
-row_bounds as (
-  select r.*,
-         lpad(case when left(r.core_constraint, 1) in ('^', '~', '>')
-                   then split_part(regexp_replace(r.core_constraint, '[^0-9.]', '', 'g'), '.', 1)
-                   else split_part(r.core_constraint, '.', 1)
-              end::text, 6, '0')
-      || lpad(case when left(r.core_constraint, 1) in ('^', '~', '>')
-                   then split_part(regexp_replace(r.core_constraint, '[^0-9.]', '', 'g'), '.', 2)
-                   else split_part(r.core_constraint, '.', 2)
-              end::text, 6, '0')
-      || lpad(case when left(r.core_constraint, 1) in ('^', '~', '>')
-                   then split_part(regexp_replace(r.core_constraint, '[^0-9.]', '', 'g'), '.', 3)
-                   else split_part(r.core_constraint, '.', 3)
-              end::text, 6, '0') as lo,
-         case
-           when left(r.core_constraint, 1) = '^'
-             then case when split_part(r.core_constraint, '.', 1)::int = 0
-                       then lpad('0', 6, '0')
-                         || lpad((split_part(r.core_constraint, '.', 2)::int + 1)::text, 6, '0')
-                         || lpad('0', 6, '0')
-                       else lpad((split_part(r.core_constraint, '.', 1)::int + 1)::text, 6, '0')
-                         || lpad('0', 6, '0') || lpad('0', 6, '0')
-                     end
-           when left(r.core_constraint, 1) = '~'
-             then lpad(split_part(r.core_constraint, '.', 1)::text, 6, '0')
-               || lpad((split_part(r.core_constraint, '.', 2)::int + 1)::text, 6, '0')
-               || lpad('0', 6, '0')
-           when left(r.core_constraint, 1) = '>'
-             then '~~~~~~~~~~~~'   -- unbounded above; sorts past any digit
-           else lpad(split_part(r.core_constraint, '.', 1)::text, 6, '0')
-             || lpad(split_part(r.core_constraint, '.', 2)::text, 6, '0')
-             || lpad((split_part(r.core_constraint, '.', 3)::int + 1)::text, 6, '0')
-         end as hi
+-- NORMALISED, ONCE. `regexp_replace` is what turns core's four forms into
+-- something numeric — `^0.1.0` and `>=0.1.0` both reduce to `0.1.0` and the
+-- operator stays in `op` — and it happens here, in one place, before anything
+-- does arithmetic on it.
+--
+-- The first version of this query stripped the prefix in the `lo` branch and
+-- forgot to in the `hi` branch, so `?contract=^0.2.0` answered 503 with
+-- `invalid input syntax for type integer: "^0"`. Normalising first is what makes
+-- the four cases below differ only in the `op` they are given and nowhere else.
+norm as (
+  select r.name,
+         r.description,
+         r.language,
+         r.kind,
+         r.core_constraint,
+         r.base_path,
+         r.manifest,
+         case when left(r.core_constraint, 1) in ('^', '~', '>')
+              then left(r.core_constraint, 1) else '' end as op,
+         split_part(regexp_replace(r.core_constraint, '[^0-9.]', '', 'g'), '.', 1)::int as a,
+         split_part(regexp_replace(r.core_constraint, '[^0-9.]', '', 'g'), '.', 2)::int as b,
+         split_part(regexp_replace(r.core_constraint, '[^0-9.]', '', 'g'), '.', 3)::int as c
     from rows r
 ),
-asked_bounds as (
-  select a.c,
-         lpad(split_part(regexp_replace(a.c, '[^0-9.]', '', 'g'), '.', 1)::text, 6, '0')
-      || lpad(split_part(regexp_replace(a.c, '[^0-9.]', '', 'g'), '.', 2)::text, 6, '0')
-      || lpad(split_part(regexp_replace(a.c, '[^0-9.]', '', 'g'), '.', 3)::text, 6, '0') as lo,
+asked as (
+  select case when left(nullif(sqlc.narg('contract')::text, ''), 1) in ('^', '~', '>')
+              then left(nullif(sqlc.narg('contract')::text, ''), 1) else '' end as op,
+         split_part(regexp_replace(nullif(sqlc.narg('contract')::text, ''), '[^0-9.]', '', 'g'), '.', 1)::int as a,
+         split_part(regexp_replace(nullif(sqlc.narg('contract')::text, ''), '[^0-9.]', '', 'g'), '.', 2)::int as b,
+         split_part(regexp_replace(nullif(sqlc.narg('contract')::text, ''), '[^0-9.]', '', 'g'), '.', 3)::int as c
+),
+-- A triple as ONE comparable string: `lpad` to a fixed width makes `<` and `>=`
+-- lexicographic over the digits, which turns each interval into two strings and
+-- the intersection into two comparisons.
+--
+-- The two CTEs below are the same `op` ladder over the same three integers, and
+-- they are written out twice because a shared SQL function would be a migration
+-- and a migration in the read path is a schema decision this packet does not make
+-- on its own. Both are driven by the same four-arm case, and the test asserts all
+-- four arms through the document's own examples.
+row_bounds as (
+  select n.*,
+         lpad(n.a::text, 6, '0') || lpad(n.b::text, 6, '0') || lpad(n.c::text, 6, '0') as lo,
          case
-           when left(a.c, 1) = '^'
-             then case when split_part(a.c, '.', 1)::int = 0
-                       then lpad('0', 6, '0')
-                         || lpad((split_part(a.c, '.', 2)::int + 1)::text, 6, '0')
-                         || lpad('0', 6, '0')
-                       else lpad((split_part(a.c, '.', 1)::int + 1)::text, 6, '0')
-                         || lpad('0', 6, '0') || lpad('0', 6, '0')
-                     end
-           when left(a.c, 1) = '~'
-             then lpad(split_part(a.c, '.', 1)::text, 6, '0')
-               || lpad((split_part(a.c, '.', 2)::int + 1)::text, 6, '0')
-               || lpad('0', 6, '0')
-           when left(a.c, 1) = '>'
-             then '~~~~~~~~~~~~'
-           else lpad(split_part(a.c, '.', 1)::text, 6, '0')
-             || lpad(split_part(a.c, '.', 2)::text, 6, '0')
-             || lpad((split_part(a.c, '.', 3)::int + 1)::text, 6, '0')
+           when n.op = '^' then case when n.a = 0
+                 then lpad('0', 6, '0') || lpad((n.b + 1)::text, 6, '0') || lpad('0', 6, '0')
+                 else lpad((n.a + 1)::text, 6, '0') || lpad('0', 6, '0') || lpad('0', 6, '0')
+             end
+           when n.op = '~' then lpad(n.a::text, 6, '0') || lpad((n.b + 1)::text, 6, '0') || lpad('0', 6, '0')
+           -- `>=x` has NO upper bound, and that is NULL rather than a sentinel.
+           -- The first version used '~~~~~~~~~~~~' and it was correct under the C
+           -- collation and wrong under anything else: glibc and ICU ignore
+           -- punctuation at the primary comparison level, so '~' and '0' compare
+           -- as two empty strings and `>=0.2.0` matched nothing at all on this
+           -- cluster. A collation is a property of the DATABASE, not of the
+           -- query, so the comparison below handles the open end explicitly
+           -- instead of encoding an ordering into a literal.
+           when n.op = '>' then null::text
+           else lpad(n.a::text, 6, '0') || lpad(n.b::text, 6, '0') || lpad((n.c + 1)::text, 6, '0')
          end as hi
-    from asked a
-   where a.c is not null
+    from norm n
+),
+asked_bounds as (
+  select lpad(w.a::text, 6, '0') || lpad(w.b::text, 6, '0') || lpad(w.c::text, 6, '0') as lo,
+         case
+           when w.op = '^' then case when w.a = 0
+                 then lpad('0', 6, '0') || lpad((w.b + 1)::text, 6, '0') || lpad('0', 6, '0')
+                 else lpad((w.a + 1)::text, 6, '0') || lpad('0', 6, '0') || lpad('0', 6, '0')
+             end
+           when w.op = '~' then lpad(w.a::text, 6, '0') || lpad((w.b + 1)::text, 6, '0') || lpad('0', 6, '0')
+           when w.op = '>' then null::text
+           else lpad(w.a::text, 6, '0') || lpad(w.b::text, 6, '0') || lpad((w.c + 1)::text, 6, '0')
+         end as hi
+    from (select * from asked where op is not null) w
 )
 select r.name,
        r.description,
@@ -166,15 +174,15 @@ select r.name,
        r.manifest
   from row_bounds r
   left join asked_bounds b on true
- where b.c is null
-    or (r.lo < b.hi and b.lo < r.hi)
+ -- `b.lo is null` is "no contract filter was asked for", so every row passes. The
+ -- intersection is `b.lo < r.hi and r.lo < b.hi` with each side's unbounded end
+ -- skipped rather than compared, and the STRICTNESS is load-bearing: ^0.1.0 is
+ -- [0.1.0, 0.2.0) and ^0.2.0 is [0.2.0, 0.3.0), they touch at 0.2.0, and 0.2.0 is
+ -- in NEITHER, so `<=` would call that a match.
+ where b.lo is null
+    or ((r.hi is null or b.lo < r.hi) and (b.hi is null or r.lo < b.hi))
  order by r.name asc
  limit sqlc.arg('page_size')::int + 1;
--- `limit page_size + 1`, and the reason is that `has_more` is a FACT rather than a
--- guess. Asking for N+1 and letting the caller discard the extra row is how a
--- paginated API knows whether a next page exists without a second COUNT query —
--- and a `has_more` computed by counting separately is a second statement that
--- can disagree with the first under a concurrent ingest.
 
 -- name: GetService :one
 --

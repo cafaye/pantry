@@ -34,6 +34,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,16 +59,28 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	url, skip := serve(repoRoot(), false)
+	var stop func()
+	url, skip, stopCluster := serve(repoRoot(), false)
+	stop = stopCluster
 	dbURL, dbSkip = url, skip
 	code := m.Run()
+	// AFTER the tests, and not before: the shared cluster is what every test in
+	// this package reads, so interrupting it as soon as it printed its URL would
+	// kill the database the first test has not finished querying yet. That is not
+	// a hypothetical — it is what the first version of this did, and four tests
+	// failed with `connection refused` against a cluster that had answered.
+	stop()
 
-	fmt.Printf("pantrydb: checks: %d ran, %d skipped, %d checks failed (against %s)\n",
+	// The summary a reader needs in order to trust the run: how many gates were
+	// entered, how many of them did not run, and what the gates ran against.
+	fmt.Printf("pantrydb: gates: %d entered, %d did not run, exit %d (against %s)\n",
 		ran, skipped, code, databaseDescription())
 	if dbSkip != "" {
 		fmt.Printf("skip: %s\n", dbSkip)
-	} else if skipped == 0 {
-		fmt.Println("pantrydb: skips: 0 — every test in this package ran")
+	} else if skipped > 0 {
+		fmt.Println("pantrydb: the rows above named every gate that did not run")
+	} else {
+		fmt.Println("pantrydb: every gate in this package ran against a real PostgreSQL")
 	}
 	os.Exit(code)
 }
@@ -79,18 +92,37 @@ func databaseDescription() string {
 	return dbURL
 }
 
-// requireStore opens the shared pool, or skips the test with the named reason.
+// dbGate is the one place a test declares that it needs a database, and the one
+// place the counters move.
 //
-// The counter is incremented HERE rather than by reading `go test`'s own skip
-// output, because that output is not printed without `-v` and this package's
-// contract is that it prints its own rows on every run.
-func requireStore(t *testing.T) *pantrydb.Store {
+// `t.Cleanup` rather than an increment at the top, because a test that SKIPS never
+// returns from the skip and an increment before it would count a gate nobody
+// entered. A cleanup DOES run on a skipped test, and `t.Skipped()` is true there,
+// so one cleanup counts one gate and counts it as skipped only when it was.
+//
+// This exists because of a measurement, not a plan. The counters were first
+// incremented inline at each call site and read 6 for a run that entered 12 gates,
+// and the reason was duller than the bug: `go test` DISCARDS a passing package's
+// output entirely, so the `skip:` row this package prints was invisible on every
+// green run. `bin/prime-go` now runs the data path with `-v` and echoes these rows;
+// see the comment there.
+func dbGate(t *testing.T) {
 	t.Helper()
-	ran++
+	t.Cleanup(func() {
+		ran++
+		if t.Skipped() {
+			skipped++
+		}
+	})
 	if dbSkip != "" {
-		skipped++
 		t.Skip(dbSkip)
 	}
+}
+
+// requireStore opens the shared pool, or skips the test with the named reason.
+func requireStore(t *testing.T) *pantrydb.Store {
+	t.Helper()
+	dbGate(t)
 	ctx, cancel := context.WithTimeout(context.Background(), serveTimeout)
 	defer cancel()
 	store, err := pantrydb.Open(ctx, dbURL)
@@ -112,12 +144,12 @@ func requireStore(t *testing.T) *pantrydb.Store {
 // empty case is only meaningful if the emptiness is real rather than arranged.
 func startEmpty(t *testing.T) *pantrydb.Store {
 	t.Helper()
-	ran++
-	url, skip := serve(repoRoot(), true)
+	dbGate(t)
+	url, skip, stop := serve(repoRoot(), true)
 	if skip != "" {
-		skipped++
 		t.Skip(skip)
 	}
+	t.Cleanup(stop)
 	ctx, cancel := context.WithTimeout(context.Background(), serveTimeout)
 	defer cancel()
 	store, err := pantrydb.Open(ctx, url)
@@ -133,7 +165,7 @@ func startEmpty(t *testing.T) *pantrydb.Store {
 // It returns `("", reason)` rather than exiting when there is no PostgreSQL, so
 // the caller decides whether that is a skip or a failure — and only this file's
 // reason for it is ever printed.
-func serve(root string, empty bool) (string, string) {
+func serve(root string, empty bool) (string, string, func()) {
 	script := filepath.Join(root, "tests", "rls.sh")
 	args := []string{"--serve"}
 	if empty {
@@ -144,7 +176,7 @@ func serve(root string, empty bool) (string, string) {
 	cmd.Dir = root
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", fmt.Sprintf("tests/rls.sh could not be piped (%v)", err)
+		return "", fmt.Sprintf("tests/rls.sh could not be piped (%v)", err), func() {}
 	}
 	// stderr into the buffer, NOT into the test log: the harness narrates its
 	// progress there and it would drown the failures.
@@ -152,7 +184,7 @@ func serve(root string, empty bool) (string, string) {
 	cmd.Stderr = &errBuf
 
 	if err := cmd.Start(); err != nil {
-		return "", fmt.Sprintf("tests/rls.sh could not be started (%v)", err)
+		return "", fmt.Sprintf("tests/rls.sh could not be started (%v)", err), func() {}
 	}
 
 	urls := make(chan string, 1)
@@ -175,34 +207,40 @@ func serve(root string, empty bool) (string, string) {
 
 	select {
 	case url := <-urls:
-		// The harness is up and waiting; `exited` is being drained by the
-		// goroutine above, which owns the reap.
-		go interruptWhenFinished(cmd, exited)
-		return url, ""
+		// The harness is up and waiting. It is left alone until the caller says
+		// otherwise, and the goroutine above owns the reap.
+		return url, "", stopWhenAsked(cmd, exited)
 	case err := <-exited:
 		// The harness finished without printing a URL. On a machine with no
 		// PostgreSQL that is its counted skip and exit 0; anything else is its
 		// own failure text, which is more useful than anything invented here.
 		return "", fmt.Sprintf("tests/rls.sh --serve exited (%v) before standing a database up: %s",
-			err, firstLine(errBuf.String()))
+			err, firstLine(errBuf.String())), func() {}
 	case <-time.After(serveTimeout):
 		_ = cmd.Process.Kill()
 		return "", fmt.Sprintf("tests/rls.sh --serve printed no database URL within %s: %s",
-			serveTimeout, firstLine(errBuf.String()))
+			serveTimeout, firstLine(errBuf.String())), func() {}
 	}
 }
 
-// interruptWhenFinished sends SIGINT once the process is up, and SIGKILL if it
-// has not left within twenty seconds. It leaves through the harness's EXIT trap:
-// server stopped, data directory removed. A `Kill` would leave a postmaster
-// behind on a machine other sessions are working on, which is the one thing this
-// suite must never do.
-func interruptWhenFinished(cmd *exec.Cmd, exited <-chan error) {
-	_ = cmd.Process.Signal(os.Interrupt)
-	select {
-	case <-exited:
-	case <-time.After(20 * time.Second):
-		_ = cmd.Process.Kill()
+// stopWhenAsked returns the function that shuts the harness down when the caller
+// is done with it — and ONLY then.
+//
+// It sends SIGINT so the harness leaves through its own EXIT trap: server stopped,
+// data directory removed. A `Kill` would leave a postmaster behind on a machine
+// other sessions are working on, which is the one thing this suite must never do,
+// so a SIGKILL is only the backstop for a harness that ignored the polite one.
+func stopWhenAsked(cmd *exec.Cmd, exited <-chan error) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			_ = cmd.Process.Signal(os.Interrupt)
+			select {
+			case <-exited:
+			case <-time.After(20 * time.Second):
+				_ = cmd.Process.Kill()
+			}
+		})
 	}
 }
 

@@ -100,11 +100,19 @@ func TestHealthzIsTwoHundredWithNoCatalogMounted(t *testing.T) {
 	}
 }
 
-// /readyz is 503 until a catalog is mounted, and its detail says WHY rather than
+// /readyz is 503 with no catalog mounted, and its detail says WHY rather than
 // leaving an operator to guess between "the registry is empty" and "the registry
 // failed to load" — which are different incidents with different fixes.
+//
+// The detail is now supplied by whoever mounts the handler rather than being a
+// constant, because the cause is a deployment's and the two causes are different
+// sentences: PANTRY_DATABASE_URL unset is a manifest mistake, an unreachable
+// database is an outage, and a 503 that says the same thing for both sends the
+// reader to the wrong one first. A constant here used to name a packet, which
+// stopped being true the moment the read path landed.
 func TestReadyzIsFiveOhThreeAndNamesTheCause(t *testing.T) {
-	rec := get(t, New(nil), http.MethodGet, "/readyz")
+	const cause = "PANTRY_DATABASE_URL is unset, so there is no registry to read from"
+	rec := get(t, New(nil, WithUnavailableDetail(cause)), http.MethodGet, "/readyz")
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("GET /readyz is %d, want 503", rec.Code)
 	}
@@ -122,8 +130,8 @@ func TestReadyzIsFiveOhThreeAndNamesTheCause(t *testing.T) {
 		t.Errorf("body trace_id is %q and the header says %q; the document says they are equal",
 			problem.TraceID, rec.Header().Get("X-Trace-Id"))
 	}
-	if !strings.Contains(problem.Detail, "pantry-02") {
-		t.Errorf("detail is %q, want it to name the packet that mounts the read path", problem.Detail)
+	if problem.Detail != cause {
+		t.Errorf("detail is %q, want the cause the mount declared, verbatim: %q", problem.Detail, cause)
 	}
 	if want := "https://errors.cafaye.com/" + string(api.Unavailable); problem.Type != want {
 		t.Errorf("type is %q, want %q", problem.Type, want)
@@ -158,18 +166,26 @@ func TestReadyzDistinguishesAMountedCatalogThatCannotBeRead(t *testing.T) {
 		t.Fatalf("GET /readyz is %d, want 503", rec.Code)
 	}
 	problem := decode[api.Problem](t, rec)
-	if strings.Contains(problem.Detail, "pantry-02") {
-		t.Errorf("detail is %q, want it to name the read failure rather than the missing catalog", problem.Detail)
+	if strings.Contains(problem.Detail, "could not be read from its database") {
+		t.Errorf("detail is %q, want it to name the READ failure and not the missing-mount "+
+			"sentence: a catalog that is mounted and cannot be read is a different incident",
+			problem.Detail)
 	}
 	if !strings.Contains(problem.Detail, "deadline exceeded") {
 		t.Errorf("detail is %q, want it to carry the underlying cause", problem.Detail)
 	}
 }
 
-// The two data routes answer the document's declared 503 in this build, and
-// never a 200 with an empty body. An empty `data: []` is indistinguishable from
-// a platform with no services, which is the exact confusion the document names.
-func TestTheDataRoutesAreFiveOhThreeAndNotAnEmptyRegistry(t *testing.T) {
+// WITH NO CATALOG MOUNTED, the two data routes answer the document's declared
+// 503 and never a 200 with an empty body — an empty `data: []` is
+// indistinguishable from a platform with no services, which is the exact confusion
+// the document names, and with nothing mounted the service cannot tell the
+// difference.
+//
+// A catalog mounted over a database that HAS ANSWERED is the other case and it is
+// a 200 with `data: []`; `TestTheThreeCasesAreDistinguishable` in
+// `internal/pantrydb` holds all three against a real PostgreSQL.
+func TestTheDataRoutesAreFiveOhThreeWithNothingMounted(t *testing.T) {
 	for _, path := range []string{"/v1/services", "/v1/services/identity", "/v1/services?kind=api&limit=25"} {
 		rec := get(t, New(nil), http.MethodGet, path)
 		if rec.Code != http.StatusServiceUnavailable {
@@ -256,9 +272,9 @@ func TestAMalformedParameterIsAProblemThatNamesTheParameter(t *testing.T) {
 
 // An unknown query parameter is a 400 in this contract, and refusing it is what
 // stops a client asking a question this version cannot answer and being handed
-// the whole list instead. This build answers 503 for the data routes, so the
-// assertion is that it refuses rather than serves — the refusal is the part that
-// has to survive pantry-02.
+// the whole list instead. Nothing is mounted here, so the assertion is only that
+// it refuses rather than serves; the mounted-catalog version — which has to be a
+// 400 and not a 503 — is in `internal/pantrydb`'s three-case test.
 func TestAnUnknownQueryParameterIsRefusedRatherThanIgnored(t *testing.T) {
 	rec := get(t, New(nil), http.MethodGet, "/v1/services?sort=name")
 	if rec.Code == http.StatusOK {

@@ -17,11 +17,6 @@ type Querier interface {
 	// It counts what RLS lets this role see, which is the number the document means —
 	// "how many services are loaded" — rather than the number of rows in the table.
 	CountServices(ctx context.Context) (int64, error)
-	// `limit page_size + 1`, and the reason is that `has_more` is a FACT rather than a
-	// guess. Asking for N+1 and letting the caller discard the extra row is how a
-	// paginated API knows whether a next page exists without a second COUNT query —
-	// and a `has_more` computed by counting separately is a second statement that
-	// can disagree with the first under a concurrent ingest.
 	//
 	// `GET /v1/services/{name}`. One row or `pgx.ErrNoRows`, and the caller turns
 	// that into the document's 404.
@@ -110,6 +105,24 @@ type Querier interface {
 	// intervals over integer triples are non-empty exactly when `lo_a < hi_b and lo_b
 	// < hi_a`, and the strictness is load-bearing: `^0.1.0` and `^0.2.0` touch at
 	// `0.2.0`, which is in neither, and `<=` would call that a match.
+	// NORMALISED, ONCE. `regexp_replace` is what turns core's four forms into
+	// something numeric — `^0.1.0` and `>=0.1.0` both reduce to `0.1.0` and the
+	// operator stays in `op` — and it happens here, in one place, before anything
+	// does arithmetic on it.
+	//
+	// The first version of this query stripped the prefix in the `lo` branch and
+	// forgot to in the `hi` branch, so `?contract=^0.2.0` answered 503 with
+	// `invalid input syntax for type integer: "^0"`. Normalising first is what makes
+	// the four cases below differ only in the `op` they are given and nowhere else.
+	// A triple as ONE comparable string: `lpad` to a fixed width makes `<` and `>=`
+	// lexicographic over the digits, which turns each interval into two strings and
+	// the intersection into two comparisons.
+	//
+	// The two CTEs below are the same `op` ladder over the same three integers, and
+	// they are written out twice because a shared SQL function would be a migration
+	// and a migration in the read path is a schema decision this packet does not make
+	// on its own. Both are driven by the same four-arm case, and the test asserts all
+	// four arms through the document's own examples.
 	ListServices(ctx context.Context, arg ListServicesParams) ([]ListServicesRow, error)
 	//
 	// THE COMPATIBILITY GRAPH, forward direction: what does running this need?
