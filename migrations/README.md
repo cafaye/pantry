@@ -19,7 +19,7 @@ out.
 | 5 | `00005_functions.sql` | `current_publisher_id()`, `begin_publisher/1`, `service_is_visible()`, the touch trigger, the `compat_closure` view | anything that decides trust |
 | 6 | `00006_rls.sql` | enable + FORCE + policies + grants on all four tables | a `for all` policy — one policy per command, always |
 | 7 | `00007_roles_and_compat_read.sql` | the **membership** `pantry` needs to become `pantry_public`, and the public read policy on the compatibility graph | `pantry_admin` — the one membership deliberately NOT granted |
-| — | `../tests/rls.sh` | **the denials, run against a real cluster** — 84 checks over every role, every table and every command | a skip that counts as a pass |
+| — | `../tests/rls.sh` | **the denials, run against a real cluster** — 89 checks over every role, every table and every command | a skip that counts as a pass |
 
 ## Two goose things that will bite you
 

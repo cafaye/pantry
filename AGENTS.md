@@ -212,7 +212,7 @@ them now is how a registry becomes an unaudited code-execution surface:
 - **No cross-service database access.** pantry owns its own tables and reads
   nothing else. The database is not optional any more — it is the read model —
   but it is pantry's alone, and `tests/rls.sh` holds the four roles' grants to
-  84 checks.
+  89 checks.
 - **No health polling of other services.** pantry describes how to reach a service
   and never calls one — not a probe, not a metrics scrape. If pantry could become
   a load-bearing dependency of platform availability, that would be a fact about

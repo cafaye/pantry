@@ -276,7 +276,7 @@ row-level security rather than by the fact that nobody can write the files), and
 the consequence is stated here rather than left to be found: **a registry whose
 rows can be written at runtime is a registry that can be given a new service by
 anyone holding the `pantry_admin` role.** The grant boundary is the trust model
-now, and `tests/rls.sh` holds it to 84 checks over four roles.
+now, and `tests/rls.sh` holds it to 89 checks over four roles.
 
 **Why a copy at all.** A container has no sibling checkouts, so the registry has
 to be self-contained; but a copy nobody checks is a copy that rots. So there
@@ -600,7 +600,7 @@ $ ./bin/prime                   # gofmt, build, vet, test, RLS suite, contract l
 ### The gate
 
 `gofmt -l`, `go build ./...`, `go vet ./...`, `go test -count=1 -v ./...`,
-`tests/rls.sh` (84 SQL checks against a scratch PostgreSQL it stands up and
+`tests/rls.sh` (89 SQL checks against a scratch PostgreSQL it stands up and
 removes itself), and `caf contract lint` on this repository's own manifest when
 `../caf` is present. A warm run is about twelve seconds; under Rust this same
 script took about four minutes.
@@ -616,7 +616,7 @@ those binaries exist before running anything rather than after.
 **Read this before reading a green badge on this repository.**
 
 **A green badge on `main` now means: the Go service builds, its 30 tests pass,
-its 84 SQL checks pass against a real PostgreSQL, its OpenAPI document and its
+its 89 SQL checks pass against a real PostgreSQL, its OpenAPI document and its
 generated router agree, and this repository's manifests validate.** It does not
 mean `registry/` is accurate — that was four Rust tests reading a twelve-repository
 workspace and comparing every copy byte for byte, and it is gone.
@@ -751,7 +751,7 @@ pantry/
 ├── openapi/v1.yaml            # the HTTP contract, machine half of the table above
 ├── registry/                  # the official service set, as data and seed
 ├── schemas/                   # core's manifest schema, vendored
-└── tests/                     # rls.sh, rls_checks.sh, seed.sql — 84 SQL checks
+└── tests/                     # rls.sh, rls_checks.sh, seed.sql — 89 SQL checks
 ```
 
 Read `AGENTS.md` before changing anything here.

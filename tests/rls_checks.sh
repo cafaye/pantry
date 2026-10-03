@@ -694,3 +694,99 @@ deny "I7  membership: pantry_public still cannot INSERT a compatibility edge" \
   "$SHAPE1" "42501" "permission denied for table service_compat" \
   "$(as_public "insert into pantry.service_compat (service_id, target_id, kind, version_range)
                 values ('$B1','$B3','requires','^0.1.0');")"
+
+# ===========================================================================
+# THE ROLLBACK — the property that had no check anywhere
+#
+# Everything above this line asks what the schema IS. This section asks what it
+# UNDOES, and it exists because `bin/prime-db` asserted it once and was superseded
+# by `tests/rls.sh` without anybody deciding the assertion should go with it. A
+# Down section that does not name what its Up created is a deploy nobody can
+# undo, and it fails in the way that is easiest to miss: the `Up` gains a
+# constraint in some later commit, the `Down` keeps dropping the table as it was
+# before, nothing errors, and the rollback leaves the new object behind.
+#
+# `$DOWNSTATE` is a database frozen after `00007..00002` ran in reverse, with
+# `00001` HELD BACK — and holding `00001` back is what makes this section able to
+# fail. `00001`'s Down is `drop schema if exists pantry cascade`, so including it
+# would remove every object any other Down forgot and every check below would be
+# green against a suite where seven of the seven Downs were empty.
+#
+# So the schema 00001 created is still standing in `$DOWNSTATE`, and it must be
+# standing over NOTHING.
+# ===========================================================================
+say ""
+say "-- rollback: what the Down sections leave behind, and what comes back"
+
+# The whole section in one assertion, and the later ones are its decomposition.
+# CHECK J1 rollback: the Down sections left nothing at all
+# One query over five catalogs rather than five queries over one, because the
+# interesting failure is the one nobody thought to check for — a Down that drops
+# its table and forgets its trigger, or its view, or its function. Checking the
+# five separately means the section is only as good as the list; this way an
+# object kind nobody enumerated still shows up, because it is in the union.
+ok "J1  rollback: 00007..00002 leave no table, view, function, trigger or policy" \
+  "$DOWNSTATE" \
+  "select coalesce(string_agg(what, ', '), '<none>') from (
+       select 'table '    || tablename as what from pg_tables where schemaname = 'pantry'
+     union all
+       select 'view '     || viewname  as what from pg_views  where schemaname = 'pantry'
+     union all
+       select 'function ' || p.proname  as what from pg_proc p
+       join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pantry'
+     union all
+       select 'trigger '  || t.tgname   as what from pg_trigger t
+       join pg_class c on c.oid = t.tgrelid
+       join pg_namespace n on n.oid = c.relnamespace
+      where not t.tgisinternal and n.nspname = 'pantry'
+     union all
+       select 'policy '   || policyname as what from pg_policies where schemaname = 'pantry'
+   ) s;" "<none>"
+
+# CHECK J2 rollback: the schema 00001 owns is still there
+# The complement of J1, and it is what makes J1 mean something. If the Down chain
+# had dropped the schema, J1 would be green over a database with no schema in it
+# — a database in which nothing had been checked, because there was nothing left
+# to check. Held back is not the same as torn down.
+ok "J2  rollback: the schema itself survives — 00001's Down was held back" \
+  "$DOWNSTATE" \
+  "select nspname from pg_namespace where nspname = 'pantry';" "pantry"
+
+# CHECK J3 rollback: the re-applied schema is the SAME schema, not a smaller one
+# Compared against a baseline MEASURED from `$SHAPE1` when the harness built it,
+# rather than against a list somebody wrote down, so a migration that adds a
+# table is covered the day it lands. `$SHAPE1` is the reference because it is the
+# one every other check in this file has already been measured against, which
+# means a disagreement here is a disagreement about the round trip and nothing
+# else.
+#
+# NOT `dblink`. Comparing two databases from inside one is the obvious tool and it
+# costs an extension this harness does not have: the suite's entire claim is that
+# it needs nothing but PostgreSQL server binaries. `tests/rls.sh` measures the
+# baseline and interpolates it, so the expectation is DERIVED AT RUN TIME from a
+# real migration rather than typed into a test.
+rowset "J3  rollback: the re-applied table set is identical to a fresh migrate" "$SHAPE3" \
+  "select coalesce(string_agg(tablename, ',' order by tablename), '<none>')
+     from pg_tables where schemaname = 'pantry';" "$BASE_TABLES"
+
+# CHECK J4 rollback: and so is the policy set, which a table-only check cannot see
+# The tables coming back does not mean the RLS came back. A `Down` that dropped
+# the tables but left the policies would fail on the re-apply; a `Down` that
+# dropped the policies but not the tables would leave a database that LOOKS
+# migrated and protects nothing — and every read check in the sections above
+# would still be red, so this one is the difference between a broken rollback and
+# a broken deployment.
+ok "J4  rollback: the re-applied policy count matches a fresh migrate" "$SHAPE3" \
+  "select (select count(*) from pg_policies where schemaname = 'pantry')::text
+        || ' policies, a fresh migrate has ' || '$BASE_POLICIES' || ', and they match: ' ||
+        ((select count(*) from pg_policies where schemaname = 'pantry') = $BASE_POLICIES)::text;" \
+  "$BASE_POLICIES policies, a fresh migrate has $BASE_POLICIES, and they match: true"
+
+# CHECK J5 rollback: FORCE survived the round trip
+# The one property of the policy set that is not a count. A count is satisfied by
+# twelve policies that are all `using (false)`, which is a database that passes
+# every read check in the sections above by refusing everything.
+ok "J5  rollback: every table is still FORCEd after the round trip" "$SHAPE3" \
+  "select coalesce(string_agg(c.relname || '=' || c.relforcerowsecurity::text, ', '), '<none>')
+     from pg_class c join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'pantry' and c.relkind = 'r' and not c.relforcerowsecurity;" "<none>"
