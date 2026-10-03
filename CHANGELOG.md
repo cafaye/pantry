@@ -342,6 +342,54 @@ bottom.
 
 ### Fixed
 
+- **`gate.yml`'s `total` floor: 112 -> 144, and `bin/gate-self-test` is what
+  found it.** The floor is a **deletion**-detector, and its margin must be
+  smaller than the smallest test file in `tests/` or the smallest file can be
+  deleted and the run stays green. Three tests were added by the worktree work
+  below, taking the measured total from 114 to 146, and an earlier draft of this
+  packet argued the floor should stay at 112 — on the grounds that it is a
+  decrease-detector and a margin is a statement about how far the count may
+  *fall*.
+
+  That reasoning was right about the direction and wrong about the consequence:
+  146 − 4 is `tests/recorded_copy.rs` falling to 142, which **satisfies** a
+  floor of 112. The detector had stopped detecting, by 30 tests, and said
+  nothing. This is guard's near-miss reproduced in a second direction — a
+  margin of 5 hiding a four-test file became a margin of 34 hiding the same
+  file — and it was introduced by *adding* tests, which is why it read as the
+  safe direction. **"Safe" is the word that should make a reader suspicious of
+  a floor.**
+
+  `./bin/gate-self-test` is what found it, which is the whole reason that script
+  exists: the `smallest-test-file-deleted` and `test-file-deleted` breakages both
+  went green and were reported as failures. Both are re-run and both are
+  `gate.floor` again at 144, a margin of two — unchanged in kind, and now
+  re-derived from a measurement rather than argued about.
+
+  **The lesson is written into the file, not just here:** raising a floor belongs
+  in the same commit as the commit that *adds tests*, because adding tests is
+  what opens the margin. `gate.yml` now says so next to the number, where it was
+  already said and had been treated as a formality. A rule that is only ever
+  cited is not a rule.
+
+  Two of that script's own breakages also had to be repaired in the same pass,
+  and both were the same mistake: **a breakage that names a value goes stale
+  when the value moves, and the value that moves is usually the value being
+  fixed.** One deleted the `echo "suite: … passed across 11 test binaries"` line
+  by its literal text, so counting that number instead of hardcoding it broke
+  the *setup*; the other rewrote `minimum: 112` to `9999` by literal. Both now
+  match by shape — a regex over the line, and a regex anchored on the proof's
+  own `id:` — so a future honest fix to `bin/prime` or to a floor does not
+  report three unrelated breakages as failed.
+
+  And a latent bug behind both: `fresh_copy` never reset `EDIT_APPLIED`, so a
+  breakage that is a `rm` rather than an `edit` inherited the *previous* case's
+  flag. One broken setup therefore reported three later cases — all of them
+  green — as "the breakage that sets this case up did not apply". A check that
+  reports a neighbour's failure as its own teaches the reader to distrust the
+  whole run, and this run's entire claim is that a green here means something.
+  The flag is now reset where every breakage starts.
+
 - **pantry's gate can be run while a worker is running.** cafaye does its work
   on `wt-*` worktrees under the workspace root, one per in-flight packet, and
   the drift test walked that root requiring every directory it found to be
@@ -673,6 +721,19 @@ bottom.
   and it applies to every copy from here on.
 
 ### Decisions worth the changelog
+
+- **A floor is not a fence, and a "safe" floor is the dangerous one.** Adding
+  three tests took the suite from 114 to 146 and, by doing nothing at all, took
+  gate.yml's `total` floor from "catches a deleted test file" to "does not". The
+  floor did not move; the thing it measures moved 28% away from it. Every one of
+  this repository's stated lessons about floors points the same way — guard's
+  margin of five hid a four-test file, muse's and courier's were copied from it
+  — and this is the same defect wearing the one costume that looks like progress.
+
+  What is worth keeping is the sentence in `gate.yml` that now sits above the
+  number: **raising a floor belongs in the same commit as the commit that adds
+  tests.** That was already written down, as a formality, and the formality is
+  what hid the hole. A rule that is only ever cited is not a rule.
 
 - **A check that names a convention is a clock, and this one had stopped.**
   `tests/drift.rs` exempted worktrees by `name.contains("-worker-")` and the
