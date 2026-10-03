@@ -21,17 +21,28 @@
 # before.
 #
 # THE ARRANGEMENT is kit's Go template (kit/docker/Dockerfile.go), with the two
-# deviations identity documents, and both are consequences of pantry not owning
-# a database yet:
+# deviations identity documents, and both are consequences of nothing in this
+# repository migrating at boot:
 #
 #   - DISTROLESS, not kit's debian-slim. kit's runtime is debian-slim because
 #     the image starts through docker/entrypoint.sh, which migrates before it
-#     serves, and a script needs a shell. There is no schema to migrate in this
-#     packet, so there is no entrypoint to run, so the shell it needs is not
-#     bought. kit's own file says the honest way back: set KIT_MIGRATE=off,
-#     migrate from a job, and use distroless/static. This IS that, taken early
-#     because the thing being avoided — a boot-time migration — does not exist
-#     yet. pantry-02 re-opens it the moment it does.
+#     serves, and a script needs a shell. Nothing here migrates at boot, so
+#     there is no entrypoint to run, so the shell it needs is not bought. kit's
+#     own file says the honest way back: set KIT_MIGRATE=off, migrate from a
+#     job, and use distroless/static. This IS that.
+#
+#     THE PREMISE CHANGED AND THE CONCLUSION DID NOT, which is why this comment
+#     used to be wrong and is worth reading closely. It once said "there is no
+#     schema to migrate in this packet". There is one now — six migrations, and
+#     `tests/rls.sh` applies all of them against a real cluster every run. What
+#     has NOT changed is that a deployment still has to migrate separately,
+#     because the distroless image has no shell to run `goose` with.
+#
+#     So the gap is real and it moved: the schema exists, and nothing applies it
+#     at boot. **A database that has not been migrated fails at the first query,
+#     not at startup.** `migrations/README.md` says so in the place somebody
+#     debugging it will look, and that section is the one to read first when a
+#     fresh database answers with `relation "pantry.services" does not exist`.
 #   - NO PROVENANCE STAMP. kit's template writes five labels from
 #     docker/provenance.sh. Copying the script without the CI that feeds it five
 #     build-args would stamp `unknown` on every image and make the labels a lie
