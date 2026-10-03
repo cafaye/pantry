@@ -54,11 +54,23 @@ KEEP=0
 
 SERVE_LOG="$(mktemp "${TMPDIR:-/tmp}/pantry-narrow-probe.XXXXXX")"
 CLUSTER_PID=""
+CLUSTER_DIR=""
+# The harness is run DIRECTLY rather than under `timeout`, so `$!` is the process
+# whose `trap 'exit 0' INT TERM` stops the server and removes its data directory.
+# Under `timeout` it would be the wrapper's PID, the harness would never see a
+# signal, and the scratch cluster would outlive the probe — which is exactly what
+# the first version did.
 cleanup() {
   if [ -n "$CLUSTER_PID" ] && [ "$KEEP" -eq 0 ]; then
     kill "$CLUSTER_PID" 2>/dev/null
     for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$CLUSTER_PID" 2>/dev/null || break; sleep 1; done
     kill -9 "$CLUSTER_PID" 2>/dev/null
+    # and if the harness was wedged, stop the cluster it was serving by its own
+    # data directory, so "no cluster was left behind" is true either way
+    if [ -n "$CLUSTER_DIR" ] && [ -d "$CLUSTER_DIR/data" ]; then
+      "$PGBIN/pg_ctl" -D "$CLUSTER_DIR/data" stop -m immediate >/dev/null 2>&1
+      rm -rf "$CLUSTER_DIR"
+    fi
   fi
   [ "$KEEP" -eq 0 ] && rm -f "$SERVE_LOG"
   return 0
@@ -99,7 +111,7 @@ PGBIN="$(resolve_pg_bin)" || {
 }
 say "pg bin:  $PGBIN"
 
-timeout 300 ./tests/rls.sh --serve --empty >"$SERVE_LOG" 2>&1 &
+./tests/rls.sh --serve --empty >"$SERVE_LOG" 2>&1 &
 CLUSTER_PID=$!
 URL=""
 for _ in $(seq 1 60); do
@@ -108,6 +120,7 @@ for _ in $(seq 1 60); do
   kill -0 "$CLUSTER_PID" 2>/dev/null || break
   sleep 1
 done
+CLUSTER_DIR="$(sed -n 's#^cluster:  *\(/var/[^ ]*\)/data .*#\1#p' "$SERVE_LOG" | head -1)"
 if [ -z "$URL" ]; then
   say "ABORT  ./tests/rls.sh --serve --empty never printed a URL."
   tail -20 "$SERVE_LOG" | sed 's/^/        /'
