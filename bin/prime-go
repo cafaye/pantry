@@ -10,9 +10,13 @@
 # 110 crates to find out whether `go vet` is happy, and the two gates having one
 # file each is what makes "which tier is red" a question with an answer.
 #
-# Green on a bare machine with a Go toolchain on PATH. No database: this build
-# mounts no catalog at all (internal/catalog), so there is nothing that could
-# make a test need one.
+# Green on a bare machine with a Go toolchain on PATH. The two data-path packages
+# (`internal/pantrydb`, `internal/httpapi`) need a PostgreSQL, and they do not
+# bring one: they run `tests/rls.sh --serve`, which starts a scratch cluster,
+# applies `migrations/` and seeds `tests/seed.sql`, then removes it on exit. A
+# machine with no PostgreSQL gets a COUNTED SKIP from that harness naming the
+# reason — printed as a `skip:` row by both — rather than a suite that reports
+# `ok` without having checked anything.
 set -euo pipefail
 set -o pipefail
 
@@ -81,11 +85,58 @@ step "go vet ./..."
 go vet ./...
 
 step "go test ./..."
+# `-v`, AND THE OUTPUT IS FILTERED, and both halves are load-bearing.
+#
 # -count=1 defeats the test cache: a gate that can report a stale green is a gate
-# that reports what it ran last, not what it would report now. No -race here
-# deliberately — this build has no shared mutable state, and a race detector that
-# always finds nothing is a cost with no signal; it comes with the catalog.
-go test -count=1 ./...
+# that reports what it ran last, not what it would report now.
+#
+# `go test` DISCARDS a passing package's output entirely. A package that prints its
+# own `skip: <reason>` row therefore prints it into a void on every green run,
+# which is precisely the silent pass this repository has been bitten by before: a
+# suite that reports `ok` without having checked anything, and nobody can tell it
+# apart from one that checked everything. It was measured here rather than assumed
+# — `internal/pantrydb` printed a correct counted-skip row and it appeared nowhere.
+#
+# So the suite runs verbosely and the rows are echoed, and the filtering keeps the
+# gate readable: every package result, every failure in full (the `||` branch), and
+# the data path's own `pantrydb:` summary lines.
+#
+# No -race here deliberately. The catalog introduces no shared mutable state of its
+# own — the pool hands out already-role-checked connections — so a race detector
+# that finds nothing is cost without signal.
+out="$(go test -count=1 -v ./... 2>&1)" || {
+  echo "$out"
+  echo "bin/prime-go: go test failed; the full -v output is above." >&2
+  exit 1
+}
+echo "$out" | grep -E '^(ok|FAIL|---|\?|pantrydb:)' || true
+
+# THE COUNTED SKIP, made countable AT THE GATE rather than inside `go test`.
+#
+# `internal/pantrydb` prints how many of its gates did not run and why. A machine
+# with no PostgreSQL is a legitimate green — `tests/rls.sh` skips on one too, and
+# for the same reason — but it must never be an invisible green, so the count is
+# surfaced here and `PANTRY_DB_REQUIRED=1` is what turns it into a red. That is the
+# same pair of contracts `tests/rls.sh` keeps (`PANTRY_RLS_REQUIRED`), and a gate
+# with two ways of being skipped and one way of insisting is a gate whose silence
+# can be read.
+did_not_run="$(printf '%s\n' "$out" |
+  sed -n 's/^pantrydb: gates: [0-9]* entered, \([0-9]*\) did not run.*/\1/p' | head -1)"
+if [ -z "$did_not_run" ]; then
+  echo "bin/prime-go: internal/pantrydb printed no 'gates:' summary, so its skip count is" >&2
+  echo "  unknown, and a gate that cannot count its own skips is a gate that cannot" >&2
+  echo "  be trusted to have run them." >&2
+  exit 1
+fi
+if [ "$did_not_run" != "0" ]; then
+  echo "data path: $did_not_run check(s) DID NOT RUN against a database (counted, and named above)"
+  if [ "${PANTRY_DB_REQUIRED:-0}" = "1" ]; then
+    echo "bin/prime-go: PANTRY_DB_REQUIRED=1 and there is no PostgreSQL to check against." >&2
+    exit 3
+  fi
+else
+  echo "data path: every check ran against a real PostgreSQL (0 skipped)"
+fi
 
 step "the generated server matches the OpenAPI document"
 # Not `go generate` — regeneration needs the generator, which is fetched on

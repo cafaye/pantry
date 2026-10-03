@@ -11,31 +11,52 @@
 // remaining direction, the one the compiler cannot: every path in the document
 // is mounted.
 //
-// # WHAT IS ANSWERED, AND WHAT IS NOT
+// # THREE ANSWERS, AND THEY MUST NOT LOOK ALIKE
 //
-// This build mounts NO data source. `internal/catalog`'s Catalog is the seam
-// pantry-02 fills with the Postgres-backed read path, and until it is mounted
-// the data routes answer the 503 the document already declares for exactly this
-// state: "The registry did not load, so there is nothing to answer with. A 200
-// with an empty data would be indistinguishable from a platform with no
-// services."
+// This is the whole reason the data routes used to answer 503, and it is now the
+// reason they mostly do not. `GET /v1/services` has three possible truths and a
+// client must be able to tell them apart without reading prose:
 //
-// That is why `/readyz` answers 503 here rather than `{"status":"ok",
-// "services":0}`, and the difference is the whole point of having two probes.
-// `/healthz` answers 200 whenever the process is running — the document says so
-// in its own words, and an orchestrator that restarted on this would turn a
-// missing data source into a crash loop. `/readyz` answers 200 only when there
-// is something to serve, so it is the one that says `unavailable` today.
+//	rows are there             200 with `data: [ … ]`
+//	the catalog is empty       200 with `data: []`     — the database ANSWERED
+//	the database is not there  503 with a problem      — the database did not
+//
+// The middle one used to be impossible to express, because a 200 with `services:
+// 0` is indistinguishable from a platform that has no services, which is the
+// confusion the 503 was built to prevent. It is a real answer now, and it is
+// different precisely because the query ran.
+//
+// So there is NO fallback anywhere in this file. A query that fails is a 503, not
+// an empty page; an empty page is a 200, not a warning; and there is no retry — a
+// retry against a database that is already failing multiplies the load.
+//
+// `/readyz` is the other half and it must agree. `/healthz` answers 200 whenever
+// the process is running, including with no data source mounted, because the
+// document says so and an orchestrator that restarted on it would turn a missing
+// data source into a crash loop. `/readyz` answers 200 only when there is
+// something to serve.
+//
+// # WHERE THE FILTERS ARE CHECKED, AND WHY IT IS NOT HERE
+//
+// The generated binder reads `?kind=`, `?language=`, `?contract=`, `?limit=` and
+// `?cursor=` as strings. It does NOT check them against the document's enums, does
+// NOT apply `limit`'s default, and does NOT refuse `limit=0`. Those checks are real
+// work with nowhere to live except somewhere this package chooses, and they live in
+// `catalog.Filter.Validate` — next to the query that obeys them, where a handler
+// cannot forget them. What stays here is the one thing only a handler can know:
+// whether a parameter the caller sent is a parameter this document declares.
 //
 // The Rust implementation in `src/` still serves the whole surface from
-// `registry/`; this package is the rewrite standing beside it, and pantry-02
-// replaces the 503s with the real read path.
+// `registry/`; this package is the rewrite standing beside it.
 package httpapi
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -56,11 +77,18 @@ type Service struct {
 	// now is the clock, injected so a test can age nothing and assert on
 	// nothing time-dependent instead of sleeping.
 	now func() time.Time
+	// unavailableDetail names WHY no catalog is mounted, and it is a field rather
+	// than a constant because the cause is a deployment's: an unset
+	// PANTRY_DATABASE_URL and an unreachable one are different sentences, and one
+	// sentence cannot be right for both. The previous packet's constant named a
+	// packet, which stopped being true the moment the read path landed.
+	unavailableDetail string
 }
 
 type options struct {
-	logger *slog.Logger
-	now    func() time.Time
+	logger            *slog.Logger
+	now               func() time.Time
+	unavailableDetail string
 }
 
 // Option customises the service.
@@ -85,16 +113,34 @@ func WithClock(now func() time.Time) Option {
 	}
 }
 
+// WithUnavailableDetail sets the `detail` of every 503 this service writes while
+// no catalog is mounted.
+func WithUnavailableDetail(detail string) Option {
+	return func(o *options) {
+		if detail != "" {
+			o.unavailableDetail = detail
+		}
+	}
+}
+
 // New builds the HTTP handler.
 //
-// The catalog argument may be nil, and in this build it always is. That is a
-// decision the 503 responses name rather than hide: see the package comment.
+// The catalog argument MAY be nil, and there are two ways to be in that state
+// which are both legitimate rather than both being failures: a binary started
+// with no PANTRY_DATABASE_URL, and a binary whose database could not be reached at
+// boot. Both answer 503 on the data routes and 200 on `/healthz`, and the
+// difference between them is a sentence.
 func New(cat catalog.Catalog, opts ...Option) http.Handler {
 	o := options{logger: slog.Default(), now: time.Now}
 	for _, opt := range opts {
 		opt(&o)
 	}
-	svc := &Service{catalog: cat, logger: o.logger, now: o.now}
+	svc := &Service{
+		catalog:           cat,
+		logger:            o.logger,
+		now:               o.now,
+		unavailableDetail: o.unavailableDetail,
+	}
 
 	r := chi.NewRouter()
 	// The document says every non-2xx response is a problem, INCLUDING the
@@ -144,7 +190,10 @@ func (s *Service) Healthz(w http.ResponseWriter, r *http.Request) {
 // would be a second contract.
 func (s *Service) Readyz(w http.ResponseWriter, r *http.Request) {
 	if s.catalog == nil {
-		writeProblem(w, r, api.Unavailable, http.StatusServiceUnavailable, noCatalogDetail)
+		// The same helper the data routes use, so `/readyz` and
+		// `GET /v1/services` cannot disagree about WHY there is nothing to serve.
+		// They used to: this branch carried its own copy of the detail.
+		s.writeNoCatalog(w, r)
 		return
 	}
 	count, err := s.catalog.Count(r.Context())
@@ -160,40 +209,157 @@ func (s *Service) Readyz(w http.ResponseWriter, r *http.Request) {
 
 // ListServices answers the registry, filtered and paged.
 //
-// Filters, paging and cursors are deliberately NOT implemented in this packet.
-// They are the Postgres read path — filtering on kind/language/contract, a
-// cursor this service issued — and a filter accepted and ignored is worse than a
-// filter refused: it answers 200 with rows the caller did not ask for. So with
-// no catalog mounted this is the document's 503, and pantry-02 writes the query.
-func (s *Service) ListServices(w http.ResponseWriter, r *http.Request, _ api.ListServicesParams) {
-	s.writeNoCatalog(w, r)
+// The three failure modes are three DIFFERENT answers and this function is where
+// that is decided:
+//
+//   - no catalog mounted          503, and the detail says why it is not mounted
+//   - a parameter this document cannot answer, or a cursor this service did not
+//     issue                     400, naming the parameter and what was allowed
+//   - the query itself failed    503, with the driver's own words in the log
+//     and a sentence in the body. NEVER an empty
+//     page: an empty page is a 200, and a 200 that
+//     means "the database is down" is the exact lie
+//     this packet exists to stop telling.
+//
+// A filter that matches nothing is the fourth case and it is a 200 with `data: []`
+// — the fourth element of `ServiceList` is REQUIRED and `data` "is always an
+// array, empty rather than absent", so this is the only body that can express it.
+func (s *Service) ListServices(w http.ResponseWriter, r *http.Request, params api.ListServicesParams) {
+	if s.catalog == nil {
+		s.writeNoCatalog(w, r)
+		return
+	}
+	if detail := unknownQueryParameter(r, listQueryParameters); detail != "" {
+		writeProblem(w, r, api.ValidationFailed, http.StatusBadRequest, detail)
+		return
+	}
+
+	services, next, err := s.catalog.List(r.Context(), catalog.Filter{
+		Kind:     params.Kind,
+		Language: params.Language,
+		Contract: params.Contract,
+		Limit:    params.Limit,
+		Cursor:   params.Cursor,
+	})
+	switch {
+	case errors.Is(err, catalog.ErrBadFilter):
+		writeProblem(w, r, api.ValidationFailed, http.StatusBadRequest, err.Error())
+		return
+	case err != nil:
+		s.logger.ErrorContext(r.Context(), "catalog: the registry could not be read",
+			"error", err, "trace_id", traceIDFrom(r.Context()))
+		writeProblem(w, r, api.Unavailable, http.StatusServiceUnavailable,
+			"the registry could not be read from its database: "+err.Error())
+		return
+	}
+
+	if services == nil {
+		// `data` is REQUIRED and "always an array, empty rather than absent". A nil
+		// slice marshals as `null`, which the document does not publish for this
+		// key and which a client written against it cannot tell from a different
+		// shape entirely. Every implementation of `Catalog` owes the handler this
+		// much, and doing it here rather than in each one is the point.
+		services = []api.Service{}
+	}
+	writeJSON(w, r, http.StatusOK, api.ServiceList{
+		Data: services,
+		Page: api.Page{NextCursor: next, HasMore: next != nil},
+	})
 }
 
 // GetService answers one registered service, or the document's 404 for an
-// unknown name. Same reason as ListServices: with no read path there is nothing
-// to look a name up in, and a 200 with an empty object would be a lie a client
-// caches.
-func (s *Service) GetService(w http.ResponseWriter, r *http.Request, _ string) {
-	s.writeNoCatalog(w, r)
+// unknown name.
+//
+// The 404 covers a name that does not exist AND a name whose row exists but is
+// not visible to this role, and they are deliberately the same answer: to a
+// public reader a draft is not a service that exists, and telling the difference
+// would be telling a caller what another publisher has not published. RLS draws
+// the line underneath the query rather than a predicate in it.
+func (s *Service) GetService(w http.ResponseWriter, r *http.Request, name string) {
+	if s.catalog == nil {
+		s.writeNoCatalog(w, r)
+		return
+	}
+
+	svc, err := s.catalog.Get(r.Context(), name)
+	switch {
+	case errors.Is(err, catalog.ErrNoSuchService):
+		writeProblem(w, r, api.NotFound, http.StatusNotFound,
+			"no official cafaye service is registered under that name")
+		return
+	case err != nil:
+		s.logger.ErrorContext(r.Context(), "catalog: one service could not be read",
+			"name", name, "error", err, "trace_id", traceIDFrom(r.Context()))
+		writeProblem(w, r, api.Unavailable, http.StatusServiceUnavailable,
+			"the registry could not be read from its database: "+err.Error())
+		return
+	}
+	writeJSON(w, r, http.StatusOK, svc)
 }
 
-// noCatalogDetail is ONE sentence, used by every 503 this build writes, because
-// the document's own description of the 503 is "the registry did not load, so
-// there is nothing to answer with" and a client reads `detail` to learn which of
-// the two causes it is. Naming the packet is the whole answer a reader needs:
-// the absence is scheduled work, not a misconfiguration to retry.
-const noCatalogDetail = "no data source is mounted: pantry-01 stands the rewrite up " +
-	"with no read path, and pantry-02 mounts the Postgres-backed one"
+// listQueryParameters is the document's `GET /v1/services` parameter set, and it
+// is written out here because `openapi/v1.yaml` is not readable at runtime.
+//
+// It is derived from the document by reading it, not by reading the handler: the
+// five names are the document's, and a sixth parameter added to the document
+// without being added here is caught by `TestTheParameterListMatchesTheDocument`,
+// which counts the names a client can send against the names this list holds.
+var listQueryParameters = []string{"kind", "language", "contract", "limit", "cursor"}
+
+// unknownQueryParameter refuses a parameter the document does not declare.
+//
+// "An unknown parameter is also a 400, so a client that asks a question this
+// version cannot answer is told rather than quietly given the whole list." That
+// sentence exists because the alternative is worse than being unhelpful: a client
+// sending `?kinds=api` gets the entire registry and concludes every entry is of
+// the requested kind, and nothing in the response says otherwise.
+//
+// It is a handler's job rather than the catalog's because only a handler can see
+// the raw query string — by the time a `Filter` exists, a misspelled parameter has
+// already been dropped.
+func unknownQueryParameter(r *http.Request, declared []string) string {
+	known := make(map[string]struct{}, len(declared))
+	for _, name := range declared {
+		known[name] = struct{}{}
+	}
+	var unknown []string
+	for name := range r.URL.Query() {
+		if _, ok := known[name]; !ok {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) == 0 {
+		return ""
+	}
+	sort.Strings(unknown)
+	allowed := make([]string, len(declared))
+	copy(allowed, declared)
+	sort.Strings(allowed)
+	return "query parameter(s) " + strings.Join(unknown, ", ") +
+		" are not declared by this version of the document. declared: " +
+		strings.Join(allowed, ", ")
+}
+
+// noCatalogDetail is the fallback for a `New` that was given no detail, which
+// only happens when a test mounts the handler without saying why. It says the
+// thing that is true in every such case and nothing that is not.
+const noCatalogDetail = "no data source is mounted: this service has no catalog to read from, " +
+	"so there is nothing to answer with"
 
 func (s *Service) writeNoCatalog(w http.ResponseWriter, r *http.Request) {
 	if s.catalog != nil {
-		// Unreachable in this build. It is written as a refusal rather than a
-		// panic because a future pantry-02 that mounts a catalog must not find
-		// this method answering "no catalog" for a mounted one: the panic would
-		// say exactly that, in the log, at once.
-		panic("catalog mounted but pantry-01 has no read path: pantry-02 replaces this")
+		// Unreachable, and written as a refusal rather than a panic because a
+		// handler that reached here with a catalog mounted would be answering
+		// "there is nothing to serve" about a registry that has rows in it. The
+		// panic says exactly that, in the log, at once.
+		panic("httpapi: a catalog is mounted but this handler reported no data source; " +
+			"a mounted catalog must never answer with the 503")
 	}
-	writeProblem(w, r, api.Unavailable, http.StatusServiceUnavailable, noCatalogDetail)
+	detail := s.unavailableDetail
+	if detail == "" {
+		detail = noCatalogDetail
+	}
+	writeProblem(w, r, api.Unavailable, http.StatusServiceUnavailable, detail)
 }
 
 // recoverMiddleware turns a panic into the document's 500 problem rather than
