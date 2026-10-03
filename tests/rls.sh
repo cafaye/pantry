@@ -21,6 +21,8 @@
 #   PANTRY_PG_BIN=/opt/homebrew/opt/postgresql@18/bin ./tests/rls.sh
 #   ./tests/rls.sh --keep             # leave the cluster's data dir behind to poke at
 #   ./tests/rls.sh --list             # print every check name without running anything
+#   ./tests/rls.sh --print-pg-bin     # print the resolved server bin dir and exit
+#   ./tests/rls.sh --serve [--empty]  # stand a migrated (seeded) database up and wait
 #
 # EVERY CHECK EMITS ONE ROW, and a failure names the check, the statement and the
 # error the database actually answered. Nothing here infers a permission from a
@@ -39,12 +41,18 @@ cd "$(dirname "$0")/.."
 REPO="$PWD"
 KEEP=0
 LIST_ONLY=0
+PRINT_PG_BIN=0
+SERVE=0
+SERVE_EMPTY=0
 for arg in "$@"; do
   case "$arg" in
     --keep) KEEP=1 ;;
     --list) LIST_ONLY=1 ;;
-    -h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "tests/rls.sh: unknown argument '$arg'. --keep | --list | --help" >&2; exit 2 ;;
+    --print-pg-bin) PRINT_PG_BIN=1 ;;
+    --serve) SERVE=1 ;;
+    --empty) SERVE_EMPTY=1 ;;
+    -h|--help) sed -n '2,55p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "tests/rls.sh: unknown argument '$arg'. --keep | --list | --print-pg-bin | --serve [--empty] | --help" >&2; exit 2 ;;
   esac
 done
 
@@ -167,7 +175,13 @@ while lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; do
   [[ "$PORT" -gt 55520 ]] && { echo "tests/rls.sh: no free port in 55470-55520" >&2; exit 4; }
 done
 
-say() { printf '%s\n' "$*"; }
+# `--print-pg-bin` is a MACHINE-FACING mode: it answers with one line on stdout
+# and everything else on stderr, so a caller can read stdout and get the path
+# without stripping banners. Every other mode is human-facing and keeps its
+# narration on stdout where a person running the suite reads it.
+say() {
+  if [[ "$PRINT_PG_BIN" -eq 1 ]]; then printf '%s\n' "$*" >&2; else printf '%s\n' "$*"; fi
+}
 say "postgres: $("$PGBIN/postgres" --version)"
 say "cluster:  $DATA on 127.0.0.1:$PORT"
 
@@ -221,6 +235,118 @@ UP="$WORK/up.sql"
 
 MIGRATIONS="$(ls "$REPO"/migrations/[0-9]*.sql | wc -l | tr -d ' ')"
 say "migrations: $MIGRATIONS files, Up sections only"
+
+# ---------------------------------------------------------------------------
+# `--print-pg-bin`: ONE PLACE THAT KNOWS WHERE POSTGRES IS ON THIS MACHINE
+#
+# The Go suites need a PostgreSQL and they do not get to have their own idea of
+# where one is. `find_pg_bin` above already encodes that knowledge — including
+# the `PANTRY_PG_BIN` hint being authoritative — and a second copy in Go would be
+# a second answer to a question whose whole point is that there is one. So this
+# prints the resolved directory and exits, and `internal/pantrydb`'s harness
+# shells out to it.
+#
+# It prints the SAME counted-skip shape on failure, because "there is no Postgres
+# here" is not an error in the RLS suite and must not become one in a caller
+# either: a Go test that cannot find a database has to say so in a way a summary
+# counts, not in a way a CI log hides.
+# ---------------------------------------------------------------------------
+if [[ "$PRINT_PG_BIN" -eq 1 ]]; then
+  if [[ -n "$pg_bin_error" ]]; then
+    echo "skip: PANTRY_PG_BIN is set to $pg_bin_error and that directory does not hold" >&2
+    echo "      pg_ctl, psql and initdb." >&2
+    exit 0
+  fi
+  if [[ -z "$PGBIN" ]]; then
+    echo "skip: no PostgreSQL server binaries found — set PANTRY_PG_BIN" >&2
+    exit 0
+  fi
+  echo "$PGBIN"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# `--serve`: the SAME harness, standing a database up for the Go suites
+#
+# `internal/pantrydb` and `internal/httpapi` need a real PostgreSQL with the
+# migrations applied and a seeded catalog, because the thing they prove is that
+# a query over the real schema answers — a mocked driver would prove that the
+# mock agrees with itself. Rather than a second harness (a Go one, a Docker one),
+# this is the first one with two more entry points: it finds the server, starts
+# the cluster, and applies the migrations exactly as the assertions below run
+# against, and then it applies `tests/seed.sql`, prints a connection URL on one
+# line, and waits for SIGTERM.
+#
+#   ./tests/rls.sh --serve            # migrated + seeded, prints the URL
+#   ./tests/rls.sh --serve --empty    # migrated, NOT seeded
+#
+# `--empty` is the middle case of this repository's most important distinction: a
+# database that answered and found nothing is not the same answer as a database
+# that could not be reached, and the only way to test that honestly is to have
+# both available at once.
+#
+# `00006_rls.sql`'s fixtures are NOT applied here and the reason is that they are
+# shaped for `pgx`-free assertions (abstract `'{}'::jsonb` manifests, fixed uuids
+# the checks read as literals). `tests/seed.sql` is the catalog a client would
+# render. Two seeds, two subjects, one harness.
+# ---------------------------------------------------------------------------
+if [[ "$SERVE" -eq 1 ]]; then
+  SERVED=pantry
+  db "drop database if exists $SERVED;" >/dev/null 2>&1
+  db "create role pantry_migrator login createrole noinherit;" >/dev/null 2>&1
+  db "create database $SERVED owner pantry_migrator;" >/dev/null 2>&1
+
+  SERVE_LOG="$WORK/apply-$SERVED.log"
+  if ! timeout 180 "${PSQL[@]}" -U pantry_migrator -d "$SERVED" -f "$UP" >"$SERVE_LOG" 2>&1; then
+    say ""
+    say "FAIL  migrations do not apply to an empty database (--serve)"
+    grep -E "ERROR|FATAL" "$SERVE_LOG" | head -5 | sed 's/^/      /'
+    exit 1
+  fi
+
+  # THE ONE PROVISIONING STATEMENT THE MIGRATIONS DO NOT CONTAIN, and it is
+  # load-bearing for the read path rather than incidental.
+  #
+  # `00001_roles.sql` creates `pantry` as LOGIN and `pantry_public` as NOLOGIN,
+  # and it grants the GROUP role its table privileges — but it never grants the
+  # LOGIN role MEMBERSHIP in the group. `NOINHERIT` is the point (a membership
+  # must be taken with `set role`, never inherited silently), and taking one
+  # requires membership. So on a database built purely from this directory,
+  # `set role pantry_public` fails with `permission denied to set role`, and the
+  # service's read path cannot start.
+  #
+  # This is stated here rather than worked around in Go, because the alternative
+  # — connecting as `pantry` and relying on its own policies — reads ZERO rows:
+  # with no identity, `current_publisher_id()` is NULL and every publisher
+  # predicate compares against NULL. That is `FORCE` working, and it means the
+  # membership is not a convenience, it is the only way the catalog can be read.
+  # See `REPORT-registry-pantry-data-01.md` finding 2.
+  sql "$SERVED" "grant pantry_public to pantry;" >/dev/null
+
+  if [[ "$SERVE_EMPTY" -eq 0 ]]; then
+    if ! timeout 60 "${PSQL[@]}" -d "$SERVED" -f "$REPO/tests/seed.sql" >"$WORK/seed.log" 2>&1; then
+      say ""
+      say "FAIL  tests/seed.sql does not apply to a freshly migrated database"
+      sed 's/^/      /' "$WORK/seed.log" | head -10
+      exit 1
+    fi
+    say "seeded:  tests/seed.sql"
+  else
+    say "seeded:  no (--empty: the catalog is genuinely empty, and the database answered)"
+  fi
+
+  # The URL, on its own line, on stdout, and nothing else on stdout — a caller
+  # reading one line must not have to strip banners.
+  echo "postgres://postgres@127.0.0.1:$PORT/$SERVED?sslmode=disable"
+  say "serving: press ctrl-c, or send SIGTERM, to stop and remove the cluster"
+
+  # Block until interrupted, then fall through to the EXIT trap, which stops the
+  # server and removes the data directory. There is no `--keep` interaction to
+  # reason about: a serving harness that leaked a cluster on exit would leave a
+  # postmaster behind on a machine three other sessions are working on.
+  trap 'exit 0' INT TERM
+  while true; do sleep 1; done
+fi
 
 # ---------------------------------------------------------------------------
 # SHAPE 1 — "tables owned by pantry the way a real deployment has them"

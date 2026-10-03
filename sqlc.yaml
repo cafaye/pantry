@@ -1,0 +1,40 @@
+# sqlc.yaml — how pantry's SQL becomes Go.
+#
+# THE SCHEMA IS THE MIGRATIONS, verbatim, and this file points sqlc at the
+# directory rather than at a checked-in copy of it. That is the whole reason the
+# generated Go can be committed next to the SQL that produced it: there is one
+# schema, it is `migrations/*.sql`, and a second copy in this directory would be
+# a schema that can disagree with the one the database actually runs.
+#
+# sqlc reads the goose files as they are — `-- +goose Up`, the `do $$ … $$`
+# blocks, the `-- +goose StatementBegin` comments — because it parses them with
+# the real Postgres grammar rather than with a line reader. Measured: `sqlc
+# generate` over `migrations/` produces the four tables, the three enum types,
+# the policies and the `compat_closure` view without a preprocessing step, which
+# is why there is no `awk` in this build the way `tests/rls.sh` has one.
+version: "2"
+
+sql:
+  - engine: postgresql
+    # Every statement named `-- name:` here becomes a method on `*gen.Queries`.
+    queries: internal/pantrydb/queries
+    # The directory, not a file: a seventh migration is covered the day it lands.
+    schema: migrations
+    gen:
+      go:
+        # `pantrydbgen`, not `pantrydb`: the generated package lives at
+        # internal/pantrydb/gen, and calling it `pantrydb` would make every file
+        # that imports both this package and it need an alias.
+        package: pantrydbgen
+        out: internal/pantrydb/gen
+        # pgx, not database/sql. An ORM or a query builder would hide the very
+        # SQL the RLS policies key on — `pantry.current_publisher_id()` appears
+        # INSIDE policy qualifiers — and `RESEARCH-fleet-velocity.md` P1-20 is
+        # the citation for why tenant isolation belongs to Postgres and not to a
+        # Go layer. pgx is also the only driver here that can do `AfterConnect`,
+        # which is where the role is set.
+        sql_package: pgx/v5
+        emit_json_tags: false
+        emit_prepared_queries: false
+        emit_interface: true
+        emit_empty_slices: true

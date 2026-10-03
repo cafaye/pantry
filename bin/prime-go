@@ -10,9 +10,13 @@
 # 110 crates to find out whether `go vet` is happy, and the two gates having one
 # file each is what makes "which tier is red" a question with an answer.
 #
-# Green on a bare machine with a Go toolchain on PATH. No database: this build
-# mounts no catalog at all (internal/catalog), so there is nothing that could
-# make a test need one.
+# Green on a bare machine with a Go toolchain on PATH. The two data-path packages
+# (`internal/pantrydb`, `internal/httpapi`) need a PostgreSQL, and they do not
+# bring one: they run `tests/rls.sh --serve`, which starts a scratch cluster,
+# applies `migrations/` and seeds `tests/seed.sql`, then removes it on exit. A
+# machine with no PostgreSQL gets a COUNTED SKIP from that harness naming the
+# reason — printed as a `skip:` row by both — rather than a suite that reports
+# `ok` without having checked anything.
 set -euo pipefail
 set -o pipefail
 
