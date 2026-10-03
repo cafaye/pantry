@@ -411,6 +411,88 @@ create policy service_compat_admin_delete
 -- THE GRANTS. Read this before concluding the policies are enough.
 -- =============================================================================
 
+-- =============================================================================
+-- SCHEMA USAGE, AND WHY IT IS ONE LIST GRANTED ONCE AND NEVER REVOKED
+-- =============================================================================
+--
+-- USAGE IS NOT A TABLE PRIVILEGE AND OWNING THE OBJECTS DOES NOT SUPPLY IT. This
+-- file used to say the opposite, in these words:
+--
+--     `pantry` ITSELF GETS NOTHING BY THIS MIGRATION. It owns the tables, so it
+--     can already do all of it … A `grant … to pantry` here would be a statement
+--     that the owner needs privileges it does not have, which is false and would
+--     mislead the next reader.
+--
+-- The argument is CORRECT ABOUT TABLE PRIVILEGES — an owner does hold SELECT,
+-- INSERT, UPDATE and DELETE on its tables implicitly, and that is why there is
+-- still no `grant … to pantry` on the tables below. It is WRONG ABOUT THE SCHEMA,
+-- and it was wrong in the most expensive direction, because it did not merely omit
+-- a statement: it argued that the omission was correct.
+--
+-- HERE IS WHY THE ARGUMENT LOOKED RIGHT, which is the part worth keeping. The
+-- migrations create the schema and the tables, so in a development cluster the
+-- role that runs them owns both, and an owner of a schema holds every privilege on
+-- it implicitly — `has_schema_privilege('pantry', 'pantry', 'USAGE')` answers true
+-- without a grant, because the owner's implicit privileges are not in `nspacl`.
+-- On that cluster the line above is visibly true and the grant would look
+-- redundant. In production the schema is NOT owned by `pantry`, and there the
+-- grant is the only thing that supplies USAGE:
+--
+--   * `00001` needs `create role`, so the migrations cannot be applied by
+--     `pantry` itself. Measured: applying this directory connected as `pantry`
+--     fails with `permission denied to create role` at `00001`'s `do $$ … $$`.
+--     So migrations run as a provisioning role.
+--   * Objects a provisioning role creates are owned by that provisioning role, and
+--     this directory contains no `alter … owner to`. Ownership is therefore
+--     whatever the operator did, and a role that is not the schema owner gets its
+--     USAGE from `PUBLIC` — which the next line revokes.
+--
+-- So the two lines combined were: take USAGE away from every role, including the
+-- owner, and grant it back to three of the four roles that exist. Measured on
+-- PostgreSQL 18.4, schema `pantry` owned by the provisioning role and the tables
+-- handed to `pantry`:
+--
+--     set role pantry_public; select count(*) from pantry.services;
+--       ERROR:  permission denied for schema pantry
+--     set role pantry;      select count(*) from pantry.services;
+--       ERROR:  permission denied for schema pantry
+--
+-- Both roles locked out of a schema whose tables both policies and the owner were
+-- written for. A registry with no data path: every read is a 403 and every write
+-- is a 403, and nothing in `pg_policies` says so.
+--
+-- ONE `revoke`, THEN ONE `grant` TO ALL FOUR ROLES, AND NOTHING AFTERWARDS. The
+-- previous file also granted `pantry_public` its USAGE at line 425 and then
+-- `revoke`d it back off at line 441, under a comment about DDL that the revoke did
+-- not achieve — `revoke all on schema pantry from pantry_public` removes `USAGE`,
+-- which is exactly the privilege that made the SELECT grant above it reachable, and
+-- leaves `pantry_public` holding nothing. That is the same lockout, one role
+-- narrower, and it was in the file this packet was asked to fix. A revoke written
+-- to subtract one privilege and subtracting another is why the four roles are named
+-- together here: a reader can see the whole set in one statement and cannot miss
+-- one.
+revoke all on schema pantry from public;
+
+-- USAGE AND NOT CREATE, for all four roles. `create` on a schema is the privilege
+-- this file refuses `pantry_public` and it refuses it for every role here rather
+-- than only for the public one: a role that can create objects in this schema can
+-- create an object that shadows a table name for the next session in some
+-- `search_path` orderings, and no policy protects against that because the shadow
+-- is never a policy-controlled row. Not `usage on schema public` either — a read
+-- role has no business in the `public` schema of a cluster it does not own.
+grant usage on schema pantry to pantry_public, pantry_publisher, pantry_admin, pantry;
+
+-- `tests/rls.sh` asserts the shape of this section rather than the text of it:
+-- every role named by any policy in this schema holds USAGE on it, and every
+-- command any policy allows has a matching table privilege for the role that
+-- policy names. Both assertions are derived from `pg_policies`, so they keep
+-- holding as tables and policies are added. Both are red on the version of this
+-- file above, and `00001`'s Down note in `tests/rls.sh` records that.
+
+-- =============================================================================
+-- THE TABLE GRANTS, ONE ROLE AT A TIME
+-- =============================================================================
+
 -- `pantry_public` GETS SELECT AND NOTHING ELSE. On every table.
 --
 -- This is the sentence "the public read role physically cannot write", and it is
@@ -422,7 +504,6 @@ create policy service_compat_admin_delete
 -- `gen_random_uuid()`, so there is no sequence to read and no sequence to grant;
 -- that is a design choice made in `00003` whose security value is that the grant
 -- list here is four verbs and cannot grow by accident.
-grant usage on schema pantry to pantry_public;
 grant select on
   pantry.services,
   pantry.service_versions,
@@ -430,16 +511,7 @@ grant select on
   pantry.service_compat
   to pantry_public;
 
--- NO DDL ANYWHERE FOR `pantry_public`. Not `usage on schema public` (it has no
--- business in this schema's tables), not `create`, not `temp`. A read role that can
--- create objects can create objects that shadow a table name for the next session
--- in some search_path orderings, and there is no policy that protects against that
--- because it never reaches the table.
-revoke all on schema pantry from public;
-
 -- `pantry_publisher` GETS DML, AND THE GRANT IS DELIBERATELY NOT `all`.
-revoke all on schema pantry from pantry_public;
-grant usage on schema pantry to pantry_publisher, pantry_admin;
 grant select, insert, update on
   pantry.services,
   pantry.service_versions,
@@ -455,11 +527,93 @@ grant select, update on
 -- the grant list is where a reader can see that rather than having to reconstruct
 -- it from four policies.
 
--- `pantry` ITSELF GETS NOTHING BY THIS MIGRATION. It owns the tables, so it can
--- already do all of it, and FORCE is what takes that away except through the
--- policies above — where it is named, and scoped to one publisher at a time. A
--- `grant … to pantry` here would be a statement that the owner needs privileges it
--- does not have, which is false and would mislead the next reader.
+-- `pantry_admin` GETS DML ON ALL FOUR TABLES, AND THIS GRANT WAS MISSING.
+--
+-- Eight `pantry_admin` policies exist above and are correct; the role held NO
+-- table privilege at all, so Postgres rejected every statement at permission-check
+-- time and never consulted a policy. `pantry_admin` could not review a submission,
+-- could not publish one, and could not run the first-party ingest — the three
+-- things it exists for. `\dp` reads as a complete admin boundary, which is the
+-- point: the boundary looked finished because the policies were finished, and the
+-- grant list was the only place the gap was visible and nothing was reading it.
+--
+-- The grant MIRRORS THE POLICIES rather than widening past them: every command the
+-- four admin policy sets allow, on every table they cover, and nothing else. The
+-- narrow-grant instinct above is kept, not abandoned — `pantry_admin` gets no
+-- CREATE on the schema, and it gets no sequence and no other schema.
+grant select, insert, update, delete on
+  pantry.services,
+  pantry.service_versions,
+  pantry.publishers,
+  pantry.service_compat
+  to pantry_admin;
+
+-- =============================================================================
+-- `pantry` ITSELF: THE OWNER, AND THE ROLE/OPERATION MAP THIS FILE ASSUMES
+-- =============================================================================
+--
+-- `pantry` GETS `USAGE` ABOVE AND NO TABLE GRANT HERE, and the second half is not
+-- an omission: an owner holds SELECT/INSERT/UPDATE/DELETE on its own tables
+-- implicitly, so a table grant to `pantry` would be a statement about a privilege
+-- it already has. It would also be a second, weaker copy of the first-party claim,
+-- because a grant is visible in `\dp` and an owner's implicit privileges are not.
+--
+-- WHAT `pantry` CAN DO, and it is a short list, written down because the whole
+-- point of `FORCE` is that the answer is not "everything it owns":
+--
+--   DDL — yes, in full. It owns the objects, RLS does not apply to DDL, and this
+--         is the migration path: `00001`'s Down, the enum migrations' `do $$ … $$`
+--         guards and every future migration run as this role. It is also the only
+--         role that can read `pg_policies` reasons into effect here.
+--   Reads and writes scoped to ONE publisher, once `begin_publisher/1` has been
+--         called — yes, because the publisher policies name `pantry` alongside
+--         `pantry_publisher`. That naming is not a convenience: it is what makes a
+--         backfill run as the service's own role obey exactly the rule every other
+--         role obeys, instead of the owner being the one role in this schema that
+--         bypasses the boundary it wrote.
+--   Reads with NO identity set — ZERO rows. `current_publisher_id()` returns NULL
+--         and every publisher predicate compares against NULL. This is the accepted
+--         cost of `FORCE` (DECISIONS.md D31) and `tests/rls.sh` asserts it rather
+--         than leaving it to be discovered.
+--   INSERT — NO POLICY OF ITS OWN, DELIBERATELY. This is the decision this packet
+--         had to make rather than mechanically make, so here it is in full.
+--
+-- WHY `pantry` HAS NO INSERT POLICY. Ingesting the fleet's own manifests is a
+-- FIRST-PARTY operation, and a first-party service is a row with
+-- `publisher_id IS NULL` — `00003`'s `services_first_party_has_no_publisher`
+-- CHECK forbids the alternative. Every publisher-shaped insert policy in this file
+-- requires `publisher_id = current_publisher_id()`, so by construction none of them
+-- can admit a first-party row, and a policy written to let `pantry` insert one
+-- would be an unconditional one. The two candidates were:
+--
+--   (a) an unconditional INSERT policy for `pantry`. Rejected: it makes the role
+--       that OWNS the tables and RUNS the migrations able to create rows it has no
+--       business creating, on every table, forever — which is the bypass the
+--       `FORCE` decision exists to prevent, reached through a policy instead of
+--       through `relforcerowsecurity = false`.
+--   (b) no INSERT policy for `pantry`, and the ingest runs as `pantry_admin`.
+--       Chosen. `pantry_admin` already holds `services_admin_insert with check
+--       (true)` and now holds the grant for it, so a first-party publisher, a
+--       first-party service, its versions and its compatibility edges are all
+--       creatable — by the role whose entire job is the decision that a row
+--       describing a fleet service exists. `tests/rls.sh` asserts the ingest runs
+--       green as `pantry_admin` AND is refused as `pantry`, because the second half
+--       is the only thing that makes the first half a decision rather than an
+--       accident of who happened to hold a grant.
+--
+-- The cost of this choice, stated rather than discovered later: the fleet's
+-- manifests arrive in the database through a role that is not the one serving
+-- HTTP, so the sync needs a login that is a member of `pantry_admin`. That is one
+-- provisioning statement and `00001` already says credentials are the cluster's
+-- business. `pantry` is `NOINHERIT`, so a membership in `pantry_admin` does not
+-- leak into the serving role even if the same login is granted both.
+--
+-- Publisher SELF-REGISTRATION is the other thing no role may do, and the absence
+-- is MVP-SCOPE's rather than this migration's: Phase 1 is official-only, "adding a
+-- service is a commit and a reviewed pull request", so `publishers` rows are
+-- created by a migration, a fixture or an admin. `publishers` therefore has no
+-- publisher INSERT policy at all, and `tests/rls.sh` asserts both that `pantry` and
+-- `pantry_publisher` are refused one and that `pantry_admin` is not.
 
 -- +goose Down
 
