@@ -284,6 +284,16 @@ for line in open(os.environ["RESULTS_FILE"], encoding="utf-8"):
         v = "POLICY"
     elif "permission denied for table" in obs or "permission denied for schema" in obs:
         v = "GRANT"
+    elif "violates foreign key constraint" in obs or "violates check constraint" in obs \
+         or "violates unique constraint" in obs or "violates not-null constraint" in obs \
+         or "duplicate key value" in obs:
+        # A CONSTRAINT refused, which is neither barrier. This is not a
+        # hypothetical: under M3 the `pantry_admin` grant deletion stops A0, the
+        # fixtures never land, and every downstream check that names a row fails
+        # on a foreign key rather than on anything this packet is about. Calling
+        # that a policy refusal would be wrong in the exact direction the packet
+        # is warning about.
+        v = "CONSTRAINT"
     elif exp.startswith("statement SUCCEEDED"):
         # The denial did not happen. For a widening mutation this is the point.
         v = "ABSENT-ALLOWED"
