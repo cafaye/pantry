@@ -952,3 +952,126 @@ that column is read by `registry/index.yml`'s comments, by this file, and by any
 future tool that wants to answer "when was this copy taken". **It is recorded
 here rather than decided because the manager owns it and the packet's brief was
 not to decide it.**
+
+---
+
+## D34 — pantry's route surface is generated, and core's account-scope checker reads zero of it — OPEN
+
+**Found** 2026-10-03, landing `pantry-account-scope-01` (the packet that writes
+`account_scope.yml` for pantry and measures whether a checker written for
+hand-written routers can see a generated one).
+
+**The question.** `identity`, `guard`, `site`, `parlor` and `courier` all declare
+their surface and all five register routes in a file a person wrote. `pantry`
+does not: `internal/httpapi/httpapi.go:145` builds a `chi.NewRouter()` and hands
+it to `internal/api/api.gen.go`, which `oapi-codegen` generates from
+`openapi/v1.yaml` and which mounts every operation itself. So the packet's
+question was not "write a declaration" — it was whether core's
+`account_scope_check.py` can see a route surface nobody wrote by hand, or
+whether pantry is the second service whose route count reads `0` while it
+serves four.
+
+**The measurement.** Zero. `discover()` over `internal/api/api.gen.go` returns 0
+registrations; so does `internal/httpapi/httpapi.go`; so does walking
+`internal/`. The cause is one token. `internal/api/api.gen.go:707` reads
+
+    r.Get(options.BaseURL+"/v1/services", wrapper.ListServices)
+
+and the chi recogniser's pattern requires a `/`-prefixed string literal as the
+**first** term after `(`. Concatenation is handled, but only in the other
+direction — `"/v1/x/"+prefix+"/y"` — because identity's own router writes it that
+way. Deleting the token `options.BaseURL+` from those four lines turns the run
+from 1 failure and 5 warnings into 0 and 1, and turns all four declared rows
+from "this checker could not read the code behind it" into machine-verified.
+That single deletion is the whole of the difference, and it is in a **generated**
+file, so it cannot simply be applied — it comes back on every `go generate`.
+
+**What follows from it, and each of these is a decision rather than a bug report.**
+
+1. **`surface.minimum` cannot be set above 0 on pantry.** The floor exists to
+   notice a route appearing where the recognisers cannot reach, and it counts
+   what `discover` found, which is 0. `minimum: 4` produces
+   `account-scope.surface-thin` on a tree that serves four routes, permanently
+   and correctly. The declaration therefore pins it at 0 and the ratchet's job is
+   done instead by `internal/httpapi/scope_declaration_test.go`, which walks the
+   **live router** with `chi.Walk` — the one thing the Python harness cannot do.
+   This is the answer to the packet's architectural question and it is a split,
+   not a substitution: **the enumeration is derived; the verdicts are declared.**
+
+2. **The OpenAPI document is NOT the declaration surface, and saying so is the
+   finding.** `openapi/v1.yaml` names all four operations by `operationId` and
+   declares `security: []` at `:82`, which is pantry's whole security posture in
+   one line. So the spec is a complete and *already-regenerated* enumeration —
+   strictly better than a hand-kept one. But it carries **authentication**, not
+   **row ownership**: `security: []` says "no credential", which is a different
+   question from "whose rows". And the checker cannot read it either — `.yaml` is
+   not in `SOURCE_SUFFIXES` and no recogniser reads a document. So the honest
+   answer is that "drive it from the spec" is right for the enumeration and wrong
+   for the answers, and a single artifact cannot be both.
+
+3. **`_mentions_on`'s fallback reports a correct row as `stale`, falsely.**
+   With the route invisible, `registeredAt` falls back to "does this line contain
+   the last segment of the path". For `/v1/services/{name}` the last segment
+   after parameter-collapsing is the two-character string `{}`, which appears in
+   no Go file. The other three rows go green on the same fallback **by
+   accident** — `services`, `healthz` and `readyz` are all substrings of their own
+   lines — so the one row whose path is spelled the way the document spells it is
+   the only one that goes red. The declaration is shipped that way, at exit 1,
+   rather than spelled `/v1/services/name` to reach exit 0: that is a route pantry
+   does not serve. The fix is one line in core and belongs to core.
+
+4. **`declaration-contradicts-code` cannot see a Go service at all.**
+   `surface.accountKey` is declared and documented as "what this service calls the
+   account", and the checker threads it into exactly **one** of its two evidence
+   paths — `carries_key`, for `account-key-lost`. `RESOLVED` and `NAMED`, the
+   patterns the contradiction check decides on, are hardcoded to
+   `account|tenant` in lower case. Measured with one variable each: a handler
+   reading `principal.account_id` makes the liar fail with a file and a line; the
+   same handler reading `principal.AccountID` — Go's casing of the same field,
+   which `KEY_SPELLINGS` explicitly added "because it is Go's" — passes clean;
+   and a handler reading `currentPublisherID()`, which is **pantry's actual
+   resolver**, passes clean. So a Go service is blind twice over: once on the
+   noun and once on the case, and a service that names its key in the declaration
+   is no better protected than one that does not.
+
+**The options, for the part that is core's to decide.**
+
+1. **Teach the chi recogniser a leading concatenation term**, which is two
+   characters of pattern (`\(\s*(?:[A-Za-z_][A-Za-z0-9_.]*\s*\+\s*)?`) and fixes
+   findings 1 and 3 together: pantry's four registrations become visible, so
+   `undeclared` becomes decidable, `minimum` becomes settable, and
+   `_mentions_on`'s recogniser branch answers instead of its last-segment
+   fallback. **This is the recommendation.** It is the smallest change that turns
+   a service from unverifiable into verified, and it generalises to every
+   `oapi-codegen` chi service the platform will ever write.
+2. **Add an OpenAPI-document recogniser** so `surface.sources` can name
+   `openapi/v1.yaml`. This makes the SPEC the surface, which is what
+   `docs/account-scope.md` would then have to say about a declaration whose
+   answer half is still not in the document. It is strictly more machinery than
+   option 1 for strictly less coverage on pantry, and it should be considered
+   only if a service is ever generated from something other than an OpenAPI
+   document.
+3. **Thread `surface.accountKey` into `RESOLVED`/`NAMED`** instead of adding
+   nouns to a list the file keeps saying it does not maintain. Independent of 1
+   and 2, and it is finding 4. It should land whatever happens to the other two.
+
+**The cost of not deciding.** Nothing in this repository goes red — the
+declaration is not wired into `bin/prime`, deliberately (§ below) — so the
+silence is real. A phase-2 write path adds a publisher-resolving route, someone
+adds the OpenAPI operation, and `account_scope.yml` keeps saying
+`reason: public` for a route that is scoped. `internal/httpapi/scope_declaration_test.go`
+catches the *enumeration* half of that today. It cannot catch the *verdict*
+half, because deciding it is what `declaration-contradicts-code` does and that
+check cannot read a Go field.
+
+**WHY `bin/prime` DOES NOT RUN THE ACCOUNT-SCOPE CHECKER, stated here rather
+than left as an omission.** It is in `core`, not in this repository, so the tier
+would need `../core` cloned; `.github/workflows/ci.yml` clones `../caf` and does
+not clone `../core`, so wiring it in means a second clone, a second language
+runtime in the gate, and a green that is a skip on any runner without it — the
+"green over nothing" shape this repository has been bitten by three times and
+names in its own CI header. The four tests in `scope_declaration_test.go` cover
+the question that checker cannot answer here anyway, at zero dependency and zero
+clone. **If a packet wires the tier in, it must wire the clone in the same
+commit** and `PANTRY_RLS_REQUIRED`/`PANTRY_DB_REQUIRED`'s pattern says how: prove
+the thing is available before the step that needs it.
