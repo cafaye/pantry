@@ -19,7 +19,8 @@ out.
 | 5 | `00005_functions.sql` | `current_publisher_id()`, `begin_publisher/1`, `service_is_visible()`, the touch trigger, the `compat_closure` view | anything that decides trust |
 | 6 | `00006_rls.sql` | enable + FORCE + policies + grants on all four tables | a `for all` policy — one policy per command, always |
 | 7 | `00007_roles_and_compat_read.sql` | the **membership** `pantry` needs to become `pantry_public`, and the public read policy on the compatibility graph | `pantry_admin` — the one membership deliberately NOT granted |
-| — | `../tests/rls.sh` | **the denials, run against a real cluster** — 89 checks over every role, every table and every command | a skip that counts as a pass |
+| 8 | `00008_publisher_identity_immutable.sql` | `publishers_publisher_update`'s `with check (false)` — a publisher, and the table owner, may not rewrite the identity of the publisher row they own | a column-by-column pin, which PostgreSQL cannot express: a policy may not reference its own relation (42P17) |
+| — | `../tests/rls.sh` | **the denials, run against a real cluster** — 99 checks over every role, every table and every command | a skip that counts as a pass |
 
 ## Two goose things that will bite you
 
@@ -102,6 +103,33 @@ has been applied, and a Down that revokes a grant made by its own Up leaves stat
 behind. A new file reaches all of them on the next `up`, and its Down is a true
 inverse.
 
+## The eighth migration is a security tightening, so its `down` is weaker
+
+`00006`'s comment above `publishers_publisher_update` said the `with check` "is
+what stops a publisher from moving a row OUT of its own account by updating
+`github_id`/`github_login`". It did not: that `with check` was
+`id = current_publisher_id()`, which pins the primary key and none of the columns
+that identify the account, and a publisher could rename its login, re-key its
+`github_id` onto an unclaimed account, and claim `is_first_party` — measured, in
+`00008`'s header and by `tests/rls.sh` D18..D23.
+
+`00008` replaces the check with `false`, which refuses every publisher write to
+`publishers` for `pantry_publisher` **and** for the owner `pantry`.
+
+Two consequences worth writing down:
+
+- **The `down` grants the hole back.** It restores `00006`'s policy byte for
+  byte, because that is the state the `up` started from and a `down` that kept
+  the stricter check would mean rolling back a tightening silently undid it. The
+  refusal to be quiet about it is that the checks fail loudly: on a database
+  where `00008` has been rolled back, `tests/rls.sh` reports ten failures naming
+  themselves rather than accepting the write.
+- **A column-by-column pin is not available to write.** `00002` calls `github_id`
+  "Immutable", and the obvious `with check` — compare the new value to the old
+  one — cannot be written, because a PostgreSQL policy may not reference its own
+  relation. `CREATE POLICY` *accepts* such a policy and the error arrives on the
+  first statement that uses the table. Measured, verbatim, in `00008`'s header.
+
 ## The `down` order is not reversible on its own
 
 `goose down` walks files in reverse, so `00006`'s Down (disable RLS, drop
@@ -127,8 +155,9 @@ What a partial rollback deliberately leaves behind:
 ## The denial suite is NOT a migration directory, and never was
 
 `tests/rls.sh` creates a disposable cluster, applies every file above, and runs
-`tests/rls_checks.sh` against it — 77 assertions covering every role, every table
-and every command, including the ones that must SUCCEED. Read
+`tests/rls_checks.sh` against it — 99 assertions covering every role, every table
+and every command, including the ones that must SUCCEED. (This sentence said 77
+for several packets; read the count off a run, which prints it as `checks:`.) Read
 `tests/rls_checks.sh`'s header before changing it: every case is either a
 statement that **must be refused** or a row that **must read a particular way**.
 

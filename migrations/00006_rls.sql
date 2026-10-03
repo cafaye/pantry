@@ -99,10 +99,39 @@ create policy publishers_public_read_first_party
   to pantry_public
   using (is_first_party);
 
--- THE PUBLISHER: its own row and no other. Both directions, and `with check` on
--- the write is what stops a publisher from moving a row OUT of its own account by
--- updating `github_id`/`github_login` — `using` alone would permit the update and
--- `with check` is what refuses the new value.
+-- THE PUBLISHER: its own row and no other, for reading. `using` on the SELECT is
+-- the whole of it, and one direction is enough for a read.
+--
+-- **`00008` OWNS THE WRITE HALF OF THIS RULE, AND THIS COMMENT USED TO CLAIM IT
+-- DID NOT.** The version of this paragraph that shipped here said the `with
+-- check` below "is what stops a publisher from moving a row OUT of its own
+-- account by updating `github_id`/`github_login`". It does not, and it never
+-- could: the `with check` below says `id = current_publisher_id()`, which pins
+-- the PRIMARY KEY and no column that identifies the account. Measured on
+-- PostgreSQL 18.4, as `pantry_publisher` with an identity set, on the schema this
+-- file produces and nothing else:
+--
+--   set github_login   = 'alpha-renamed'  -> UPDATE 1
+--   set github_id      = 999              -> UPDATE 1     (unclaimed)
+--   set is_first_party = true             -> UPDATE 1
+--   set verified       = false            -> UPDATE 1
+--   set claimed_at     = '1999-01-01'     -> UPDATE 1
+--   set github_id      = 202              -> ERROR 23505  publishers_github_id_key
+--
+-- The only refusal is a UNIQUE CONSTRAINT, so the only thing actually stopped was
+-- a value that collides with another row — which attributes the failure to
+-- arithmetic about somebody else's row rather than to a rule about who owns
+-- what, and says nothing at all about a value nobody holds. `github_id` is what
+-- `00002` calls "Immutable, and the thing to key on".
+--
+-- The comment is corrected rather than deleted because the shape of the mistake
+-- is worth keeping: a barrier named in a comment above the code is not a
+-- barrier, and this one was believed by the reader who wrote it. The barrier for
+-- the write is `publishers_publisher_update`'s `with check (false)` in `00008`,
+-- which is a POLICY and refuses the owner `pantry` as well as
+-- `pantry_publisher`. `00006` leaves the write half open ON PURPOSE, in this
+-- file, so that `goose down` from `00008` returns to exactly the state described
+-- here — see `00008`'s Down.
 --
 -- `pantry` is in the role list because FORCE removed its exemption, so naming it
 -- is what keeps the owner's reads SCOPED rather than absent (00005's header).
