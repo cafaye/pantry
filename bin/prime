@@ -17,7 +17,7 @@
 # same pin in a second script is a second thing to forget.
 #
 # THE RUST TIER WAS NOT DELETED, IT WAS REPLACED, and the difference is worth
-# being exact about. `tests/rls.sh` and `tests/rls_checks.sh` (89 checks) and
+# being exact about. `tests/rls.sh` and `tests/rls_checks.sh` (99 checks) and
 # `tests/seed.sql` already existed in shell and Go, and they are what the
 # migrations are actually verified by. The Rust suite that went with `src/` was
 # 146 tests over the registry manifest format, the vendored core schema pin and

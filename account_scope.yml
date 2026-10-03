@@ -12,7 +12,7 @@
 #
 # 1. THE ROUTES ARE INVISIBLE TO THE CHECKER, AND ONE TOKEN IS WHY.
 #    `surface.sources` names `internal/api/api.gen.go`, which is the file that
-#    registers all four operations, and the checker finds ZERO of them. It is not
+#    registers all six operations, and the checker finds ZERO of them. It is not
 #    that it read the file and disagreed: `internal/api/api.gen.go:707` is
 #
 #        r.Get(options.BaseURL+"/v1/services", wrapper.ListServices)
@@ -22,7 +22,7 @@
 #    direction — `"/v1/x/"+prefix+"/y"` — because identity's own router writes it
 #    that way. So `oapi-codegen` emits the one shape of Go route registration this
 #    checker cannot read, and pantry's whole surface reads as `route_defs=0` for a
-#    service with four routes. `REPORT-pantry-account-scope-01.md` §3 deletes the
+#    service with six routes. `REPORT-pantry-account-scope-01.md` §3 deletes the
 #    token `options.BaseURL+` from those four lines and shows the run go from
 #    1 failure and 5 warnings to 0 and 1. That is the whole of the difference.
 #
@@ -31,7 +31,7 @@
 #    notices a route appearing where the recognisers cannot reach. On pantry it
 #    cannot be set above zero: `minimum: 4` produces
 #    `account-scope.surface-thin: the declared sources register 0 entry point(s)`
-#    on a tree that serves four routes, permanently and correctly. So the floor
+#    on a tree that serves six routes, permanently and correctly. So the floor
 #    is pinned at zero here and the ratchet's job is done instead by
 #    `internal/httpapi/scope_declaration_test.go`, which reads the live router
 #    with `chi.Walk` — the thing the checker cannot do — and fails when this file
@@ -39,7 +39,7 @@
 #    file is a contract and not a copy.
 #
 # 3. ONE ROW IS `stale` ON A TREE THAT IS CORRECT, AND IT IS SHIPPED THAT WAY.
-#    `get-service` below is registered at `internal/api/api.gen.go:710`, and the
+#    `get-service` below is registered at `internal/api/api.gen.go:855`, and the
 #    checker prints
 #
 #        FAIL account-scope.stale: get-service: registeredAt points at a line
@@ -134,9 +134,19 @@ surface:
 
 entryPoints:
   # ==========================================================================
-  # THE REGISTRY — anonymous traffic. Two rows, both reading `pantry.services`
-  # through a role that has no identity, with the visibility decided by the RLS
-  # policy underneath rather than by anything in the handler.
+  # THE REGISTRY — anonymous traffic. Four rows, all reading `pantry.services`
+  # and `pantry.service_compat` through a role that has no identity, with the
+  # visibility decided by the RLS policy underneath rather than by anything in
+  # the handler.
+  #
+  # THE LINE NUMBERS ARE REGENERATION-BRITTLE, and the two graph rows are what
+  # proved it: `registry-compat-05` added two operations to openapi/v1.yaml and
+  # regenerating the server moved every registration from the 707-716 block to
+  # the 852-867 block, turning all four of the previous anchors stale at once.
+  # That is the price of `registeredAt` being a line number; what buys it back
+  # is `TestEveryRegisteredAtLineStillRegistersThatRoute`, which went red on
+  # all four within one gate run and named every line. The alternative —
+  # no anchor, so no staleness — is also no proof the registration exists.
   # ==========================================================================
   - id: list-services
     kind: http
@@ -144,7 +154,7 @@ entryPoints:
     path: /v1/services
     accountScoped: false
     reason: public
-    registeredAt: { file: internal/api/api.gen.go, line: 707 }
+    registeredAt: { file: internal/api/api.gen.go, line: 852 }
 
   - id: get-service
     kind: http
@@ -152,7 +162,23 @@ entryPoints:
     path: /v1/services/{name}
     accountScoped: false
     reason: public
-    registeredAt: { file: internal/api/api.gen.go, line: 710 }
+    registeredAt: { file: internal/api/api.gen.go, line: 855 }
+
+  - id: list-service-requirements
+    kind: http
+    method: GET
+    path: /v1/services/{name}/requirements
+    accountScoped: false
+    reason: public
+    registeredAt: { file: internal/api/api.gen.go, line: 858 }
+
+  - id: list-service-required-by
+    kind: http
+    method: GET
+    path: /v1/services/{name}/required-by
+    accountScoped: false
+    reason: public
+    registeredAt: { file: internal/api/api.gen.go, line: 861 }
 
   # ==========================================================================
   # THE PROBES — deliberately outside the `/v1` prefix, per core's conventions.
@@ -165,7 +191,7 @@ entryPoints:
     path: /healthz
     accountScoped: false
     reason: public
-    registeredAt: { file: internal/api/api.gen.go, line: 713 }
+    registeredAt: { file: internal/api/api.gen.go, line: 864 }
 
   - id: readyz
     kind: http
@@ -173,4 +199,4 @@ entryPoints:
     path: /readyz
     accountScoped: false
     reason: public
-    registeredAt: { file: internal/api/api.gen.go, line: 716 }
+    registeredAt: { file: internal/api/api.gen.go, line: 867 }

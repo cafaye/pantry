@@ -105,7 +105,15 @@ CHECK="$CORE/harness/bin/gate-check"
 # selects anything.
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/pantry-gate-self-test.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+# The work dir is removed on exit — EXCEPT when PANTRY_GATE_KEEP_WORK=1, because
+# a failing proving case deletes its own evidence otherwise: the gate.log that
+# explains a red is inside $WORK, and the trap removes it before anyone can read
+# it. Diagnosing a proving-case failure with the default on means re-running the
+# whole script with the trap patched, which is exactly the kind of busywork a
+# diagnostic tool should not create. Off by default; the throwaway cluster and
+# the hundreds of MB of module caches inside $WORK must not outlive the run by
+# accident.
+keep="${PANTRY_GATE_KEEP_WORK:-0}"; trap '[ "$keep" = "1" ] || rm -rf "$WORK"' EXIT
 
 failures=0
 breakages=0
@@ -954,14 +962,14 @@ body = open(path, encoding="utf-8").read()
 # testing the wrong thing.** It is now a test that imports nothing of its own, so
 # the only thing its absence changes is the count.
 patched, count = re.subn(
-    r'^func TestTheRouterServesTheFourDeclaredOperations\(t \*testing\.T\) \{\n(?:.*\n)*?^\}\n',
+    r'^func TestTheRouterServesEveryDeclaredOperation\(t \*testing\.T\) \{\n(?:.*\n)*?^\}\n',
     '',
     body,
     count=1,
     flags=re.M,
 )
 if count != 1:
-    sys.exit(f'no TestTheRouterServesTheFourDeclaredOperations in {path}')
+    sys.exit(f'no TestTheRouterServesEveryDeclaredOperation in {path}')
 open(path, "w", encoding="utf-8").write(patched)
 PYEOF
 then
@@ -970,7 +978,7 @@ else
   EDIT_APPLIED=0
   failures=$((failures + 1))
   printf 'FAIL  the one-test breakage no longer applies: routes_test.go has no\n' >&2
-  printf '      TestTheRouterServesTheFourDeclaredOperations\n' >&2
+  printf '      TestTheRouterServesEveryDeclaredOperation\n' >&2
 fi
 expect_red_prove 'the SMALLEST deletable unit, one Go test, gone' \
   'floor' "$one_test"
@@ -1076,7 +1084,15 @@ expect_red 'the gate file itself, deleted' 'entrypoint-missing' "$deleted_script
 # `rls` counts SQL checks, and a machine can lose either without losing the other.
 breakages=$((breakages + 1))
 floor="$(fresh_copy suite-floor-too-high)"
-edit "$floor/gate.yml" '      minimum: 30' '      minimum: 9999'
+# The floor's VALUE is not this case's subject — the case proves the floor
+# mechanism, at whatever the current measured count is — but the edit's anchor
+# still has to be the literal in gate.yml, and 30 stopped being it the moment
+# the suite grew to 36. That is the second time a case's setup went stale with a
+# number the gate moved under it, and the lesson is the same both times: **a
+# breakage that edits the declaration by literal is coupled to the declaration's
+# constants**, and the fix is to keep the anchor at the line's SHAPE rather than
+# its value where the value is allowed to move.
+edit "$floor/gate.yml" '      minimum: 36' '      minimum: 9999'
 expect_red_prove 'a gate that proved fewer Go tests than the declaration promised' \
   'floor' "$floor"
 

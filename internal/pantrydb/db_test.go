@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/cafaye/pantry/internal/catalog"
 	"github.com/cafaye/pantry/internal/pantrydb"
 )
 
@@ -266,4 +267,108 @@ func TestTheCatalogRoleCanStillNotWrite(t *testing.T) {
 			"two are different guarantees.", err)
 	}
 	t.Logf("write refused at the grant: %v", pgerr.Message)
+}
+
+// TestTheBackwardDirectionOfTheGraphIsTheMirrorOfTheForward exists because
+// `RequiredByForService` was written by mirroring `RequirementsForService`, and
+// the one line that differs in a mirror is the line most likely to be wrong:
+// the visibility predicate has to sit on the REQUIRING side here, or an edge
+// from a draft service into a published one would be public in this direction
+// while its mirror image is hidden in the other. The graph would then depend on
+// which way you read it, which is not a property a map can have.
+//
+// The seed gives this test its fixtures and every one of them is load-bearing:
+// courier→identity and muse→identity are the backward edges of `identity`;
+// muse→courier and parcel→courier (a SOFT edge, and a third-party publisher's,
+// which exercises a different trust row) are the backward edges of `courier`;
+// and `caf` is the leaf nothing requires.
+func TestTheBackwardDirectionOfTheGraphIsTheMirrorOfTheForward(t *testing.T) {
+	store := requireStore(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, tc := range []struct {
+		subject string
+		want    string
+	}{
+		{"identity", "[courier muse]"},
+		{"courier", "[muse parcel]"},
+		// The leaf, and it must be measured rather than assumed: an empty
+		// answer is also what a broken query returns, so this row only has
+		// value because the two cases above prove the query is not broken.
+		{"caf", "[]"},
+	} {
+		rows, err := store.Queries().RequiredByForService(ctx, tc.subject)
+		if err != nil {
+			t.Fatalf("RequiredByForService(%s): %v", tc.subject, err)
+		}
+		var names []string
+		for _, r := range rows {
+			names = append(names, r.RequirerName)
+		}
+		sort.Strings(names)
+		if got := "[" + strings.Join(names, " ") + "]"; got != tc.want {
+			t.Errorf("required-by(%s) is %s, want %s.\n  An extra name is an edge this direction "+
+				"leaks that the forward direction hides; a missing one is an edge the policy hides "+
+				"that the seed publishes.", tc.subject, got, tc.want)
+		}
+	}
+
+	// THE SOFT EDGE, BY NAME, and through the CATALOG rather than the store,
+	// which is the difference the first draft of this test got wrong: the store's
+	// rows carry whatever the database said, so a mapping bug in
+	// `catalog.RequiredBy` — the function the wire actually goes through — would
+	// have been invisible here. `dependency` is a third field on the edge and the
+	// forward test never sees a non-`required` value; parcel→courier is the
+	// seed's one soft edge, and if it arrives as `required`, the graph has turned
+	// "runs degraded without it" into "does not start without it", which is the
+	// difference between a warning and an outage.
+	courierEdges, err := catalog.New(store.Queries()).RequiredBy(ctx, "courier")
+	if err != nil {
+		t.Fatalf("catalog.RequiredBy(courier): %v", err)
+	}
+	seen := false
+	for _, e := range courierEdges {
+		if e.Name == "parcel" {
+			seen = true
+			if e.Dependency != "soft" {
+				t.Errorf("parcel's edge to courier reads dependency %q through the catalog, "+
+					"want \"soft\" — the mapping is flattening the one word that separates "+
+					"a degraded start from no start", e.Dependency)
+			}
+		}
+	}
+	if !seen {
+		t.Error("parcel is not in required-by(courier) through the catalog, so the soft edge " +
+			"was not checked at all — the first half of this test must have failed already")
+	}
+}
+
+// TestTheGraphRoutesRefuseANameTheRegistryDoesNotCarry is the half the fake in
+// `internal/httpapi` cannot certify. The handler's 404 comes from
+// `catalog.ErrNoSuchService`, and `Postgres` produces that sentinel by checking
+// the subject through `Get` BEFORE the edge query runs — because the edge query
+// answers zero rows identically for a leaf and for a name that was never
+// registered, and a 200 with `data: []` on a typo is a client going off to run
+// a service that does not exist. The fake implements the same contract by its
+// `known` list, so the handler tests above pass over both; this test is the
+// one that runs the REAL catalog and would catch the day the Get-first check
+// is "simplified" out of it.
+func TestTheGraphRoutesRefuseANameTheRegistryDoesNotCarry(t *testing.T) {
+	store := requireStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Through the CATALOG, not the store: the sentinel is a catalog-layer
+	// contract and the edge queries on the store return row slices, so calling
+	// them here would test the wrong layer's idea of the answer.
+	cat := catalog.New(store.Queries())
+	if _, err := cat.Requirements(ctx, "nope"); !errors.Is(err, catalog.ErrNoSuchService) {
+		t.Errorf("Requirements(nope) is %v, want catalog.ErrNoSuchService — an empty graph "+
+			"is the answer for a LEAF, and a typo is not a leaf", err)
+	}
+	if _, err := cat.RequiredBy(ctx, "nope"); !errors.Is(err, catalog.ErrNoSuchService) {
+		t.Errorf("RequiredBy(nope) is %v, want catalog.ErrNoSuchService", err)
+	}
 }

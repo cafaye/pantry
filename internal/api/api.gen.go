@@ -13,6 +13,27 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for CompatibilityEdgeDependency.
+const (
+	Dev      CompatibilityEdgeDependency = "dev"
+	Required CompatibilityEdgeDependency = "required"
+	Soft     CompatibilityEdgeDependency = "soft"
+)
+
+// Valid indicates whether the value is a known member of the CompatibilityEdgeDependency enum.
+func (e CompatibilityEdgeDependency) Valid() bool {
+	switch e {
+	case Dev:
+		return true
+	case Required:
+		return true
+	case Soft:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for HealthStatus.
 const (
 	HealthStatusOk HealthStatus = "ok"
@@ -156,6 +177,37 @@ func (e ServiceKind) Valid() bool {
 		return false
 	}
 }
+
+// CompatibilityEdge One `requires` edge of the compatibility graph, seen from one of its
+// two endpoints. `name` is the OTHER endpoint: the required service when
+// the edge is read forward, the requiring service when it is read
+// backward. Which direction is in force is the operation that returned
+// the edge, not a field on it — a field that restates the direction
+// invites a caller to treat the two responses as interchangeable, which
+// is the substitution the graph exists to prevent.
+type CompatibilityEdge struct {
+	// Dependency How hard the edge binds. `required` — the service does not start
+	// without it. `soft` — it starts and runs degraded, which is muse's
+	// own `required: false` written as a word. `dev` — build and test
+	// time only.
+	Dependency CompatibilityEdgeDependency `json:"dependency"`
+
+	// Name The other endpoint of the edge.
+	Name string `json:"name"`
+
+	// VersionRange The publisher's own constraint on the other endpoint's contract
+	// version, in core's four-form grammar, stored verbatim. It is not
+	// re-rendered, because a range the publisher wrote is a claim about
+	// what they tested against and re-rendering it into an equivalent
+	// form would be this registry quietly editing somebody's claim.
+	VersionRange string `json:"version_range"`
+}
+
+// CompatibilityEdgeDependency How hard the edge binds. `required` — the service does not start
+// without it. `soft` — it starts and runs degraded, which is muse's
+// own `required: false` written as a word. `dev` — build and test
+// time only.
+type CompatibilityEdgeDependency string
 
 // Dependency defines model for Dependency.
 type Dependency struct {
@@ -360,6 +412,29 @@ type ServiceList struct {
 	Page Page `json:"page"`
 }
 
+// ServiceRequiredBy The backward answer: what depends on `service`. Same edge shape as the
+// forward answer with the direction reversed, and deliberately a
+// DIFFERENT object — a client that confuses the two questions gets a
+// type error rather than an outage.
+type ServiceRequiredBy struct {
+	// Data The `requires` edges pointing at the subject, ordered by the requiring service's name. Empty when nothing requires it.
+	Data []CompatibilityEdge `json:"data"`
+
+	// Service The subject — the service being depended on, echoing the path parameter.
+	Service string `json:"service"`
+}
+
+// ServiceRequirements The forward answer: what running `service` needs. `data` holds only
+// `requires` edges, and an edge is present only when both of its
+// endpoints are visible to the caller.
+type ServiceRequirements struct {
+	// Data The `requires` edges, ordered by the required service's name. Empty when the service is a leaf of the graph.
+	Data []CompatibilityEdge `json:"data"`
+
+	// Service The subject — the service whose requirements these are, echoing the path parameter rather than leaving the caller to remember it.
+	Service string `json:"service"`
+}
+
 // ListServicesParams defines parameters for ListServices.
 type ListServicesParams struct {
 	// Kind Narrow to services of one kind. `api` serves HTTP and consumes
@@ -412,6 +487,12 @@ type ServerInterface interface {
 	// GetService One registered service
 	// (GET /v1/services/{name})
 	GetService(w http.ResponseWriter, r *http.Request, name string)
+	// ListServiceRequiredBy What depends on one service
+	// (GET /v1/services/{name}/required-by)
+	ListServiceRequiredBy(w http.ResponseWriter, r *http.Request, name string)
+	// ListServiceRequirements What one service needs in order to run
+	// (GET /v1/services/{name}/requirements)
+	ListServiceRequirements(w http.ResponseWriter, r *http.Request, name string)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -439,6 +520,18 @@ func (_ Unimplemented) ListServices(w http.ResponseWriter, r *http.Request, para
 // GetService One registered service
 // (GET /v1/services/{name})
 func (_ Unimplemented) GetService(w http.ResponseWriter, r *http.Request, name string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListServiceRequiredBy What depends on one service
+// (GET /v1/services/{name}/required-by)
+func (_ Unimplemented) ListServiceRequiredBy(w http.ResponseWriter, r *http.Request, name string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListServiceRequirements What one service needs in order to run
+// (GET /v1/services/{name}/requirements)
+func (_ Unimplemented) ListServiceRequirements(w http.ResponseWriter, r *http.Request, name string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -590,6 +683,58 @@ func (siw *ServerInterfaceWrapper) GetService(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// ListServiceRequiredBy operation middleware
+func (siw *ServerInterfaceWrapper) ListServiceRequiredBy(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListServiceRequiredBy(w, r, name)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListServiceRequirements operation middleware
+func (siw *ServerInterfaceWrapper) ListServiceRequirements(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListServiceRequirements(w, r, name)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -708,6 +853,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/services/{name}", wrapper.GetService)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/services/{name}/requirements", wrapper.ListServiceRequirements)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/services/{name}/required-by", wrapper.ListServiceRequiredBy)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/healthz", wrapper.Healthz)

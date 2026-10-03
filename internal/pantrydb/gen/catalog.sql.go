@@ -314,6 +314,65 @@ func (q *Queries) ListServices(ctx context.Context, arg ListServicesParams) ([]L
 	return items, nil
 }
 
+const requiredByForService = `-- name: RequiredByForService :many
+select s.name        as requirer_name,
+       c.version_range,
+       c.dependency
+  from pantry.service_compat c
+  join pantry.services s on s.id = c.service_id
+ where c.target_id = (select s2.id from pantry.services s2 where s2.name = $1)
+   and c.kind = 'requires'
+   and pantry.service_is_visible(s)
+ order by s.name asc
+`
+
+type RequiredByForServiceRow struct {
+	RequirerName string
+	VersionRange pgtype.Text
+	Dependency   string
+}
+
+// THE COMPATIBILITY GRAPH, backward direction: who requires this service?
+//
+// The upgrade-safety question, and the reason 00004 indexes `service_compat` in
+// BOTH directions: before changing a service's contract, an operator reads this
+// to learn who is reading it. The forward query answers "what do I need to
+// run?"; this one answers "what breaks if I change?".
+//
+// The mirror of `RequirementsForService` in every respect that matters, and the
+// one respect that differs is the one to get right: the visibility predicate
+// sits on the REQUIRING side (`service_id`), not the target. In the forward
+// direction the subject is `service_id` and the other endpoint is the target;
+// here the subject is the target and the other endpoint is the requirer. An
+// edge from a draft service into a published one is work in progress and is
+// hidden here, exactly as its mirror image is hidden there — which is
+// 00007's policy anyway, since the policy requires BOTH endpoints visible and
+// these predicates only re-state the half the join would otherwise leak
+// through.
+//
+// `requires` edges only, like the forward query. A `conflicts_with` edge in
+// this answer would be worse than useless: it names a service the caller must
+// NOT run alongside, and this operation's whole meaning is "who runs me".
+func (q *Queries) RequiredByForService(ctx context.Context, serviceName string) ([]RequiredByForServiceRow, error) {
+	rows, err := q.db.Query(ctx, requiredByForService, serviceName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RequiredByForServiceRow{}
+	for rows.Next() {
+		var i RequiredByForServiceRow
+		if err := rows.Scan(&i.RequirerName, &i.VersionRange, &i.Dependency); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const requirementsForService = `-- name: RequirementsForService :many
 select t.name        as target_name,
        c.version_range,
@@ -338,11 +397,15 @@ type RequirementsForServiceRow struct {
 // compose with what I already run?", which is a question about composition and
 // not about similarity. This is that question, for one service.
 //
-// WHY IT IS NOT ON THE WIRE YET. The query exists and is tested; the published
-// `Service` object in `openapi/v1.yaml` has no field to put it in. Adding one is
-// a deliberate contract change for the manager (it is additive, but `cafaye-ts`
-// has a client generated from the document today), not a decision this read-path
-// packet should make quietly. See `REPORT-registry-pantry-data-01.md`.
+// ON THE WIRE SINCE registry-compat-05: `GET /v1/services/{name}/requirements`,
+// with the backward direction beside it as `GET /v1/services/{name}/required-by`.
+// `data-01` left this query off the wire on purpose — the published `Service`
+// object had no field for it and `cafaye-ts` already had a client generated from
+// the document — and the decision that packet asked for is now made: the graph
+// gets TWO OPERATIONS rather than a field, because the two directions are two
+// questions asked by two different people (an operator choosing what to run, an
+// operator deciding whether a change is safe), and a field on `Service` would
+// have made every list row carry graph data nobody asked for on that call.
 //
 // `requires` edges only. `conflicts_with` is a different question ("what must I
 // NOT run alongside"), and answering both under one name is how a caller ends up
