@@ -304,25 +304,23 @@ if [[ "$SERVE" -eq 1 ]]; then
     exit 1
   fi
 
-  # THE ONE PROVISIONING STATEMENT THE MIGRATIONS DO NOT CONTAIN, and it is
-  # load-bearing for the read path rather than incidental.
+  # NO PROVISIONING HAPPENS HERE ANY MORE, and the absence used to be a hole.
   #
-  # `00001_roles.sql` creates `pantry` as LOGIN and `pantry_public` as NOLOGIN,
-  # and it grants the GROUP role its table privileges — but it never grants the
-  # LOGIN role MEMBERSHIP in the group. `NOINHERIT` is the point (a membership
-  # must be taken with `set role`, never inherited silently), and taking one
-  # requires membership. So on a database built purely from this directory,
-  # `set role pantry_public` fails with `permission denied to set role`, and the
-  # service's read path cannot start.
+  # This harness used to run `grant pantry_public to pantry` by hand, under a
+  # comment that named it as "THE ONE PROVISIONING STATEMENT THE MIGRATIONS DO
+  # NOT CONTAIN" and pointed at the data report that found it. That comment was
+  # accurate and it was the wrong place for the statement to live: a grant the
+  # test suite must perform before the code under test can start is a step
+  # missing from the thing that defines the database, and the only reason it
+  # went unnoticed is that this file supplied it. Anyone building from
+  # `migrations/` with `goose up` and nothing else got
+  # `permission denied to set role`.
   #
-  # This is stated here rather than worked around in Go, because the alternative
-  # — connecting as `pantry` and relying on its own policies — reads ZERO rows:
-  # with no identity, `current_publisher_id()` is NULL and every publisher
-  # predicate compares against NULL. That is `FORCE` working, and it means the
-  # membership is not a convenience, it is the only way the catalog can be read.
-  # See `REPORT-registry-pantry-data-01.md` finding 2.
-  sql "$SERVED" "grant pantry_public to pantry;" >/dev/null
-
+  # `migrations/00007_roles_and_compat_read.sql` owns it now, and this harness
+  # has nothing left to do here — which is the shape of a correct fixture: it
+  # applies the migrations and then uses the database, and does not repair it in
+  # between. `tests/rls_checks.sh` asserts the membership exists, so a
+  # regression is caught here rather than at the first read path start.
   if [[ "$SERVE_EMPTY" -eq 0 ]]; then
     if ! timeout 60 "${PSQL[@]}" -d "$SERVED" -f "$REPO/tests/seed.sql" >"$WORK/seed.log" 2>&1; then
       say ""

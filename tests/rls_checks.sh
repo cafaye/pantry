@@ -64,7 +64,23 @@ insert into pantry.service_versions (id, service_id, tag, version_major, version
 insert into pantry.service_compat (service_id, target_id, kind, version_range, dependency) values
   ('00000000-0000-4000-8000-0000000000b1', '00000000-0000-4000-8000-0000000000b5', 'requires',       '^0.1.0', 'required'),
   ('00000000-0000-4000-8000-0000000000b1', '00000000-0000-4000-8000-0000000000b3', 'conflicts_with', '~1.0.0', 'soft'),
-  ('00000000-0000-4000-8000-0000000000b5', '00000000-0000-4000-8000-0000000000b3', 'requires',       '^0.2.0', 'required');")"
+  ('00000000-0000-4000-8000-0000000000b5', '00000000-0000-4000-8000-0000000000b3', 'requires',       '^0.2.0', 'required'),
+  -- THE EDGE THAT MAKES THE PUBLIC READ POLICY TESTABLE. Its SOURCE (alpha-api)
+  -- is published and its TARGET (alpha-draft) is a draft, so a policy filtering
+  -- on `service_is_visible(target)` hides it and a policy that filtered on
+  -- nothing would publish it. With only the three edges above — all of which
+  -- have visible endpoints — every count of the public read would be 3 whether
+  -- the policy existed, was `using (true)`, or did not exist at all. This row
+  -- is what separates those three worlds.
+  ('00000000-0000-4000-8000-0000000000b1', '00000000-0000-4000-8000-0000000000b2', 'requires',       '^0.1.0', 'required'),
+  -- ... AND ITS MIRROR, which tests the OTHER half of the policy. Its TARGET
+  -- (cafaye) is first-party and visible; its SOURCE (alpha-draft) is a draft and
+  -- is not. Between them these two rows are the whole policy: an implementation
+  -- that checked only `service_is_visible(target)` would publish the second one,
+  -- and one that checked nothing would publish both. Asserting only the first
+  -- would have left half the predicate untested, which is how a security policy
+  -- acquires a clause nobody ever proved.
+  ('00000000-0000-4000-8000-0000000000b2', '00000000-0000-4000-8000-0000000000b5', 'requires',       '^0.1.0', 'required');")"
   rc=$?
   if [[ $rc -ne 0 ]]; then
     record "A0  fixture: pantry_admin can write the fixtures" FAIL "exit=$rc" "$(oneline "$out")"
@@ -174,9 +190,33 @@ rowset "C2  public read: pantry_public cannot see an unverified publisher" "$SHA
 rowset "C3  public read: pantry_public cannot read a draft or an unlisted row" "$SHAPE1" \
   "$(as_public "select name from pantry.services where state <> 'published' and trust <> 'first_party' order by name;")" \
   ""
-# CHECK C4 public read: pantry_public has no visibility of the compatibility graph
-rowset "C4  public read: pantry_public cannot read pantry.service_compat at all" "$SHAPE1" \
-  "$(as_public "select count(*) from pantry.service_compat;")" "0"
+# CHECK C4 public read: the graph is readable, and only the public part of it
+# THIS ONE USED TO ASSERT THE OPPOSITE, and the reversal is the whole point of
+# `00007_roles_and_compat_read.sql`.
+#
+# It read `count(*)` and expected `0`: `pantry_public` held the SELECT grant on
+# `service_compat` and no policy named it, so the compatibility graph — the thing
+# this registry exists to publish — was invisible to the only role that serves the
+# public catalog. `00006_rls.sql` argued at length for the policy that would fix
+# it and did not write it. `00007` writes it.
+#
+# THREE, out of four. The fourth is `alpha-api requires alpha-draft`: its source
+# is published, its target is a draft. It is in the database (E3 sees four) and
+# it is not here, which is the assertion.
+#
+# **RAW IDS, AND THE JOIN IS DELIBERATELY ABSENT.** An earlier draft of this
+# check read the edges through `join pantry.services` to print names, and it
+# passed with the policy replaced by `using (true)` — the single most important
+# mutation there is. The join was doing the filtering: joining `services` as
+# `pantry_public` is itself RLS-restricted, so the draft-target edge vanished at
+# the join rather than at the policy, and the check measured its own query
+# instead of the boundary. Reading `service_id`/`target_id` straight off the table
+# leaves the policy as the only thing in the path that can remove a row, which is
+# what makes this check measure what it claims to.
+rowset "C4  public read: the graph is readable, and an edge into a draft is not" "$SHAPE1" \
+  "$(as_public "select service_id::text || '->' || target_id::text
+                  from pantry.service_compat order by 1;")" \
+  "00000000-0000-4000-8000-0000000000b1->00000000-0000-4000-8000-0000000000b3,00000000-0000-4000-8000-0000000000b1->00000000-0000-4000-8000-0000000000b5,00000000-0000-4000-8000-0000000000b5->00000000-0000-4000-8000-0000000000b3"
 # CHECK C5 public write: INSERT a publisher is refused at the grant boundary
 deny "C5  public write: pantry_public cannot INSERT a publisher" \
   "$SHAPE1" "42501" "permission denied for table publishers" \
@@ -253,7 +293,7 @@ ok "C16 public write: none of the refused writes changed a row" "$SHAPE1" \
   "select (select count(*) from pantry.publishers)::text || '/' ||
           (select count(*) from pantry.services)::text || '/' ||
           (select count(*) from pantry.service_versions)::text || '/' ||
-          (select count(*) from pantry.service_compat)::text as counts;" "4/5/2/3"
+          (select count(*) from pantry.service_compat)::text as counts;" "4/5/2/5"
 
 # ===========================================================================
 say ""
@@ -278,7 +318,7 @@ rowset "D3  publisher isolation: sees its own versions and not a first-party one
 # CHECK D4 publisher isolation: sees the edges of its own services only
 rowset "D4  publisher isolation: sees only the edges of its own services" "$SHAPE1" \
   "$(as_publisher "$A1" "select kind || '->' || target_id from pantry.service_compat order by 1;")" \
-  "conflicts_with->$B3,requires->00000000-0000-4000-8000-0000000000b5"
+  "conflicts_with->$B3,requires->00000000-0000-4000-8000-0000000000b2,requires->00000000-0000-4000-8000-0000000000b5,requires->00000000-0000-4000-8000-0000000000b5"
 # CHECK D5 publisher isolation: another publisher's service is invisible by primary key
 # An EMPTY row set, asserted as one: RLS removes the row from the result rather than
 # raising, so "sees nothing" is a row set of length zero and not an error. `-t`
@@ -367,7 +407,7 @@ rowset "E2  admin read: sees every publisher including the unverified one" "$SHA
   "alpha,bravo,cafaye,unverified"
 # CHECK E3 admin read: sees the whole compatibility graph
 ok "E3  admin read: sees every compatibility edge" "$SHAPE1" \
-  "$(as_admin "select count(*) from pantry.service_compat;")" "3"
+  "$(as_admin "select count(*) from pantry.service_compat;")" "5"
 # CHECK E4 admin write: may create a FIRST-PARTY publisher — the ingest's first row
 ok "E4  admin write: may INSERT a first-party publisher (ingest step 1)" "$SHAPE1" \
   "$(as_admin "insert into pantry.publishers (github_id, github_login, is_first_party, verified)
@@ -558,3 +598,99 @@ ok "H5  shape 2: pantry_admin may INSERT a first-party service (the ingest)" "$S
    insert into pantry.services (name, language, kind, trust, state, core_constraint, manifest, manifest_sha256, ingested_by)
    values ('shape2-first-party','go','api','first_party','published','^1.0.0','{}'::jsonb, repeat('7',64), 'pantry-ingest');" \
   "INSERT 0 1"
+# ===========================================================================
+# MEMBERSHIP — the gap 00007 closes
+#
+# Everything above this line is about what a role may DO once it is a role. This
+# section is about a role a connection can BECOME, and until 00007 existed there
+# was no check for it here at all, because the whole suite ran as roles the
+# harness granted itself: `as_public`, `as_publisher` and `as_admin` all work by
+# `set role`, and the suite's own connection was a superuser who can take any
+# role without being a member of it.
+#
+# That is why 76 checks could pass against a database on which the SERVICE could
+# not read anything. The suite verified the policies and never verified the
+# door.
+# ===========================================================================
+say ""
+say "-- membership: the door the policies were behind"
+# CHECK I1 membership: the service login can become the public read role
+# `pg_auth_members` and NOT `pg_has_role`, and the difference is not stylistic.
+# `pg_has_role(name, name, privilege)` answers a question about the CURRENT user:
+# run as the superuser that owns this suite it answers for the superuser, and it
+# answered `f` on a database where the membership plainly existed.
+ok "I1  membership: pantry is a member of pantry_public" "$SHAPE1" \
+  "select count(*) from pg_auth_members m
+     join pg_roles member  on member.oid = m.member
+     join pg_roles granted on granted.oid = m.roleid
+   where member.rolname = 'pantry' and granted.rolname = 'pantry_public';" "1"
+# CHECK I2 membership: and can actually READ as one — the read path, end to end
+# Not "set role succeeded". A fragment match on `pantry_public` also matches the
+# error text `permission denied to set role "pantry_public"`, which is how a
+# version of this check passed against a database where the membership was
+# missing. Counting the catalog is unambiguous, and it is the claim that matters:
+# authenticated as `pantry`, taking the role, and seeing the three published rows
+# and neither the draft nor the unlisted one.
+# The count is deliberately NOT asserted, and this section sits at the END of the
+# suite so the reason is worth stating. Check E11 (line ~421) legitimately
+# promotes `alpha-draft` to published as `pantry_admin`, so by the time anything
+# here runs the catalog holds a different number of visible rows than it did at C2.
+# A fixed count would make this check a hostage to the suite's ordering — it would
+# go red the day somebody added a check, for no reason at all. Worse, it would have
+# been green for the wrong reason: an earlier draft of this check asserted `3` and
+# read `5`, and the interesting half of that — `alpha-draft` being visible — was
+# E11's doing, not a hole.
+#
+# So it asserts the two things that hold at every point in the suite: the door
+# OPENS (the role can see rows, which is 0 without it), and unlisting still holds
+# while it is open. `bravo-hidden` is never promoted by any check, which is what
+# makes it the stable witness — an admin who promoted it would break this check,
+# and should.
+ok "I2  membership: the read path opens, and unlisting still holds while it is open" "$SHAPE1" \
+  "set session authorization pantry; set role pantry_public;
+   select (count(*) > 0)::text || ' rows visible; unlisted still hidden: ' ||
+          (not exists (select 1 from pantry.services where name = 'bravo-hidden'))::text
+     from pantry.services;" "true rows visible; unlisted still hidden: true"
+# CHECK I3 membership: NOINHERIT survives the grant — the ability, not the power
+# The grant gives `pantry` the ABILITY to take the role. Without this, the grant
+# would have quietly handed the service every row `pantry_public` can see on
+# every connection, with no `set role` anywhere — which is a privilege escalation
+# dressed as a convenience, and the reason 00001 sets NOINHERIT on all four.
+ok "I3  membership: NOINHERIT survives — membership is not inheritance" "$SHAPE1" \
+  "select rolname, rolinherit from pg_roles where rolname = 'pantry';" "pantry|f"
+# CHECK I4 membership: without the role taken, the service reads NOTHING
+# The consequence of I3, asserted rather than assumed. Connected as `pantry` with
+# no `set role`, every catalog read answers zero: the public policies name
+# `pantry_public` and the publisher policies compare against a NULL identity.
+# This is `FORCE ROW LEVEL SECURITY` working, and it is the reason the membership
+# in I1 is load-bearing rather than tidying.
+ok "I4  membership: without the role taken, the catalog is empty — FORCE working" "$SHAPE1" \
+  "set session authorization pantry; select count(*) from pantry.services;" "0"
+# CHECK I5 membership: the ABSENCE that matters — no admin membership
+# `pantry` owns the tables and runs the migrations. Making it an admin "would
+# make the admin path and the deploy path the same identity, and a migration would
+# be able to publish whatever it liked without a decision" (00001). An assertion
+# that only ever checks grants exist cannot catch somebody helpfully adding this.
+ok "I5  membership: pantry is NOT a member of pantry_admin" "$SHAPE1" \
+  "select count(*) from pg_auth_members m
+     join pg_roles member  on member.oid = m.member
+     join pg_roles granted on granted.oid = m.roleid
+   where member.rolname = 'pantry' and granted.rolname = 'pantry_admin';" "0"
+# CHECK I6 membership: and holds no membership in the publisher group either
+# Taking `pantry_publisher` is a per-request decision made with an identity in
+# hand. Granted to the service login, every publisher write would run with no
+# publisher set — reading and writing zero rows through every publisher policy,
+# silently.
+ok "I6  membership: pantry is NOT a member of pantry_publisher" "$SHAPE1" \
+  "select count(*) from pg_auth_members m
+     join pg_roles member  on member.oid = m.member
+     join pg_roles granted on granted.oid = m.roleid
+   where member.rolname = 'pantry' and granted.rolname = 'pantry_publisher';" "0"
+# CHECK I7 membership: the graph's public read is a SELECT and nothing else
+# The policy 00007 adds is `for select`. The cheapest way for a migration to turn
+# a read path into a write path is to widen a command by accident, and this is
+# the assertion that says the write verbs are still gone.
+deny "I7  membership: pantry_public still cannot INSERT a compatibility edge" \
+  "$SHAPE1" "42501" "permission denied for table service_compat" \
+  "$(as_public "insert into pantry.service_compat (service_id, target_id, kind, version_range)
+                values ('$B1','$B3','requires','^0.1.0');")"
