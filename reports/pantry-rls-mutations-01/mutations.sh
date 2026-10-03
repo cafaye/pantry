@@ -82,8 +82,14 @@
 # argued in REPORT-pantry-rls-mutations-01.md.
 set -uo pipefail
 
-REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-cd "$REPO"
+REPO="$(cd "$(dirname "$0")/../.." && pwd)" || exit 2
+# `cd ... || exit`, not a bare `cd`. A recipe that silently stayed in the
+# directory it was invoked from would plant its mutations in the wrong tree, and
+# the first thing it does afterwards is assert the tree is clean — which it would
+# be, in the wrong repository. Every other abort in this file exists for the same
+# reason: a mutation script that keeps going after something unexpected has
+# already stopped being a measurement.
+cd "$REPO" || exit 2
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/pantry-rls-mut.XXXXXX")"
 SUITE="$REPO/tests/rls.sh"
