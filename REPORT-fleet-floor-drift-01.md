@@ -460,9 +460,13 @@ refuses a harness module importing anything outside a fixed stdlib allowlist, an
 the first draft of `floors_check.py` imported `tempfile`. The import is gone and
 the log directory is derived from `TMPDIR` by hand.
 
-**Leftover state.** Fifteen `wt-m39-*-fleet-floor-drift-01` worktrees, all on
-their own branches, all unmerged. Nothing running, no container, image or volume
-started. One temp directory under the harness's approved scratch path.
+**Leftover state.** Six `wt-m39-*-fleet-floor-drift-01` worktrees remain — the
+six carrying a commit. The other nine were measured and produced nothing worth a
+branch, so their worktrees and empty branches are removed; their measurements are
+in the table above and that is where they live. Nothing running, no container,
+image or volume started, no other session's worktree touched
+(`wt-m39-pantry-27` and the `searxng-*` containers were left alone throughout).
+Every repository's `master` is unmoved.
 
 ## 10. What I would do next
 
