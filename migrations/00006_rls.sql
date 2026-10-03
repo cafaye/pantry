@@ -461,6 +461,27 @@ create policy service_compat_admin_delete
 -- written for. A registry with no data path: every read is a 403 and every write
 -- is a 403, and nothing in `pg_policies` says so.
 --
+-- AND THE DAMAGE IS NOT LIMITED TO THE ROLE THAT LOST THE GRANT. A referential-
+-- integrity check runs as the OWNER OF THE REFERENCING TABLE, because the RI
+-- trigger is attached to `services` and an RI trigger executes as its table's
+-- owner. So with `pantry` holding no USAGE, `services.publisher_id`'s foreign key
+-- to `publishers` fails for EVERY writer — not only for `pantry`. Measured by
+-- removing this one grant and re-running `tests/rls.sh`:
+--
+--     set role pantry_admin;
+--     insert into pantry.services (… publisher_id …) values (…);
+--     ERROR:  42501: permission denied for schema pantry
+--     LINE 1: SELECT 1 FROM ONLY "pantry"."publishers" x WHERE "id" OPERATOR(=) $1
+--                    FOR KEY SHARE OF x
+--     LOCATION:  aclcheck_error, aclchk.c:2795
+--
+-- 34 of 77 checks go red from that one missing word, and only 4 of them are about
+-- `pantry`. An admin cannot insert a service, a publisher cannot insert a version,
+-- the whole fixture seed fails — from a privilege nobody thought `pantry_admin`
+-- needed. That is the shape of this defect: it is not "the service role is
+-- locked out", it is "this schema is not reachable and the error names a table
+-- nobody was thinking about".
+--
 -- ONE `revoke`, THEN ONE `grant` TO ALL FOUR ROLES, AND NOTHING AFTERWARDS. The
 -- previous file also granted `pantry_public` its USAGE at line 425 and then
 -- `revoke`d it back off at line 441, under a comment about DDL that the revoke did

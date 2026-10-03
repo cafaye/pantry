@@ -50,11 +50,33 @@ done
 
 # ---------------------------------------------------------------------------
 # THE POSTGRES BINARIES, AND THE SKIP THAT SAYS SO
+#
+# `PANTRY_PG_BIN` IS AUTHORITATIVE WHEN IT IS SET. A hint that is silently ignored
+# when it is wrong is worse than no hint: the caller asked for one Postgres and got
+# another, and a suite that ran against a different server than the one it was
+# pointed at reports its results as if they were the ones asked for. So a set value
+# that is not a directory holding `pg_ctl`, `psql` and `initdb` is a named skip
+# with the three paths it looked for, not a fall-through to whatever is installed.
 # ---------------------------------------------------------------------------
+pg_bin_error=""
+PGBIN=""
+
+# Checked in the PARENT rather than inside `find_pg_bin`, because a `$( … )`
+# capture runs in a subshell and a variable assigned in there does not come back —
+# which is how the first version of this printed the generic "no binaries found"
+# for a `PANTRY_PG_BIN` that was set and wrong, naming a directory the caller
+# could see and a message that did not mention it.
+if [[ -n "${PANTRY_PG_BIN:-}" ]]; then
+  if [ -x "$PANTRY_PG_BIN/pg_ctl" ] && [ -x "$PANTRY_PG_BIN/psql" ] && [ -x "$PANTRY_PG_BIN/initdb" ]; then
+    PGBIN="$PANTRY_PG_BIN"
+  else
+    pg_bin_error="$PANTRY_PG_BIN"
+  fi
+fi
+
 find_pg_bin() {
   local c
-  for c in "${PANTRY_PG_BIN:-}" \
-           /opt/homebrew/opt/postgresql@18/bin \
+  for c in /opt/homebrew/opt/postgresql@18/bin \
            /opt/homebrew/opt/postgresql@17/bin \
            /opt/homebrew/opt/postgresql@16/bin \
            /usr/local/opt/postgresql@18/bin \
@@ -62,12 +84,12 @@ find_pg_bin() {
            /usr/lib/postgresql/18/bin \
            /usr/lib/postgresql/17/bin \
            /usr/lib/postgresql/16/bin; do
-    [ -n "$c" ] && [ -x "$c/pg_ctl" ] && [ -x "$c/psql" ] && [ -x "$c/initdb" ] && { echo "$c"; return 0; }
+    [ -x "$c/pg_ctl" ] && [ -x "$c/psql" ] && [ -x "$c/initdb" ] && { echo "$c"; return 0; }
   done
   if command -v pg_ctl >/dev/null 2>&1 && command -v psql >/dev/null 2>&1; then
     dirname "$(command -v pg_ctl)"; return 0
   fi
-  local prefix
+  local c
   if command -v brew >/dev/null 2>&1; then
     for c in $(ls -d /opt/homebrew/opt/postgresql@* 2>/dev/null | sort -r) $(ls -d /usr/local/opt/postgresql@* 2>/dev/null | sort -r); do
       [ -x "$c/bin/pg_ctl" ] && { echo "$c/bin"; return 0; }
@@ -77,20 +99,38 @@ find_pg_bin() {
 }
 
 if [[ "$LIST_ONLY" -eq 1 ]]; then
-  grep -E "^# CHECK " "$REPO/tests/rls_assertions.sql" | sed 's/^# CHECK //'
+  # One line per named check. The count is one short of what a run reports,
+  # because `A0` — the fixture seed — runs once per ownership shape and the two
+  # runs share one name. A list that disagreed with the run's own count by an
+  # unexplained one would be worse than no list.
+  grep -E "^# CHECK " "$REPO/tests/rls_checks.sh" | sed 's/^# CHECK //'
   exit 0
 fi
 
-PGBIN="$(find_pg_bin)"
+# Only when the caller did not point us somewhere. The `if` is around the fallback
+# rather than after it, because a set-but-wrong PANTRY_PG_BIN must NOT fall through
+# to whatever is installed — which is exactly what the first version of this did,
+# and it is how a wrong hint produced a full green run against a server nobody had
+# named.
+if [[ -z "$PGBIN" && -z "$pg_bin_error" ]]; then
+  PGBIN="$(find_pg_bin)"
+fi
 if [[ -z "$PGBIN" ]]; then
   # NOT an exit-1: the suite has nothing to assert against, and a suite that
   # cannot run must not be reported as one that failed. It must not be reported
   # as one that passed either — hence the counted row on stdout and a non-zero
   # exit only when the caller asked for a hard requirement (PANTRY_RLS_REQUIRED,
   # which is how CI turns "no database here" into a red instead of a skip).
-  echo "skip: no PostgreSQL server binaries found — set PANTRY_PG_BIN to the bin"
-  echo "      directory holding pg_ctl, psql and initdb (Homebrew:"
-  echo "      /opt/homebrew/opt/postgresql@18/bin)."
+  if [[ -n "$pg_bin_error" ]]; then
+    echo "skip: PANTRY_PG_BIN is set to $pg_bin_error and that directory does not hold"
+    echo "      pg_ctl, psql and initdb. It is not falling back to an installed"
+    echo "      Postgres — a suite that quietly ran against a different server than"
+    echo "      the one it was pointed at would report its results as if they were."
+  else
+    echo "skip: no PostgreSQL server binaries found — set PANTRY_PG_BIN to the bin"
+    echo "      directory holding pg_ctl, psql and initdb (Homebrew:"
+    echo "      /opt/homebrew/opt/postgresql@18/bin)."
+  fi
   if [[ "${PANTRY_RLS_REQUIRED:-0}" == "1" ]]; then
     echo "tests/rls.sh: PANTRY_RLS_REQUIRED=1 and there is no postgres to run against." >&2
     exit 3

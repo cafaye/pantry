@@ -43,6 +43,7 @@
 # `seed` REPORTS ITS OWN FAILURE rather than returning quietly, because a suite
 # that fails at the fixture step and then reports twelve zeroes is worse than a
 # suite that says "the role that writes the fixtures could not write" and stops.
+# CHECK A0 fixture: pantry_admin can write the fixtures (once per ownership shape)
 seed() {
   local dbn="$1" out rc
   out="$(run "$dbn" "set role pantry_admin;
